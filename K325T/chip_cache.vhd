@@ -55,6 +55,11 @@ entity chip_cache is
       oe_n_i      : in  std_logic;
       bhe_n_i     : in  std_logic;
       ble_n_i     : in  std_logic;
+      -- 68EC020 32-bit chip cycle (stage 3, MiSTer #276): with long_i a write also stores wdata2_i
+      -- (both bytes) into the next word (A+1, A even: the same 64-bit group); reads need nothing new
+      -- (rdata48_o(47 downto 32) is word A+1)
+      long_i      : in  std_logic := '0';
+      wdata2_i    : in  std_logic_vector(15 downto 0) := (others => '0');
       rdata_o     : out std_logic_vector(15 downto 0);
       rdata48_o   : out std_logic_vector(47 downto 0);   -- AGA chip48: words A+1..A+3 of the group
       miss_o      : out std_logic;     -- combinational: stop the Amiga before the next edge
@@ -101,6 +106,7 @@ architecture rtl of chip_cache is
    signal a_addr      : std_logic_vector(18 downto 0);
    signal a_wdata     : std_logic_vector(15 downto 0);
    signal a_we_u, a_we_l : std_logic;
+   signal a_we_2      : std_logic;                  -- the second word of a 32-bit write
    type q_t is array (0 to 3) of std_logic_vector(15 downto 0);
    signal q           : q_t;                        -- the four words of the group
    signal a_lane_q    : unsigned(1 downto 0) := (others => '0');   -- lane of the word in q
@@ -163,24 +169,29 @@ begin
    -- writes: identity mode as phase 2; cache mode only on a hit (a miss is filled first)
    a_we_u <= '1' when acc = '1' and we_n_i = '0' and bhe_n_i = '0' and (mode = '0' or miss = '0') else '0';
    a_we_l <= '1' when acc = '1' and we_n_i = '0' and ble_n_i = '0' and (mode = '0' or miss = '0') else '0';
+   a_we_2 <= '1' when acc = '1' and we_n_i = '0' and long_i = '1' and (mode = '0' or miss = '0') else '0';
 
    -- tdp_ram directly (dualport_2clk_ram passes its clocks through an expression: one delta of
    -- delay that races the registers feeding it in simulation).  8 byte lanes: lane k (word k of
    -- the group) upper = 2k+1, lower = 2k; port B word k = b_wdata(16k+15 downto 16k).
    g_lane : for k in 0 to 3 generate
-      signal we_u, we_l : std_logic;
+      signal we_u, we_l, sec : std_logic;
+      signal d : std_logic_vector(15 downto 0);
    begin
-      we_u <= a_we_u when unsigned(a_addr(1 downto 0)) = k else '0';
-      we_l <= a_we_l when unsigned(a_addr(1 downto 0)) = k else '0';
+      -- sec: this lane is word A+1 of a 32-bit write
+      sec  <= '1' when long_i = '1' and unsigned(a_addr(1 downto 0)) + 1 = k else '0';
+      we_u <= a_we_u when unsigned(a_addr(1 downto 0)) = k else a_we_2 when sec = '1' else '0';
+      we_l <= a_we_l when unsigned(a_addr(1 downto 0)) = k else a_we_2 when sec = '1' else '0';
+      d    <= wdata2_i when sec = '1' else a_wdata;
       ram_u : entity work.tdp_ram
          generic map (ADDR_WIDTH => 17, DATA_WIDTH => 8)
-         port map (clock_a => clk_i, address_a => a_addr(18 downto 2), data_a => a_wdata(15 downto 8),
+         port map (clock_a => clk_i, address_a => a_addr(18 downto 2), data_a => d(15 downto 8),
                    wren_a => we_u, q_a => q(k)(15 downto 8), clock_b => ui_clk_i, address_b => b_addr,
                    data_b => b_wdata(16 * k + 15 downto 16 * k + 8), wren_b => b_we,
                    q_b => b_q(16 * k + 15 downto 16 * k + 8));
       ram_l : entity work.tdp_ram
          generic map (ADDR_WIDTH => 17, DATA_WIDTH => 8)
-         port map (clock_a => clk_i, address_a => a_addr(18 downto 2), data_a => a_wdata(7 downto 0),
+         port map (clock_a => clk_i, address_a => a_addr(18 downto 2), data_a => d(7 downto 0),
                    wren_a => we_l, q_a => q(k)(7 downto 0), clock_b => ui_clk_i, address_b => b_addr,
                    data_b => b_wdata(16 * k + 7 downto 16 * k), wren_b => b_we,
                    q_b => b_q(16 * k + 7 downto 16 * k));

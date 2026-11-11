@@ -33,6 +33,8 @@ architecture sim of tb_chip_cache is
    signal addr : std_logic_vector(20 downto 1) := (others => '0');
    signal wdata, rdata : std_logic_vector(15 downto 0) := (others => '0');
    signal rdata48 : std_logic_vector(47 downto 0);
+   signal long, long_v : std_logic := '0';   -- stage 3: 32-bit writes (68EC020)
+   signal wdata2 : std_logic_vector(15 downto 0) := (others => '0');
    signal fills, wbacks : unsigned(31 downto 0);
    signal mode : std_logic;
    signal lp_req, lp_we, lp_busy, lp_rvalid, lp_done : std_logic;
@@ -62,6 +64,7 @@ begin
       port map (clk_i => clk, reset_i => reset, cache_on_i => cache_on, shrink_i => shrink,
                 chip1m_i => '1', chip_sel_i => chip_sel, slow_sel_i => slow_sel, addr_i => addr,
                 wdata_i => wdata, we_n_i => we_n, oe_n_i => oe_n, bhe_n_i => bhe_n, ble_n_i => ble_n,
+                long_i => long, wdata2_i => wdata2,
                 rdata_o => rdata, rdata48_o => rdata48, miss_o => miss, fills_o => fills, wbacks_o => wbacks, mode_o => mode,
                 ui_clk_i => ui_clk, lp_req_o => lp_req, lp_we_o => lp_we, lp_addr_o => lp_addr,
                 lp_wdata_o => lp_wdata, lp_busy_i => lp_busy, lp_rvalid_i => lp_rvalid,
@@ -94,6 +97,8 @@ begin
       variable s1, s2 : positive := 5; variable r : real;
       variable a, ra, run, bad, nacc, ticks, bad48, g : natural := 0;
       variable w48 : std_logic_vector(47 downto 0);
+      variable d2 : std_logic_vector(15 downto 0);
+      variable is_long : boolean;
       variable is_slow, is_wr : boolean;
       variable be : std_logic_vector(1 downto 0);
       variable d : std_logic_vector(15 downto 0);
@@ -133,6 +138,11 @@ begin
          bhe_n <= be(1); ble_n <= be(0);
          uniform(s1, s2, r); d := std_logic_vector(to_unsigned(integer(r * 65535.0), 16));
          wdata <= d;
+         -- stage 3: a third of the word writes at even addresses are 32-bit (both words, all bytes)
+         uniform(s1, s2, r); is_long := is_wr and (a mod 2) = 0 and r < 0.33;
+         uniform(s1, s2, r); d2 := std_logic_vector(to_unsigned(integer(r * 65535.0), 16));
+         if is_long then be := "00"; bhe_n <= '0'; ble_n <= '0'; long <= '1'; else long <= '0'; end if;
+         wdata2 <= d2;
          if is_wr then we_n <= '0'; oe_n <= '1'; else we_n <= '1'; oe_n <= '0'; end if;
          tick; tick;                     -- ticks 0, 1
          tick;                           -- tick 2: the consumer edge
@@ -157,8 +167,9 @@ begin
          else
             if be(1) = '0' then ref(ra)(15 downto 8) := d(15 downto 8); end if;
             if be(0) = '0' then ref(ra)(7 downto 0) := d(7 downto 0); end if;
+            if is_long then ref(ra + 1) := d2; end if;
          end if;
-         we_n <= '1'; oe_n <= '1';
+         we_n <= '1'; oe_n <= '1'; long <= '0';
          tick;                           -- tick 3
          nacc := nacc + 1;
       end loop;
