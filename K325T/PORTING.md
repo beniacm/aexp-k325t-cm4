@@ -995,10 +995,11 @@ for HAM8, every pixel of the modify sequence):
 
 One mismatch: **ddf3c** -- with FMODE 3 and a DDFSTRT that is not on the 32-CCK fetch grid, this
 tree starts the fetch 4 CCK later (picture 8 px right), MiSTer master and FS-UAE start one whole fetch
-unit later (64 px right).  Two independent references agree, so ours is the odd one; MiSTer's #278
-("FMODE 1/2/3 fetch that does not start on the 8 or 16 pixel step ... now matching WinUAE", Turrican 2
-AGA) is the likely fix to take.  My test's own expectation (8 px) was a guess, not documentation: the
-public AGA documents do not say what the hardware does here.  Everything else agrees with the
+unit later (64 px right).  The two references are not independent (MiSTer's #278, "FMODE 1/2/3
+fetch that does not start on the 8 or 16 pixel step ... now matching WinUAE", Turrican 2 AGA, was
+made to agree with WinUAE), but both differ from ours, and #278 is the fix to take.  The test's own
+expectation (8 px) was a guess, not documentation: the public AGA documents do not say what the
+hardware does here, and nobody here has a real A1200 to settle it.  Everything else agrees with the
 documented semantics in all three.  What the tests do not
 cover, and where MiSTer master differs from AExp's base (`eb7a26e`, 2026-06-03; ~90 commits since,
 none of them in this tree): AGA fine positioning (35/70 ns bits of DIWHIGH and SPRxCTL, MiSTer #259,
