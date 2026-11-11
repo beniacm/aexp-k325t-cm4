@@ -29,7 +29,8 @@ import time
 
 # name: (disk 1, disk 2 or None, seconds after boot to insert disk 2, total seconds)
 DEMOS = {
-    "sota":   ("sota.adf", None, None, 150),       # Spaceballs, State of the Art (1992)
+    "sota":   ("sota.adf", None, None, 150),       # Spaceballs, State of the Art (1992; the amigascne
+                                                   # image: the scene.org party-archive DMS hangs)
     "enigma": ("enigma.adf", None, None, 150),     # Phenomena, Enigma (1991)
     "arte":   ("arte.adf", None, None, 180),       # Sanity, Arte (1993)
     "eon":    ("eon1.adf", "eon2.adf", 170, 330),  # The Black Lotus, Eon (2019, party version); disk-2 icon ~165 s

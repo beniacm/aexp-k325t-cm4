@@ -85,6 +85,9 @@ Built (Radxa CM3 variant, Vivado 2025.2.1): 32,640 LUTs (16 %), 25,845 registers
   HyperRAM PHY, which is gone here). The Kintex-7 -1 is faster, but the 320 Amiga BRAM tiles
   spread over a larger die; the QNICE kick-ROM port (falling edge, 10 ns) is the known
   critical path.
+  Result: met on the first clean run (WNS +0.114 ns, WHS +0.054 ns); the only violations on
+  the way were the new mouse lines into M2M's joystick synchronisers (asynchronous by design,
+  now false paths by cell) and the button levels (now a 2-FF synchroniser in the core clock).
 - MIG UI rules: `avm_mig` carries the two fixes of the C64 port (write data before command;
   no new command with a read's last beat), proven with the C64 core's REU and CRT loader.
 - The Kickstart ROM is the user's: never in git; `/amiga/kick.rom` on the card only.

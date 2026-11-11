@@ -95,17 +95,34 @@ the other module fitted.  Radxa build of 2026-11-11: timing met (WNS +0.114 ns, 
 - Mouse: quadrature counts in JOY0DAT follow injected and (uinput) USB mouse moves in both axes
   and directions; left button on CIA-A PRA bit 6, right / middle on POTGOR.  Joystick port 2:
   all four directions in JOY1DAT and fire on PRA bit 7.
-- Demos (user's Kickstart, 512 KB chip + 512 KB slow): Phenomena *Enigma*, Sanity *Arte*,
-  TBL *Eon* (disk 1, then disk 2), Batman Group *Batman Rises* (disk 1 to "INSERT DISK 2", then
-  disk 2) run; Spaceballs *State of the Art* stops after its first picture (see below).
+- Demos (user's Kickstart 1.3, 512 KB chip + 512 KB slow, from flash slot 1 and over JTAG),
+  recorded with `tools/aexp_demo_test.py`: all run through without a hang or visible corruption
+  in the sampled frames (every 5-10 s) -- Spaceballs *State of the Art*, Phenomena *Enigma*,
+  Sanity *Arte*, TBL *Eon* (party version, disk 2 inserted at its prompt), Batman Group
+  *Batman Rises* (disk 2 at "INSERT DISK 2").  No reference recording was compared frame by
+  frame.
+
+| demo | file(s) in `/amiga` | source (all freely distributed by the groups) |
+|---|---|---|
+| Spaceballs, State of the Art (The Party 1992, 1st) | `sota.adf` | archive.scene.org `mirrors/amigascne/Groups/S/Spaceballs/Spaceballs-StateOfTheArt.dms` (the `parties/1992/theparty92/amiga/demo/spb-sota.dms` image hangs after the first picture, also with Slow RAM off) |
+| Phenomena, Enigma (1991) | `enigma.adf` | archive.scene.org `mirrors/amigascne/Groups/P/Phenomena/PHENOMENA-Enigma.DMS` |
+| Sanity, Arte (The Party 1993) | `arte.adf` | archive.scene.org `mirrors/amigascne/Groups/S/Sanity/Sanity-Arte.dms` |
+| TBL, Eon (Revision 2019, party version; needs 512K+512K) | `eon1.adf`, `eon2.adf` | files.scene.org `parties/2019/revision19/amiga-demo/tbl_eon_party_version.zip` |
+| Batman Group, Batman Rises (Posadas 2022) | `batman1.adf`, `batman2.adf` | files.scene.org `parties/2022/posadasautumn22/demo/batman_rises.zip` |
+
+DMS archives were unpacked to ADF with `xdms`.  Test disks made here: `wrtest.adf`,
+`intest.adf`, `kbmtest.adf`, `kbm12.adf` (`tools/`).
 - Core switching MEGA65 <-> Amiga (slot 1) with Ctrl+Alt+F1/F2/F12 and `m65ctl core`.
 - FPGA temperature with the Amiga core: 51 C (JTAG sysmon).
 
 ## Open / not verified
 
-- *State of the Art* (Spaceballs, The Party 1992 version from scene.org): shows its first white
-  shape and then waits (~80 s), turns dark and stays.  Same with Slow RAM off.  Not resolved;
-  upstream lists the demo as working, a comparison on a MEGA65 is not possible here.
+- Cycle exactness is by construction (upstream's memory, clocks and enables are unchanged, see
+  `PORTING.md`); no instruction-level comparison against upstream hardware was possible here
+  (no MEGA65 on the bench).
+- A JTAG-loaded Amiga core asked to boot flash slot 1 (bridge IPROG to 0x800000, then holding
+  the C64) came up as the MEGA65 (configuration fallback); from flash, MEGA65 -> Amiga ->
+  MEGA65 works every time.  Not investigated.
 - No RTC (the MEGA65's I2C RTC is not on this board): the Amiga clock reads as not set.
 - HDMI audio is produced by the core but was not measured (the capture dongle's audio device is
   not accessible to the PC user).
