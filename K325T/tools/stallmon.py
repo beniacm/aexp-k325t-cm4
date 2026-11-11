@@ -4,10 +4,15 @@ and read its lag/debt monitor through the Rockchip bridge (run ON THE MODULE, ne
 python3-spidev; writes nothing to the module's flash).
 
     stallmon.py preset NAME          off | rtl | mix | burst15 | budget | overload (table below)
-    stallmon.py set mode=1 e=7 m=10 de=2 dm=4 j=0
+    stallmon.py set mode=1 e=7 m=10 de=2 dm=4 j=0   (mode b0 injector, b1 native rate only,
+                                     b2 avm_mig without the reset abort = the old behaviour)
     stallmon.py clear                lag max and event counters to 0
     stallmon.py read                 one snapshot, key=value
     stallmon.py log SECS [EVERY]     a snapshot every EVERY seconds (default 10), one line each
+    stallmon.py cache on|off [SHRINK 0..3] [chip2m]   chip RAM through the cache (next full reset)
+    stallmon.py mbox                        the Amiga's result block at $C0-$FF (16 longwords)
+    stallmon.py avm                         Avalon debug: the write burst avm_mig waits in
+    stallmon.py lat SECS [r|w|rw]    line latency meter (64-byte reads / writes on the MIG line port)
     stallmon.py probe                debug builds: main_clk probe vector, RAM write/read counts
     stallmon.py rate SECS            machine frame rate (vsyncs against the ungated source clock),
                                      machine clock, stall statistics over SECS seconds
@@ -15,24 +20,27 @@ python3-spidev; writes nothing to the module's flash).
 The bridge's VIDEO register (command 0x70; this core has no Linux picture) carries 1rrrvvvv
 register writes, STATUS 60..71 the snapshot page selected with register 6 (stall_ctrl.vhd header).
 Injector: start probability per source tick (m+1)/2^(e+8), duration ((dm+1) << de) + random
-(0 .. 2^j - 1) source ticks of 1/29.290 MHz = 34.14 ns.
+(0 .. 2^j - 1) source ticks of 1/31.310 MHz = 31.94 ns (stage 1: 34.14 ns).
 """
 import sys
 import time
 
-F_SRC = 100e6 * 56.75 / 5 / 38.75          # 29.290322 MHz: the ungated source clock
+F_SRC = 100e6 * 56.75 / 5 / 36.25          # 31.310345 MHz: the ungated source clock (stage 2;
+                                           # stage 1 bitstreams: / 38.75 = 29.290 MHz)
 F_MACH = 28.375e6                          # the machine clock's long-term average (native)
 T_SRC = 1e6 / F_SRC                        # us per source tick
+K_NAT = F_MACH / F_SRC                     # machine / source edges (29/32)
 FRAME_TICKS = 313 * 227 * 8                # machine ticks per PAL frame (568,408)
 
-PRESETS = {
+PRESETS = {   # durations for the stage-2 source clock (31.94 ns ticks); the rates per frame are
+              # ~7 % higher than in stage 1 (more ticks per frame)
     # name: (mode, e, m, de, dm, j, what)
     "off":      (0, 0, 0, 0, 0, 0, "injector off"),
-    "rtl":      (1, 7, 10, 2, 4, 0, "0.68 us stalls, ~197 per frame (the study's worst RTL workload)"),
-    "mix":      (1, 5, 4, 0, 8, 6, "0.31-2.46 us stalls, ~357 per frame, ~2.5 %"),
-    "burst15":  (1, 10, 8, 5, 13, 0, "15.3 us stalls, ~20 per frame, ~1.6 %"),
-    "budget":   (1, 3, 2, 2, 4, 0, "0.68 us stalls, ~858 per frame, ~2.9 % (just below 3.1 %)"),
-    "overload": (1, 2, 2, 2, 4, 0, "0.68 us stalls, ~1716 per frame, ~5.9 % (beyond the 3.1 % budget)"),
+    "rtl":      (1, 7, 10, 2, 4, 0, "0.64 us stalls, ~197 per frame (the study's worst RTL workload)"),
+    "mix":      (1, 5, 4, 0, 8, 6, "0.29-2.3 us stalls, ~357 per frame, ~2.5 %"),
+    "burst15":  (1, 10, 8, 5, 13, 0, "14.3 us stalls, ~20 per frame, ~1.6 %"),
+    "budget":   (1, 3, 2, 2, 4, 0, "0.64 us stalls, ~858 per frame, ~2.9 % (just below 3.1 %)"),
+    "overload": (1, 2, 2, 2, 4, 0, "0.64 us stalls, ~1716 per frame, ~5.9 % (beyond the 3.1 % budget)"),
 }
 REG = {"mode": 0, "e": 1, "m": 2, "de": 3, "dm": 4, "j": 5}
 
@@ -83,6 +91,7 @@ class Bridge:
             "stalls": p1[0], "stall_ticks": p1[1], "drops": p1[2],
             "vsyncs": p2[0], "vsync_ts": p2[1] << 32 | p2[2],
             "forgiven": p3[0], "src": p3[1] << 32 | p3[2],
+            "fills": self.page(6)[1], "wbacks": self.page(6)[2],
             "mach": p4[1] << 32 | p4[2],
         }
 
@@ -90,10 +99,10 @@ class Bridge:
 def fmt(s):
     us = 1e6 / F_MACH
     return ("mode=%d e=%d m=%d de=%d dm=%d j=%d lag_now=%d (%.2f us) lag_max=%d (%.2f us) stalls=%d "
-            "stall_ticks=%d drops=%d forgiven=%d vsyncs=%d src=%d mach=%d" %
+            "stall_ticks=%d drops=%d forgiven=%d vsyncs=%d src=%d mach=%d fills=%d wbacks=%d" %
             (s["mode"], s["e"], s["m"], s["de"], s["dm"], s["j"], s["lag_now"], s["lag_now"] * us,
              s["lag_max"], s["lag_max"] * us, s["stalls"], s["stall_ticks"], s["drops"], s["forgiven"],
-             s["vsyncs"], s["src"], s["mach"]))
+             s["vsyncs"], s["src"], s["mach"], s["fills"], s["wbacks"]))
 
 
 def rate(b, secs):
@@ -113,12 +122,17 @@ def rate(b, secs):
           "(%+.2f ppm vs 50 Hz, %+.2f ppm vs native %.6f Hz)" %
           (dsrc / F_SRC, dsrc, dv, fr, (fr / 50.0 - 1) * 1e6,
            (fr / (F_MACH / FRAME_TICKS) - 1) * 1e6, F_MACH / FRAME_TICKS))
-    print("machine clock %.3f Hz average (%+.2f ppm vs 28.375 MHz; machine/source = %.9f, 31/32 = %.9f)" %
-          (fm, (fm / F_MACH - 1) * 1e6, dm / dsrc, 31 / 32))
+    print("machine clock %.3f Hz average (%+.2f ppm vs 28.375 MHz; machine/source = %.9f, nominal %.9f)" %
+          (fm, (fm / F_MACH - 1) * 1e6, dm / dsrc, K_NAT))
     print("stalls %d (%.1f per 20 ms), stalled %.4f %% of real time, mean stall %.2f us; "
           "lag now %d max %d machine ticks (%.2f us); forgiven %d" %
           (dn, dn / frames_real if frames_real else 0, 100.0 * dst / dsrc, dst / dn * T_SRC if dn else 0,
            z["lag_now"], z["lag_max"], z["lag_max"] * 1e6 / F_MACH, z["forgiven"] - a["forgiven"]))
+    df = (z["fills"] - a["fills"]) & 0xFFFFFFFF
+    dw = (z["wbacks"] - a["wbacks"]) & 0xFFFFFFFF
+    if df:
+        print("chip cache: %d line fills (%.1f per 20 ms), %d write-backs (%.1f per 20 ms), %.2f us stalled per fill" %
+              (df, df / frames_real, dw, dw / frames_real, dst / df * T_SRC))
 
 
 def main():
@@ -163,8 +177,96 @@ def main():
               (v & 0x3FFFFF, (v & 0x3FFFFF) << 1, v >> 22 & 1, v >> 23 & 1, v >> 24 & 1, v >> 25 & 1,
                v >> 26 & 1, v >> 27 & 1, v >> 28 & 1, v >> 29 & 1, v >> 30 & 1, v >> 31 & 1, v >> 32 & 1,
                v >> 33 & 3, v >> 35 & 1, v >> 36 & 1, v >> 37 & 1, p5[1], p6[1], p5[2]))
+        m = v >> 38 & 0xFFFFFF
+        st = ["IDLE", "RD", "RD_END", "WR", "FLUSH", "DRAIN"]
+        print("avm_mig: state %s, beats_left %d, inflight %d, fifo %d, aborts %d (mod 16)" %
+              (st[m >> 16 & 15] if (m >> 16 & 15) < 6 else m >> 16 & 15, m >> 8 & 255, m >> 4 & 15,
+               m & 15, m >> 20 & 15))
+    elif cmd == "mbox":
+        # the core's result mailbox: the longwords the Amiga last wrote to $C0-$FF (lat_meter $E0-$E5)
+        b.wr(0, 0)
+        b.wr(6, 7)
+        out = []
+        for i in range(6):
+            b.wr(4, 0xE)
+            b.wr(5, i)
+            r = b.status()
+            out += [int.from_bytes(bytes(r[60 + 4 * k:64 + 4 * k]), "big") for k in range(3)]
+        b.wr(4, 0); b.wr(5, 0); b.wr(6, 0)
+        print(" ".join("%08x" % v for v in out[:16]))
+    elif cmd == "avm":
+        # Avalon debug words of the top (lat_meter index $FF / $FE): the write burst avm_mig is in
+        b.wr(0, 0)
+        b.wr(6, 7)
+        def rd(i):
+            b.wr(4, i >> 4)
+            b.wr(5, i & 15)
+            r = b.status()
+            return [int.from_bytes(bytes(r[60 + 4 * k:64 + 4 * k]), "big") for k in range(3)]
+        a0, a1 = rd(0xFF), rd(0xFE)
+        b.wr(4, 0); b.wr(5, 0); b.wr(6, 0)
+        f = a0[2]                           # W0 = live address, W1 = burst start, W2 = flags
+        st = ["IDLE", "RD", "RD_END", "WR", "FLUSH", "DRAIN"]
+        print("live: write=%d read=%d waitrequest=%d avm_rst=%d st=%s burstcount=%d address=%08x" %
+              (f >> 7 & 1, f >> 6 & 1, f >> 5 & 1, f >> 4 & 1, st[f & 15] if (f & 15) < 6 else f & 15,
+               f >> 8 & 255, a0[0]))
+        print("write burst: start %08x, burstcount %d, beats still expected %d, began %d ui ticks "
+              "(%.3f ms) after the last memory reset" % (a0[1], f >> 16 & 255, f >> 24 & 255, a1[0],
+                                                         a1[0] / 1e5))
+        print("since the last memory reset: %d write bursts, %d read bursts; last read %08x" %
+              (a1[2] >> 16, a1[2] & 0xFFFF, a1[1]))
     elif cmd == "rate":
         rate(b, float(sys.argv[2]))
+    elif cmd == "cache":
+        # chip cache settings, taken at the next FULL reset: cache off|on [shrink 0..3] [chip2m]
+        on = sys.argv[2] == "on"
+        shrink = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 0
+        c2 = "chip2m" in sys.argv[3:]
+        b.wr(0, (shrink >> 1 & 1) << 3)     # register 0: b3 = shrink bit 1 (injector off)
+        b.wr(7, (shrink & 1) << 3 | (4 if c2 else 0) | (2 if on else 0))
+        print("cache %s, shrink %d (sets / %d), %s -- now a full reset" %
+              ("on" if on else "off", shrink, (1, 8, 64, 512)[shrink], "2 MB chip" if c2 else "chip as in the menu"))
+    elif cmd == "lat":
+        # line latency meter (lat_meter.vhd, page 7): lat SECS [r|w|rw]
+        secs = float(sys.argv[2])
+        what = sys.argv[3] if len(sys.argv) > 3 else "rw"
+        en = (1 if "r" in what else 0) | (2 if "w" in what else 0)
+        b.wr(0, 0)                          # injector off (registers 3..5 are shared)
+        b.wr(6, 7)
+        b.wr(3, 4)                          # clear
+        b.wr(3, en)
+        time.sleep(secs)
+        b.wr(3, 8 | en)                     # freeze
+        def rd(i):
+            b.wr(4, i >> 4)
+            b.wr(5, i & 15)
+            r = b.status()
+            return [int.from_bytes(bytes(r[60 + 4 * k:64 + 4 * k]), "big") for k in range(3)]
+        for d, name in ((0, "read"), (1, "write")):
+            if not en & (1 << d):
+                continue
+            hist = [rd(64 * d + i)[0] for i in range(64)]
+            w = rd(64 * d)
+            mn, mx, n = w[1] >> 16, w[1] & 0xFFFF, w[2]
+            sv = rd(128 + 64 * d)
+            tot = sv[2] << 32 | sv[0]
+            if n == 0:
+                print("%s: no samples" % name)
+                continue
+            def pct(p):
+                c, lim = 0, p * n
+                for i, h in enumerate(hist):
+                    c += h
+                    if c >= lim:
+                        return i * 40, i * 40 + 40      # ns range of the bin
+                return 2520, None
+            md, p999 = pct(0.5), pct(0.999)
+            print("%s: %d lines, min %d ns, median %d-%d ns, 99.9 %% %d-%s ns, max %d ns, mean %.0f ns" %
+                  (name, n, mn * 10, md[0], md[1], p999[0], p999[1], mx * 10, tot * 10.0 / n))
+            print("  histogram (40 ns bins, nonzero): " +
+                  " ".join("%d:%d" % (i * 40, h) for i, h in enumerate(hist) if h))
+        b.wr(3, 0)
+        b.wr(6, 0)
     else:
         sys.exit(__doc__)
 

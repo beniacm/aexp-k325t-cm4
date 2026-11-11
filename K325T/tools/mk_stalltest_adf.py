@@ -25,13 +25,20 @@ Rows of 32 bit cells (white = 1, mostly as mk_sysinfo_adf.py; decode a capture w
      7  CIA-A timer B << 16 | timer A after 50 frames (both counted down from $FFFF; E-clocks =
         ($FFFF - B) x 65536 + ($FFFF - A); 50 PAL frames = 710,510 E-clocks)
      8  checksum of the frame just run (live)    9  its end position (live)
+    10 / 11  VPOSR:VHPOSR right after the CIA timers start / right before they stop: the E-clock
+        window in beam terms (50 frames of 313 x 227 colour clocks + end - start; E = cck / 5)
+    12  start sync: frames waited for E phase 0 << 16 | the E phase of the first frame looked at
+        (before the workload the program waits for the frame whose E-clock phase against the beam
+        is 0, then enables audio at the copper interrupt: every boot starts in the same state)
+The rows are also copied to $C0 (68000 vectors 48-60, unused) after every frame: the K325T core's
+result mailbox shows them without a picture (stallmon.py mbox; --mbox "LONGS" decodes them).
 The checksums are pure machine-time quantities: equal values with the stall injector off and on (any
 setting) prove that stalls are invisible to the Amiga.  Row 1 lets a clip of the HDMI output show
 dropped or repeated frames.
 """
 import os, struct, subprocess, sys, tempfile
 
-ROWS = 10
+ROWS = 13
 
 ASM = r"""
         .text
@@ -123,15 +130,53 @@ c6:     move.w  %d2,(%a0)+
         move.b  %d0,0x700(%a3)
         clr.b   0xe00(%a3)
         clr.b   0xf00(%a3)
-        move.w  #0x83c3,0x96(%a6)           | DMA: master, bitplanes, copper, blitter, audio 0, 1
+        move.w  #0x83c0,0x96(%a6)           | DMA: master, bitplanes, copper, blitter (audio later)
+        | single-valued start: the E clock (CPU / 10) runs free from reset; one frame is 71051
+        | colour clocks = 1 mod 5, so the E phase against the beam steps by one colour clock per
+        | frame and depends on how many frames the (real-time) loader took.  Wait for the frame
+        | whose E phase is 0: at line $10 (no bitplane / copper / audio DMA there) touch the CIA
+        | (the access ends on an E edge), read the beam, phase = (V x 227 + H) mod 5.
+        moveq   #0,%d6                      | frames waited
+        moveq   #-1,%d7                     | the first phase seen
+es0:    move.w  6(%a6),%d0                  | wait for line $0F ...
+        lsr.w   #8,%d0
+        cmp.w   #0x0f,%d0
+        bne.s   es0
+es1:    move.w  6(%a6),%d0                  | ... then for line $10
+        lsr.w   #8,%d0
+        cmp.w   #0x10,%d0
+        bne.s   es1
+        tst.b   (%a3)                       | CIA-A access: E-clock synchronous
+        move.w  6(%a6),%d0
+        moveq   #0,%d1
+        move.b  %d0,%d1                     | H (colour clocks)
+        lsr.w   #8,%d0                      | V (lines < 256 here)
+        mulu    #227,%d0
+        add.l   %d1,%d0
+        divu    #5,%d0
+        swap    %d0                         | remainder = the E phase
+        tst.l   %d7
+        bpl.s   es2
+        moveq   #0,%d7
+        move.w  %d0,%d7                     | first phase
+es2:    tst.w   %d0
+        beq.s   es3
+        addq.w  #1,%d6
+        bra.s   es0
+es3:    swap    %d6
+        or.l    %d7,%d6
+        move.l  %d6,r_esync-vars(%a4)       | frames waited << 16 | first phase
         move.w  #0xc010,0x9a(%a6)           | INTENA: master + COPER
         move.w  #0x0010,0x9c(%a6)
-        stop    #0x2000                     | sync to a copper interrupt
+        stop    #0x2000                     | sync to the copper interrupt (line $40, same frame)
+        move.w  #0x8003,0x96(%a6)           | audio 0, 1 on: at a fixed beam position
         move.b  #0x51,0xf00(%a3)            | CRB: start, load, count timer A underflows
         move.b  #0x11,0xe00(%a3)            | CRA: start, load, continuous, E clock
+        move.l  4(%a6),r_vp0-vars(%a4)      | VPOSR:VHPOSR right after the start
         moveq   #49,%d1
 c7:     stop    #0x2000
         dbra    %d1,c7
+        move.l  4(%a6),r_vp1-vars(%a4)      | ... and right before the stop (same code path)
         clr.b   0xe00(%a3)                  | stop timer A (B stops with it)
         move.b  0x700(%a3),%d0
         lsl.w   #8,%d0
@@ -169,6 +214,11 @@ b4:     move.w  ent-vars(%a4),%d0
         beq.s   b3
         addq.w  #1,r_syncm-vars(%a4)
 b3:     addq.l  #1,r_frames-vars(%a4)
+        lea     vars(%pc),%a0               | the rows also to $C0-$F3 (the K325T result mailbox,
+        lea     0xc0.w,%a1                  | readable without a picture: stallmon.py mbox)
+        moveq   #ROWS-1,%d0
+mb:     move.l  (%a0)+,(%a1)+
+        dbra    %d0,mb
         | draw the rows: 32 cells of 8 pixels x 6 lines, 8 lines per row, from line 16, byte 4
         lea     vars(%pc),%a0
         lea     16*40+4(%a5),%a1
@@ -260,6 +310,9 @@ r_end:  .long   0
 r_cia:  .long   0
 cur:    .long   0
 endp:   .long   0
+r_vp0:  .long   0
+r_vp1:  .long   0
+r_esync: .long  0
 mode:   .word   0
 ent:    .word   0
 vx:     .long   0
@@ -292,7 +345,7 @@ def bootblock():
 
 
 NAMES = ["marker", "frames", "sum_even", "sum_odd", "mismatch", "entry_syncmism", "end_pos", "cia",
-         "sum_now", "end_now"]
+         "sum_now", "end_now", "vp_start", "vp_end", "esync"]
 
 
 def decode(png):
@@ -326,12 +379,26 @@ def explain(v):
     return ("frames %d, checksums even %08x odd %08x, mismatching frames %d, entry VHPOSR $%04x "
             "(other entry positions: %d), workload end VPOSR:VHPOSR $%08x, CIA E-clocks in 50 frames %d "
             "(PAL: 710510)" % (d["frames"], d["sum_even"], d["sum_odd"], d["mismatch"],
-                               d["entry_syncmism"] >> 16, d["entry_syncmism"] & 0xFFFF, d["end_pos"], e))
+                               d["entry_syncmism"] >> 16, d["entry_syncmism"] & 0xFFFF, d["end_pos"], e)
+            + window(d, e)
+            + ("; start sync: %d frames waited, first E phase %d" % (d["esync"] >> 16, d["esync"] & 0xFFFF)
+               if "esync" in d else ""))
+
+
+def window(d, e):
+    if "vp_end" not in d:
+        return ""
+    def cck(v):
+        return (((v >> 16) & 1) << 8 | (v >> 8) & 0xFF) * 227 + (v & 0xFF)
+    w = 50 * 313 * 227 + cck(d["vp_end"]) - cck(d["vp_start"])
+    return ("; window: beam $%08x -> $%08x = %d cck = %.1f E-clocks if 50 frames passed "
+            "(measured - expected %+.1f)" % (d["vp_start"], d["vp_end"], w, w / 5.0, e - w / 5.0))
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "--decode":
-        v = decode(sys.argv[2])
+    if sys.argv[1] in ("--decode", "--mbox"):
+        v = decode(sys.argv[2]) if sys.argv[1] == "--decode" else \
+            [int(x, 16) for x in sys.argv[2].split()][:ROWS]
         print(" ".join("%s=%08x" % (k, x) for k, x in zip(NAMES, v)))
         print(explain(v))
         sys.exit(0)
