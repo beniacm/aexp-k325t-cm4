@@ -157,6 +157,8 @@ entity amiga_config is
       -- reset_i is active, so the whole sequence uses one consistent value and a change
       -- takes effect during the Amiga-local cold boot requested by amiga_cold_boot.vhd.
       slow_ram_i       : in  std_logic;
+      chip1m_i         : in  std_logic := '0';               -- K325T: 1 MB chip RAM (CC=01, no slow RAM)
+      ecs_i            : in  std_logic := '0';               -- K325T: ECS chipset (0xF3 bit 3)
 
       -- Minimig host/userio port (minimig.v:214-218)
       io_uio_o         : out std_logic;                     -- minimig IO_UIO  (userio IO_ENA)
@@ -226,6 +228,7 @@ architecture synthesis of amiga_config is
    -- index of the 0xF5 memory-config entry in C_SEQ: its payload bit 2 (SS[0] = 512KB
    -- slow RAM) is not taken from the constant but from slow_ram_q (OSM toggle, issue #20)
    constant C_IDX_MEMCFG : natural := 3;
+   constant C_IDX_CHIPCFG : natural := 1;
 
    signal state : t_state := ST_RESET;
    signal idx   : natural range 0 to C_SEQ'high := 0;                         -- current transfer
@@ -233,6 +236,8 @@ architecture synthesis of amiga_config is
 
    -- slow_ram_i sampled during ST_RESET: one consistent value for the whole sequence
    signal slow_ram_q : std_logic := '1';
+   signal chip1m_q   : std_logic := '0';
+   signal ecs_q      : std_logic := '0';
 
 begin
 
@@ -254,6 +259,8 @@ begin
                idx              <= 0;
                cnt              <= G_START_DELAY;
                slow_ram_q       <= slow_ram_i;    -- freezes when reset_i releases
+               chip1m_q         <= chip1m_i;
+               ecs_q            <= ecs_i;
                if reset_i = '0' then
                   state <= ST_START_WAIT;
                end if;
@@ -297,7 +304,11 @@ begin
             when ST_PAYLOAD =>
                io_din_o <= C_SEQ(idx).payload;
                if idx = C_IDX_MEMCFG then
-                  io_din_o(2) <= slow_ram_q;      -- SS[0]: '1' = 512KB slow RAM, '0' = none
+                  io_din_o(2) <= slow_ram_q and not chip1m_q; -- SS[0]: '1' = 512KB slow RAM, '0' = none
+                  io_din_o(0) <= chip1m_q;                    -- CC: "01" = 1 MB chip (K325T)
+               end if;
+               if idx = C_IDX_CHIPCFG then
+                  io_din_o(3) <= ecs_q;                       -- E: ECS chipset (K325T)
                end if;
                if cnt /= 0 then
                   cnt <= cnt - 1;

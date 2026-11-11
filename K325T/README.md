@@ -40,6 +40,22 @@ Rockchip bridge core id **3** (STATUS byte 52).  The module's m65d (harness) the
   `amiga_mouse.vhd`): mouse on port 1, first pad on port 2 (Ctrl+Alt+J swaps);
 - treats Ctrl+Alt+F1 / F2 / F12 / Del as with the other cores (F2 = the core in flash slot 1).
 
+## Phase 2: more than an A500 (K325T only)
+
+The K325T's room is used for options of MiSTer's Minimig that AExp left out (study and ranking:
+`PORTING.md`, "Phase 2").  **The defaults are the AExp V1 machine** (A500, OCS, 68000, 512 KB
+chip + 512 KB slow, Kickstart 1.3): same memory path and clocks, the demo regression and the
+SysInfo test (`tools/mk_sysinfo_adf.py`) give identical results.
+
+| option | where | notes |
+|---|---|---|
+| **Kickstart 512 KB** (2.04, 3.1 A500/A600: `kick37175.A500`, `kick40063.A600`) | `/amiga/kick.rom`, size detected from the image (`$1111` = 256 KB, `$1114` = 512 KB) | 256 KB ROMs are mirrored at `$F80000`/`$FC0000` as before; 1 MB ROMs (`$E00000` extension: AROS, CD32) are not supported |
+| **chipset OCS / ECS** | menu "RAM: ..." > OCS / ECS Chipset | ECS = Agnus 8372A (VPOSR id `$20`) + Denise 8373 (DENISEID `$FC`) |
+| **memory**: 512K chip + 512K slow (default) / 512K chip only / 1M chip | menu "RAM: ..." | "1M Chip" uses the slow-RAM block RAM as the upper 512 KB of chip RAM (no slow RAM then) and forces ECS (an 8372A is needed for 1 MB) |
+
+A change in the "RAM" submenu cold-boots the emulated Amiga only (like the V1 Slow RAM toggle).
+Settings: see "Kickstart and floppies".
+
 ## Build
 
 Once: the QNICE assembler and the monitor's dist_kit (the firmware is assembled every build):
@@ -79,7 +95,8 @@ the other module fitted.  Radxa build of 2026-11-11: timing met (WNS +0.114 ns, 
   there.  Help opens the menu; on "ADF:" Space opens the browser (Space on a mounted disk
   ejects it), Return mounts.  The disk is read/write: changes are written back to the file on
   the card a few seconds after the Amiga stops writing.
-- Settings persist in `/amiga/aexp-V1.cfg` (74 bytes; a new file of 74 x `$FF` = defaults).
+- Settings persist in `/amiga/aexp-V1.cfg` (84 bytes with the phase-2 menu; the V1 core's file has 74:
+  a file of the wrong size is ignored and the defaults apply; a new file of 84 x `$FF` = defaults).
 - Reset: Ctrl+Alt+Del (or `m65ctl reset`) resets the Amiga only and keeps the disk mounted,
   like a real A500; `m65ctl hold_reset 1`, 2 s, `hold_reset 0` resets the whole core (disk
   ejected, Kickstart reloaded).

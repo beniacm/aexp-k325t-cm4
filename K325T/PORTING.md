@@ -100,3 +100,87 @@ Built (Radxa CM3 variant, Vivado 2025.2.1): 32,640 LUTs (16 %), 25,845 registers
 - `.gitignore`: the generated Vivado project `CORE/CORE-K325T.*`.
 
 Everything else is in `K325T/`.
+
+# Phase 2: the best Amiga this FPGA can carry (study, 2026-11-11)
+
+Goal (the user's words): "the amiga core is meant for the smaller fpga, once it succeeds, use the
+fpga capacity to get the best possible version".  The A500 configuration above stays the default
+and must keep passing its demo regression (`tools/aexp_demo_test.py`).
+
+Room on the XC7K325T next to the A500 port: ~171 k LUTs, 64.5 RAMB36 (380.5 / 445 used),
+256 MB DDR3 (the M2M "HyperRAM" bus uses a few MB of it: ascal frame buffer, ADF image).
+
+## 1. What AExp removed or froze relative to MiSTer's Minimig-AGA
+
+Compared: AExp's submodule `CORE/Minimig_MiSTerMEGA65` (branch develop, 7 AExp commits on top
+of MiSTer release 20260603, merge base `eb7a26e`) with MiSTer-devel/Minimig-AGA_MiSTer
+(read-only clone in `ext/Minimig-AGA_MiSTer`, master `7d5d3c2`; the newer upstream adds a
+68030/MMU, Action Replay, A2065 changes -- not in AExp's base).  MiSTer's top `Minimig.sv`
+(SDRAM + DDR3 controllers, fastchip/RTG/Akiko/CDTV, audio filters, video mixer, HPS file I/O) is
+not part of AExp at all; AExp instantiates `minimig.v` + `cpu_wrapper.v` from `main.vhd`.
+
+| feature (MiSTer) | in AExp | RTL state |
+|---|---|---|
+| chipset OCS / ECS / AGA / A1000 / NTSC (`0xF3` "XXXGEANT") | OCS PAL A500 fixed by `amiga_config.vhd` | **all in the bitstream** (runtime register `chipset_config`; only `chip48` = AGA 64-bit fetch tied 0 in `minimig_m65.v`) |
+| CPU 68000 / 68010 / 68020 (TG68K) + turbo chip/kick, CPU caches (`0xF4`) | fx68k 68000 only | TG68K instance **commented out** in `cpu_wrapper.v` (sources kept in `rtl/tg68k`), outputs tied; turbo/cache logic self-disables with cpucfg=00 |
+| SDRAM/DDR3 CPU port (`ramsel`, `sdram_ctrl`, `ddram_ctrl`, `cpu_cache_new`) | none | `ramsel` **tied 0**, address mapping commented out; controllers not ported |
+| chip RAM 0.5-2 MB (`0xF5` CC) | 512 KB | runtime config; **BRAM sized 512 KB** in `mega65.vhd` |
+| slow RAM 0-1.5 MB (`0xF5` SS) | 512 KB or none (OSM toggle) | runtime config; BRAM 512 KB |
+| fast RAM Zorro II 2/4/8 MB, Zorro III 256/384 MB (`0xF5` FF) | none | autoconfig logic **kept** in `cpu_wrapper.v`, self-disabled (fastramcfg=000); no memory behind it |
+| Kickstart 256 KB / 512 KB / 1 MB (`$E00000` ext) | 256 KB | gary/bankmapper decode all sizes; **BRAM 256 KB**, address bit 18 ignored (F8/FC mirror) |
+| floppies 1-4, normal/turbo speed (`0xF7`) | df0, normal | Paula supports 4 drives + turbo; the host side (`adf_track_engine`, mount wrapper, firmware) is **single-drive** |
+| IDE / Gayle, 4 HDF (`0xF8`) | none | `gayle.v` + `ide.v` **in the tree, disabled** (ide_config=0); the host side (MiSTer's HPS serves the sectors) is missing |
+| RTG, Akiko (CD32 C2P), CDTV, A2065 Ethernet, Toccata, MT32-pi, shared folder | none | top-level parts of `Minimig.sv` not ported; Toccata **commented out** in `minimig.v` |
+| HRTmon / Action Replay cart | off | `cart.v` present, needs a ROM image upload (not done) |
+| RTC ($DC0000) | from the MEGA65 I2C RTC via M2M | present; on the K325T `G_NO_I2C` (no RTC chip) |
+| audio: A500 LED filter, A1200 filter, Paula PWM volume | raw Paula | MiSTer's filters live in `Minimig.sv` (not ported); AExp removed its "Audio improvements" item |
+| video: scandoubler, scanlines, scaler | M2M (ascal + filters, 15 kHz analog) | MiSTer's video mixer replaced by the framework |
+
+So the chipset and the memory decode are complete; what is missing is memory (sizes), the CPU
+alternatives and all host-side services (more drives, IDE, RTG).
+
+## 2. Memory architecture on this board
+
+- **Block RAM**: 445 RAMB36 = 1.95 MB raw.  The A500 uses 320 (chip 512 KB = 128, slow 512 KB
+  = 128, Kickstart 256 KB = 64); framework, QNICE (32), ascal, FIFOs, MIG adapter and the
+  Rockchip bridge use 60.5.  At most ~384 tiles (1.5 MB) can be Amiga memory.
+- **Chip RAM must stay in block RAM.**  minimig has one SRAM-style memory port shared by the
+  CPU and all DMA, time-multiplexed on the 7.09 MHz bus: the address appears at the start of a
+  bus cycle (4 ticks of 28 MHz) and the data is consumed in its second half, i.e. 70-105 ns
+  later, on every slot, with no wait mechanism for DMA.  The MIG's read latency is ~20-30 cycles
+  of its 100 MHz UI clock in the best case, plus refresh (tRFC 160 ns every 7.8 us), ZQ
+  calibration and the CDC: several hundred ns, variable.  MiSTer gets chip RAM from SDRAM with a
+  controller locked to the 7 MHz cycle (fixed CAS timing, refresh in fixed slots); a DDR3
+  equivalent would need a self-written PHY with bounded latency -- not a realistic increment.
+  The same holds for slow RAM (on the chip bus in an A500, contended like chip RAM) and for
+  the Kickstart ROM (served on the same port in minimig's CPU slots).
+- Consequence: chip + slow + Kickstart <= 1.5 MB of block RAM.  Chosen layout (384 tiles):
+  chip 512 KB + slow 512 KB + Kickstart 512 KB, where the slow-RAM tiles double as the upper
+  512 KB of chip RAM in the "1 MB chip" configuration.  2 MB chip (A1200) does not fit.
+- **What can go to DDR3**: memory only the CPU sees and that a real machine may stretch with
+  wait states: **fast RAM** (Zorro II on a 68000 = an A590/A2091-style card; the 68000 waits
+  on /DTACK exactly as on a real card, MiSTer does the same with `ramready`), and RTG/CPU
+  caches in MiSTer's design.  The ADF images already live there.
+- **Cycle equivalence**: everything on the chip bus (chip, slow, Kickstart, custom chips, CIAs)
+  stays cycle-equivalent in every configuration (block RAM, unchanged minimig timing).  Fast RAM
+  in DDR3 and any 68020 are "accelerated machine" by nature: their timing is that of an
+  expansion card, not of an A500, and varies with DDR3 refresh.
+
+## 3. Increments, ranked (value to the user vs risk), and the decision for each
+
+| # | increment | value | risk / cost | decision |
+|---|---|---|---|---|
+| 1 | Kickstart 512 KB (2.04, 3.1 for A500/A600) | high: KS 3.1 is the common A500 upgrade | +64 RAMB36 (444.5 / 445); the QNICE port of the Kickstart BRAM is already the design's critical path (route 8.8 ns of the 10 ns half cycle with 64 tiles): needs a pipelined write port | **now**; ROM size detected from the image's first word (`$1111` = 256 KB, `$1114` = 512 KB); 256 KB ROMs keep the F8/FC mirror |
+| 2 | ECS chipset (8372A/8373) | medium: KS 2+/3.1 ECS modes, productivity/super-hires, 1 MB chip | none: config bit 3 of `0xF3`, RTL already synthesised | **now**, menu OCS / ECS |
+| 3 | 1 MB chip RAM | medium (A500+ layout) | the slow-RAM BRAM becomes chip RAM 512 KB-1 MB; slow RAM then off | **now**, menu radio 512K+512K slow / 512K / 1M chip (forces ECS) |
+| 4 | fast RAM 2/4/8 MB (Zorro II, autoconfig) in DDR3 | high for Workbench/WHDLoad-style software, more free memory | restore `ramsel`/DTACK stretching for `sel_zram` only; DDR3 latency through the M2M Avalon port (shared with ascal + ADF): measure; no BRAM left for a cache (LUT RAM only) | **next**, if 1-3 are solid |
+| 5 | 68020 (TG68K) | medium (with fast RAM) | the instance and its chip-bus FSM (negedge) come back; MiSTer's turbo modes need its SDRAM CPU cache; not cycle-exact by nature | later / leave: little gain without fast RAM, a 68000 A500 is the target |
+| 6 | 2-4 floppy drives | medium (multi-disk games without swapping) | Paula is ready, but the host service is df0-only: track engine, mount wrapper, firmware, menu, DDR3 windows | leave (study in `doc/developers/research_df1.md`) |
+| 7 | HDF / IDE (Gayle) | high with an OS install | the HPS side of MiSTer (sector service) must be written for QNICE or the module | leave: large |
+| 8 | AGA (A1200, kick40068) | high | needs 2 MB chip RAM (512 RAMB36: does not fit) and the 32/64-bit chip bus | leave: not possible in block RAM, chip RAM cannot be in DDR3 deterministically |
+| 9 | RTC from the module | low-medium (dates in KS 2+/Workbench) | the M2M RTC is set by the QNICE firmware from I2C; a module-fed clock needs a new rk_bridge command (shared with the MEGA65 and C64 cores) and firmware or HDL to load it | leave |
+| 10 | turbo floppy, NTSC, A1000 mode, audio filters | low | turbo needs engine validation; NTSC needs a 28.636 MHz clock + 60 Hz modes | leave |
+
+Menu entries come with each increment.  Every increment: build (`K325T/build.sh radxacm3`,
+timing met), JTAG test, demo regression in the default A500 configuration, commit, then flash
+slot 1 only after JTAG verification.

@@ -488,7 +488,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 74;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 84;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -499,7 +499,8 @@ constant OPTM_SIZE         : natural := 74;  -- amount of items including empty 
 -- (A submenu view does NOT show its own label line - see _OPTM_STRUCT in M2M/rom/menu.asm.)
 -- Main menu view = 24 lines, HDMI Settings submenu view = 7 lines,
 -- HDMI Filter submenu view = 12 lines, VGA submenu view = 10 lines,
--- OSM Scaling submenu view = 13 lines, OSM-open key submenu view = 8 lines.
+-- OSM Scaling submenu view = 13 lines, OSM-open key submenu view = 8 lines,
+-- RAM (Amiga hardware) submenu view = 10 lines.
 -- The main view is the tallest, so OPTM_DY tracks it.
 constant OPTM_DX           : natural := 23;
 constant OPTM_DY           : natural := 24;
@@ -512,10 +513,12 @@ constant OPTM_DY           : natural := 24;
 --   line 57: Keyboard "Amiga" radio (C_MENU_KBD_AMIGA); 0 = MEGA65 mode (default)
 --   lines 62..65: OSM-open key radio (C_MENU_OSMKEY_*); Help (62, default) / F11 /
 --                 F13 / MEGA+Run-Stop -> m2m_keyb's menu-open key (qnice_keys bit 7)
---   line 69: Slow RAM (A501) toggle (C_MENU_SLOWRAM), default ON; disabling it
---            removes the 512 KB at $C00000 from the Amiga memory map (issue #20).
---            The HDL cold-boots only the emulated Amiga on a change, so that
---            amiga_config.vhd replays the userio config while QNICE keeps running.
+--   lines 69..79: "RAM: %s" submenu (K325T phase 2, replaces the Slow RAM (A501) toggle
+--            of issue #20): memory radio 72 512K chip + 512K slow (default) / 73 512K
+--            chip only / 74 1M chip (ECS), chipset radio 76 OCS (default) / 77 ECS
+--            (C_MENU_MEM_* / C_MENU_CHIPSET_*). The HDL cold-boots only the emulated
+--            Amiga on a change, so that amiga_config.vhd replays the userio config
+--            while QNICE keeps running.
 -- An OCS PAL Amiga is a 50 Hz machine, so only 50 Hz HDMI modes are offered.
 -- Lines 17..24 (HDMI Filter radio) are NOT decoded in mega65.vhd: the firmware
 -- dispatcher LOAD_HDMI_FILTER in CORE/m2m-rom/m2m-rom.asm reads them via
@@ -605,11 +608,21 @@ constant OPTM_ITEMS        : string :=
    " Back to main menu\n"   &    -- 67: close submenu
 
    "\n"                     &    -- 68: line
-   " Slow RAM (A501)\n"     &    -- 69: single-select toggle, default ON (issue #20)
-   "\n"                     &    -- 70: line
-   " About & Help\n"        &    -- 71: help
-   "\n"                     &    -- 72: line
-   " Close Menu\n";              -- 73: close
+   " RAM: %s\n"             &    -- 69: Amiga hardware submenu (K325T phase 2)
+   " Amiga Hardware\n"      &    -- 70: headline
+   "\n"                     &    -- 71: line
+   " 512K+512K Slow\n"      &    -- 72: memory radio: 512K chip + 512K slow (A501); default
+   " 512K Chip only\n"      &    -- 73: memory radio: chip RAM only
+   " 1M Chip (ECS)\n"       &    -- 74: memory radio: 1 MB chip (ECS Agnus), no slow RAM
+   "\n"                     &    -- 75: line
+   " OCS Chipset\n"         &    -- 76: chipset radio: OCS; default
+   " ECS Chipset\n"         &    -- 77: chipset radio: ECS
+   "\n"                     &    -- 78: line
+   " Back to main menu\n"   &    -- 79: close submenu
+   "\n"                     &    -- 80: line
+   " About & Help\n"        &    -- 81: help
+   "\n"                     &    -- 82: line
+   " Close Menu\n";              -- 83: close
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -626,7 +639,8 @@ constant OPTM_G_HDMIFF     : integer := 7;   -- HDMI flicker-free toggle (issue 
 constant OPTM_G_KBD        : integer := 8;   -- keyboard mapping mode radio (issue #6): Amiga / MEGA65; read in HDL (mega65.vhd)
 constant OPTM_G_OSMKEY     : integer := 9;   -- OSM-open key radio (issue #8): Help / F11 / F13 / MEGA+Run-Stop; read in HDL (mega65.vhd)
 constant OPTM_G_OSM_MODE   : integer := 10;  -- OSM Scaling radio; read in HDL (mega65.vhd)
-constant OPTM_G_SLOWRAM    : integer := 11;  -- Slow RAM (A501) toggle (issues #20/#21); read and locally cold-booted in mega65.vhd
+constant OPTM_G_MEM        : integer := 11;  -- memory radio (K325T; was the Slow RAM toggle of issues #20/#21); read and locally cold-booted in mega65.vhd
+constant OPTM_G_CHIPSET    : integer := 12;  -- chipset radio OCS / ECS (K325T); read and locally cold-booted in mega65.vhd
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -717,12 +731,21 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 67: Close submenu / back to main menu
 
                                              OPTM_G_LINE,                              -- 68: Line
-                                             OPTM_G_SLOWRAM + OPTM_G_SINGLESEL
-                                                            + OPTM_G_STDSEL,           -- 69: Slow RAM (A501) (single-select, default ON)
-                                             OPTM_G_LINE,                              -- 70: Line
-                                             OPTM_G_About   + OPTM_G_HELP,             -- 71: About & Help (WHS(1))
-                                             OPTM_G_LINE,                              -- 72: Line
-                                             OPTM_G_CLOSE                              -- 73: Close Menu
+                                             OPTM_G_SUBMENU,                           -- 69: RAM submenu block: "RAM: %s"
+                                             OPTM_G_TEXT + OPTM_G_HEADLINE,            -- 70: Headline "Amiga Hardware"
+                                             OPTM_G_LINE,                              -- 71: Line
+                                             OPTM_G_MEM + OPTM_G_STDSEL,               -- 72: 512K chip + 512K slow (default)
+                                             OPTM_G_MEM,                               -- 73: 512K chip only
+                                             OPTM_G_MEM,                               -- 74: 1M chip (ECS)
+                                             OPTM_G_LINE,                              -- 75: Line
+                                             OPTM_G_CHIPSET + OPTM_G_STDSEL,           -- 76: OCS (default)
+                                             OPTM_G_CHIPSET,                           -- 77: ECS
+                                             OPTM_G_LINE,                              -- 78: Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 79: Close submenu / back to main menu
+                                             OPTM_G_LINE,                              -- 80: Line
+                                             OPTM_G_About   + OPTM_G_HELP,             -- 81: About & Help (WHS(1))
+                                             OPTM_G_LINE,                              -- 82: Line
+                                             OPTM_G_CLOSE                              -- 83: Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

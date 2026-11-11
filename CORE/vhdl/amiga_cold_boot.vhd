@@ -3,7 +3,8 @@
 --
 -- A normal 68000 reset is a warm boot: Kickstart reuses the ExecBase pointer stored at
 -- Chip RAM $000004 and therefore keeps the old Exec memory list. That is wrong after the
--- OSM changes the physical memory topology (currently the Slow RAM / A501 toggle).
+-- OSM changes the physical memory topology (the Slow RAM / A501 toggle; on the K325T the
+-- memory and chipset radios of the "RAM" submenu: topology_i).
 --
 -- This controller turns such a topology change into a cold boot of the emulated Amiga only.
 -- It holds Minimig in reset and asks the Chip RAM wrapper to clear the two 16-bit words at
@@ -21,7 +22,7 @@ use ieee.numeric_std.all;
 entity amiga_cold_boot is
    port (
       clk_i             : in  std_logic;
-      slow_ram_i        : in  std_logic;
+      topology_i        : in  std_logic_vector(2 downto 0);  -- {ecs, chip1m, slow}
 
       amiga_reset_o     : out std_logic;
       chip_scrub_o      : out std_logic;
@@ -39,7 +40,7 @@ architecture synthesis of amiga_cold_boot is
    constant C_RESET_HOLD_CYCLES : natural := 64;
 
    signal state            : t_state := IDLE;
-   signal slow_ram_applied : std_logic := '1'; -- OSM default is A501 enabled
+   signal topo_applied     : std_logic_vector(2 downto 0) := "001"; -- OSM default: OCS, A501 on
    signal reset_hold_count : natural range 0 to C_RESET_HOLD_CYCLES - 1 := 0;
 
 begin
@@ -60,7 +61,7 @@ begin
       if rising_edge(clk_i) then
          case state is
             when IDLE =>
-               if slow_ram_i /= slow_ram_applied then
+               if topology_i /= topo_applied then
                   reset_hold_count <= C_RESET_HOLD_CYCLES - 1;
                   state            <= ASSERT_RESET;
                end if;
@@ -82,7 +83,7 @@ begin
                -- Capture the latest requested value, not the value that originally triggered
                -- the reset. If it changes again after this edge, IDLE detects the mismatch and
                -- immediately performs another complete cold boot; no request can be lost.
-               slow_ram_applied <= slow_ram_i;
+               topo_applied     <= topology_i;
                state            <= IDLE;
          end case;
       end if;

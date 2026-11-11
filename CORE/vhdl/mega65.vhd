@@ -7,7 +7,11 @@
 -- (28.375 MHz, port A) and QNICE (50 MHz falling edge, port B):
 --   2 x 256K x 8  Chip RAM  (512 KB)   QNICE device 0x0101
 --   2 x 256K x 8  Slow RAM  (512 KB)   QNICE device 0x0102
---   2 x 128K x 8  Kickstart (256 KB)   QNICE device 0x0100 (mandatory auto-load)
+--   2 x 256K x 8  Kickstart (512 KB)   QNICE device 0x0100 (mandatory auto-load)
+-- K325T phase 2 (2026-11-11): the Kickstart BRAM holds 512 KB ROMs (2.04/3.1); a 256 KB
+-- image is mirrored at $F80000/$FC0000 as before (size from the ROM's first word, see
+-- qnice_kick_512).  "1 MB chip" (OSM, ECS) uses the slow-RAM BRAM as the upper 512 KB of
+-- chip RAM (banked address "0001" instead of "1000"); then there is no slow RAM.
 -- Each memory is split into two 8-bit lanes: lane U = data bits 15:8 = the
 -- byte at the even (big-endian first) address, lane L = bits 7:0 = odd byte.
 -- A raw Kickstart ROM dump streamed byte-by-byte by the QNICE Shell therefore
@@ -18,7 +22,8 @@
 --   chip 512 KB at ram_addr(22:19)="0000"
 --   slow 512 KB at ram_addr(22:19)="1000"  (CPU $C00000-$C7FFFF)
 --   kick 256 KB at ram_addr(22:19)="1111"  (CPU $F80000-$FFFFFF, bit 18
---                                           ignored = F8/FC mirror)
+--                                           ignored = F8/FC mirror; a 512 KB ROM uses it)
+--   chip 1 MB: upper half at ram_addr(22:19)="0001" (slow-RAM BRAM, OSM "1M Chip")
 --
 -- Based on the MiSTer2MEGA65 framework template, done by sy2002 and MJoergen
 -- in 2022 and licensed under GPL v3.
@@ -266,8 +271,15 @@ signal main_ram_oe_n          : std_logic;
 
 -- bank selects (combinational decode of the banked address)
 signal main_chip_sel          : std_logic;
-signal main_slow_sel          : std_logic;
+signal main_slow_sel          : std_logic;  -- the slow-RAM BRAM (slow RAM, or chip 512K-1M)
 signal main_kick_sel          : std_logic;
+signal main_kick_addr         : std_logic_vector(18 downto 1);
+
+-- K325T phase 2: Amiga hardware options from the OSM (main_clk, static while the Amiga runs)
+signal main_mem_slow          : std_logic;  -- 512 KB slow RAM at $C00000 (A501)
+signal main_mem_chip1m        : std_logic;  -- 1 MB chip RAM (forces ECS)
+signal main_chip_ecs          : std_logic;  -- ECS chipset (Agnus 8372A + Denise 8373)
+signal main_kick_512          : std_logic;  -- 512 KB Kickstart loaded (from the QNICE side)
 
 -- registered read-mux select: matches the 1-cycle BRAM read latency
 signal main_rd_sel            : std_logic_vector(1 downto 0);   -- 00=chip, 01=slow, 10=kick
@@ -325,8 +337,18 @@ signal main_adf_wr_ack            : std_logic;
 -- meet the falling-edge half-period (10 ns) to the farthest tiles (first R3
 -- run: WNS -0.757 ns on exactly these paths). The kick ROM port (64 tiles)
 -- is required for the mandatory ROM auto-load and meets timing.
+-- K325T phase 2: with 128 tiles (512 KB) the direct port would not (it was already the
+-- critical path with 64: 8.8 ns of route in the 10 ns half cycle).  The QNICE side is now
+-- registered on the falling edge (qnice_kick_p_*) and written into the BRAM on the NEXT
+-- falling edge: a full QNICE cycle (20 ns) for the route to the tiles.  QNICE reads of the
+-- Kickstart device return the byte addressed one QNICE cycle earlier (the Shell only writes).
 signal qnice_kick_we_u        : std_logic;
 signal qnice_kick_we_l        : std_logic;
+signal qnice_kick_p_we_u      : std_logic := '0';
+signal qnice_kick_p_we_l      : std_logic := '0';
+signal qnice_kick_p_addr      : std_logic_vector(18 downto 1) := (others => '0');
+signal qnice_kick_p_data      : std_logic_vector(7 downto 0) := (others => '0');
+signal qnice_kick_512         : std_logic := '0';
 signal qnice_kick_q_u         : std_logic_vector(7 downto 0);
 signal qnice_kick_q_l         : std_logic_vector(7 downto 0);
 
@@ -431,12 +453,16 @@ constant C_MENU_OSMKEY_F11    : natural := 63;
 constant C_MENU_OSMKEY_F13    : natural := 64;
 constant C_MENU_OSMKEY_COMBO  : natural := 65;
 
--- Slow RAM (A501) toggle (issue #20): single-select, default ON. '1' = the classic
--- 512 KB trapdoor expansion at $C00000 is present, '0' = chip-RAM-only A500.
--- Wired into main.vhd -> amiga_config.vhd, which encodes it in the userio memory
--- config (command 0xF5). amiga_cold_boot detects a change, invalidates Kickstart's
--- warm-boot state and resets only the emulated Amiga; QNICE keeps running.
-constant C_MENU_SLOWRAM       : natural := 69;
+-- Amiga hardware submenu "RAM: %s" (K325T phase 2; replaces the Slow RAM (A501) toggle of
+-- issue #20, line 69).  Memory radio (default 512K chip + 512K slow = the A500 + A501 of
+-- AExp V1), chipset radio (default OCS).  Wired into main.vhd -> amiga_config.vhd (userio
+-- commands 0xF3/0xF5).  amiga_cold_boot detects a change, invalidates Kickstart's warm-boot
+-- state and resets only the emulated Amiga; QNICE keeps running.
+constant C_MENU_MEM_SLOW      : natural := 72;   -- 512K chip + 512K slow (default)
+constant C_MENU_MEM_CHIP512   : natural := 73;   -- 512K chip only
+constant C_MENU_MEM_CHIP1M    : natural := 74;   -- 1M chip (ECS Agnus)
+constant C_MENU_CHIPSET_OCS   : natural := 76;   -- OCS (default)
+constant C_MENU_CHIPSET_ECS   : natural := 77;   -- ECS
 
 begin
 
@@ -547,10 +573,17 @@ begin
    -- Memory topology is guest state, so changing it must be a cold boot from
    -- Kickstart's perspective. This local controller deliberately does not drive
    -- either M2M reset: the menu, QNICE and the framework remain alive.
+   -- Amiga hardware options (OSM radios; a radio always has exactly one line set; the
+   -- defaults are the AExp V1 machine: 512K chip + 512K slow, OCS)
+   main_mem_chip1m <= main_osm_control_i(C_MENU_MEM_CHIP1M);
+   main_mem_slow   <= not main_osm_control_i(C_MENU_MEM_CHIP512) and
+                      not main_osm_control_i(C_MENU_MEM_CHIP1M);
+   main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m;
+
    i_amiga_cold_boot : entity work.amiga_cold_boot
       port map (
          clk_i             => main_clk,
-         slow_ram_i        => main_osm_control_i(C_MENU_SLOWRAM),
+         topology_i        => main_chip_ecs & main_mem_chip1m & main_mem_slow,
          amiga_reset_o     => amiga_cold_reset,
          chip_scrub_o      => amiga_chip_scrub,
          chip_scrub_addr_o => amiga_chip_scrub_addr
@@ -637,10 +670,12 @@ begin
          -- (like video_retro15khz_i above).
          keyboard_mode_i      => main_osm_control_i(C_MENU_KBD_AMIGA),
 
-         -- Slow RAM (A501) toggle (issue #20): '1' = 512 KB Slow RAM at $C00000 present.
+         -- Memory / chipset options (K325T phase 2; slow_ram_i = the former issue #20 toggle).
          -- Sampled by amiga_config.vhd during the Amiga-local cold boot above, so the new
          -- topology is installed before Kickstart rebuilds its memory list.
-         slow_ram_i           => main_osm_control_i(C_MENU_SLOWRAM),
+         slow_ram_i           => main_mem_slow,
+         chip1m_i             => main_mem_chip1m,
+         ecs_i                => main_chip_ecs,
 
          -- MEGA65 joysticks and paddles/mouse/potentiometers
          joy_1_up_n_i         => main_joy_1_up_n_i ,
@@ -668,8 +703,27 @@ begin
 
    -- bank decode of the banked word address (see header comment)
    main_chip_sel <= '1' when main_ram_addr(22 downto 19) = "0000" else '0';
-   main_slow_sel <= '1' when main_ram_addr(22 downto 19) = "1000" else '0';
+   -- the slow-RAM BRAM: slow RAM at $C00000 ("1000"), or in the 1 MB chip configuration the
+   -- upper 512 KB of chip RAM ("0001", minimig_sram_bridge with memory_config CC=01)
+   main_slow_sel <= '1' when main_mem_chip1m = '0' and main_ram_addr(22 downto 19) = "1000" else
+                    '1' when main_mem_chip1m = '1' and main_ram_addr(22 downto 19) = "0001" else '0';
    main_kick_sel <= '1' when main_ram_addr(22 downto 19) = "1111" else '0';
+   -- 512 KB Kickstart: address bit 18 selects the half; 256 KB: ignored (F8/FC mirror)
+   main_kick_addr <= (main_ram_addr(18) and main_kick_512) & main_ram_addr(17 downto 1);
+
+   -- 512 KB Kickstart flag: set by the QNICE side while the Shell loads the ROM (the Amiga is
+   -- held in reset then), static afterwards
+   i_cdc_kick_512 : entity work.cdc_stable
+      generic map (
+         G_DATA_SIZE    => 1,
+         G_REGISTER_SRC => false
+      )
+      port map (
+         src_clk_i     => qnice_clk_i,
+         src_data_i(0) => qnice_kick_512,
+         dst_clk_i     => main_clk,
+         dst_data_o(0) => main_kick_512
+      ); -- i_cdc_kick_512
 
    -- The read mux select must match the 1-cycle BRAM read latency: register it.
    -- Within one 7.09 MHz bus cycle the address is stable for 4 clk28 ticks and
@@ -767,6 +821,7 @@ begin
          when C_DEV_AMIGA_KICK =>
             qnice_kick_we_u <= qnice_dev_ce_i and qnice_dev_we_i and not qnice_dev_addr_i(0);
             qnice_kick_we_l <= qnice_dev_ce_i and qnice_dev_we_i and     qnice_dev_addr_i(0);
+            -- (read data: from the pipelined port B, see qnice_kick_p_*)
             if qnice_dev_addr_i(0) = '0' then
                qnice_dev_data_o <= x"00" & qnice_kick_q_u;
             else
@@ -781,6 +836,27 @@ begin
          when others => null;
       end case;
    end process core_specific_devices;
+
+   -- Kickstart write pipeline (K325T phase 2, see the signal declarations): registered on the
+   -- falling QNICE edge, written into the BRAM on the next falling edge.  The ROM size comes
+   -- from the image itself: the second byte of a 256 KB Kickstart is $11 ($1111 4EF9 ...),
+   -- of a 512 KB one $14 ($1114 4EF9 ...).
+   kick_pipe_proc : process (qnice_clk_i)
+   begin
+      if falling_edge(qnice_clk_i) then
+         qnice_kick_p_we_u <= qnice_kick_we_u;
+         qnice_kick_p_we_l <= qnice_kick_we_l;
+         qnice_kick_p_addr <= qnice_dev_addr_i(18 downto 1);
+         qnice_kick_p_data <= qnice_dev_data_i(7 downto 0);
+         if qnice_kick_we_l = '1' and unsigned(qnice_dev_addr_i(18 downto 0)) = 1 then
+            if qnice_dev_data_i(7 downto 0) = x"14" then
+               qnice_kick_512 <= '1';
+            else
+               qnice_kick_512 <= '0';
+            end if;
+         end if;
+      end if;
+   end process kick_pipe_proc;
 
    ---------------------------------------------------------------------------------------------
    -- Dual Clocks: the Amiga's memories
@@ -883,45 +959,46 @@ begin
       ); -- slow_ram_l
 
    -- Kickstart: read-only from the Amiga side (wren_a fixed '0'); written only
-   -- by the QNICE Shell during the mandatory auto-load. The core-side address
-   -- ignores bit 18, mirroring the 256 KB ROM at $F80000 and $FC0000.
+   -- by the QNICE Shell during the mandatory auto-load (through kick_pipe_proc).
+   -- 512 KB (K325T phase 2); for a 256 KB ROM the core-side address ignores
+   -- bit 18, mirroring it at $F80000 and $FC0000 as before.
    kick_rom_u : entity work.dualport_2clk_ram
       generic map (
-         ADDR_WIDTH => 17,
+         ADDR_WIDTH => 18,
          DATA_WIDTH => 8,
          FALLING_B  => true
       )
       port map (
          clock_a   => main_clk,
-         address_a => main_ram_addr(17 downto 1),
+         address_a => main_kick_addr,
          data_a    => (others => '0'),
          wren_a    => '0',
          q_a       => main_kick_q_u,
 
          clock_b   => qnice_clk_i,
-         address_b => qnice_dev_addr_i(17 downto 1),
-         data_b    => qnice_dev_data_i(7 downto 0),
-         wren_b    => qnice_kick_we_u,
+         address_b => qnice_kick_p_addr,
+         data_b    => qnice_kick_p_data,
+         wren_b    => qnice_kick_p_we_u,
          q_b       => qnice_kick_q_u
       ); -- kick_rom_u
 
    kick_rom_l : entity work.dualport_2clk_ram
       generic map (
-         ADDR_WIDTH => 17,
+         ADDR_WIDTH => 18,
          DATA_WIDTH => 8,
          FALLING_B  => true
       )
       port map (
          clock_a   => main_clk,
-         address_a => main_ram_addr(17 downto 1),
+         address_a => main_kick_addr,
          data_a    => (others => '0'),
          wren_a    => '0',
          q_a       => main_kick_q_l,
 
          clock_b   => qnice_clk_i,
-         address_b => qnice_dev_addr_i(17 downto 1),
-         data_b    => qnice_dev_data_i(7 downto 0),
-         wren_b    => qnice_kick_we_l,
+         address_b => qnice_kick_p_addr,
+         data_b    => qnice_kick_p_data,
+         wren_b    => qnice_kick_p_we_l,
          q_b       => qnice_kick_q_l
       ); -- kick_rom_l
 

@@ -112,6 +112,9 @@ entity main is
       -- (default), '0' = chip-RAM-only A500. Static OSM bit, sampled by amiga_config
       -- while the Amiga is in reset and encoded in the replayed userio memory config.
       slow_ram_i              : in  std_logic;
+      -- K325T phase 2: 1 MB chip RAM (the slow-RAM BRAM as the upper 512 KB) and ECS chipset
+      chip1m_i                : in  std_logic := '0';
+      ecs_i                   : in  std_logic := '0';
 
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
@@ -537,6 +540,8 @@ begin
          clk_main_i       => clk_main_i,
          reset_i          => amiga_rst,
          slow_ram_i       => slow_ram_i,
+         chip1m_i         => chip1m_i,
+         ecs_i            => ecs_i,
          io_uio_o         => io_uio,
          io_strobe_o      => cfg_strobe,
          io_din_o         => cfg_din,
