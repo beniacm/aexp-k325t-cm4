@@ -77,6 +77,11 @@ fw.insert(last + 1, '''      ext_hr_clk_i            => mig_ui_clk,
       ext_avm_readdatavalid_i => mem_readdatavalid,
       ext_avm_waitrequest_i   => mem_waitrequest''')
 core = remap(core, CORE, None)
+# core: the K325T stall machinery (stall_clk.vhd): configuration byte from the bridge, diagnostics
+last = max(k for k, l in enumerate(core) if '=>' in l)
+core[last] = core[last].rstrip() + ','
+core.insert(last + 1, '''         k325t_stall_cfg_i       => rk_vid_sel,
+         k325t_stall_diag_o      => stall_diag''')
 
 tpl = open(sys.argv[3]).read()
 tpl = tpl.replace('--@R6_DECLARATIONS@', '\n'.join(decl))

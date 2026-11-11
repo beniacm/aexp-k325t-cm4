@@ -165,6 +165,10 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal rk_joya, rk_joyb  : std_logic_vector(4 downto 0);
    signal rk_ctrl           : std_logic_vector(7 downto 0);
    signal rk_pots           : std_logic_vector(31 downto 0);   -- pot1 x/y, pot2 x/y (SID values)
+   -- stoppable Amiga clock (K325T/stall_clk.vhd): injector configuration = the bridge's VIDEO
+   -- register (command 0x70, no Linux picture in this core), diagnostics = STATUS 60..71
+   signal rk_vid_sel        : std_logic_vector(7 downto 0);
+   signal stall_diag        : std_logic_vector(95 downto 0);
    -- configuration flash (Rockchip pass-through) and warm boot into another slot
    signal fl_sck, fl_cs_n, fl_mosi, fl_miso : std_logic;
    signal ip_toggle         : std_logic;
@@ -305,6 +309,8 @@ begin
          flash_active => open, flash_sck => fl_sck, flash_cs_n => fl_cs_n,
          flash_mosi => fl_mosi, flash_miso => fl_miso,
          iprog_toggle => ip_toggle, iprog_addr => ip_addr,
+         video_sel => rk_vid_sel,
+         video_diag => stall_diag(95 downto 64), video_diag2 => stall_diag(63 downto 0),
          spi_active => open
       );
 
@@ -325,10 +331,12 @@ begin
    kb_left_n <= not rk_ctrl(5);
    rest_n <= not rk_ctrl(1);
 
+   -- in the Amiga's (stoppable) clock: m2m_keyb drives kio8 from main_clk, so a stall must not
+   -- look like the long kio8-high frame sync (a 100 MHz counter would see one in a 5 us stall)
    i_kbd_emu : entity work.m65kbd_emu
-      generic map (SYNC_CYCLES => 500)     -- 5 us at 100 MHz
+      generic map (SYNC_CYCLES => 142)     -- 5 us of machine time at 28.375 MHz
       port map (
-         clk => clk100, kio8 => kio8, kio10 => kio10,
+         clk => main_clk, kio8 => kio8, kio10 => kio10,
          matrix_col_idx => kb_col_idx, matrix_col => kb_col,
          capslock_n => caps_n, restore_n => rest_n,
          up_n => kb_up_n, left_n => kb_left_n          -- cursor up / left keys
@@ -354,10 +362,12 @@ begin
    i_iprog : entity work.rk_iprog
       port map (clk => clk100, iprog_toggle => ip_toggle, iprog_addr => ip_addr);
 
-   -- Amiga mouse: counters from the Rockchip -> quadrature lines + buttons
+   -- Amiga mouse: counters from the Rockchip -> quadrature lines + buttons.  In the Amiga's
+   -- (stoppable) clock, so that steps are 1 us apart in machine time: at 100 MHz several
+   -- transitions could fall into one stall and userio.v would miscount them
    i_mouse : entity work.amiga_mouse
-      generic map (STEP_CLKS => 100)       -- 1 us per transition
-      port map (clk => clk100, pots => rk_pots, port1_n => mouse1_n, port2_n => mouse2_n,
+      generic map (STEP_CLKS => 28)        -- 1 us per transition (machine time)
+      port map (clk => main_clk, pots => rk_pots, port1_n => mouse1_n, port2_n => mouse2_n,
                 core_pots => mouse_pots);
 
    -- the pot values (button levels) into the core's clock domain (upstream: the framework's

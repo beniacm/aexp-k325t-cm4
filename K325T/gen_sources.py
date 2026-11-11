@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Write sources.tcl: the R6 project's synthesis sources (CORE/CORE-R6.xpr) with their
-file types, minus the R6 board top, plus the K325T files and the two files shared with
+file types, minus the R6 board top, CORE/vhdl/clk.vhd replaced by K325T/stall_clk.vhd, plus the K325T files and the two files shared with
 the MEGA65 core port (sd_emu, rk_bridge from ../mega65-core)."""
 import os, re
 here = os.path.dirname(os.path.abspath(__file__))
@@ -12,6 +12,9 @@ for p, body in re.findall(r'<File Path="([^"]+)">(.*?)</File>', x[a:b], re.S):
     if p.endswith('top_mega65-r6.vhd') or 'synthesis' not in body:
         continue
     path = os.path.normpath(p.replace('$PPRDIR', os.path.join(root, 'CORE')))
+    # the K325T's stoppable clock (stall_clk.vhd, entity clk) replaces the upstream clock file
+    if path.endswith(os.path.join('CORE', 'vhdl', 'clk.vhd')):
+        path = os.path.join(here, 'stall_clk.vhd')
     assert os.path.exists(path), path
     m = re.search(r'SFType="([^"]+)"', body)
     ext = path.rsplit('.', 1)[-1]
@@ -21,7 +24,7 @@ for p, body in re.findall(r'<File Path="([^"]+)">(.*?)</File>', x[a:b], re.S):
 mc = os.path.normpath(os.path.join(root, '../mega65-core/src/vhdl'))
 for f in [os.path.join(here, 'top_qmtech_k325t_cm4.vhd'), os.path.join(here, 'avm_mig.vhd'),
           os.path.join(here, 'm65kbd_emu.vhd'), os.path.join(here, 'amiga_mouse.vhd'),
-          os.path.join(here, 'amiga_fastram.vhd'),
+          os.path.join(here, 'amiga_fastram.vhd'), os.path.join(here, 'stall_ctrl.vhd'),
           os.path.join(mc, 'sd_emu.vhdl'),
           os.path.join(mc, 'rk_bridge.vhdl'), os.path.join(mc, 'rk_iprog.vhdl')]:
     assert os.path.exists(f), f

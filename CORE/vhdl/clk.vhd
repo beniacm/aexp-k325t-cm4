@@ -75,7 +75,14 @@ entity clk is
       core_speed_i    : in  unsigned(1 downto 0);
 
       main_clk_o      : out std_logic;   -- Amiga PAL core clock: 28.375000 MHz (ideal: 28.3751600 MHz, -5.6 ppm)
-      main_rst_o      : out std_logic    -- main's reset, synchronized
+      main_rst_o      : out std_logic;   -- main's reset, synchronized
+      -- K325T stall machinery (K325T/stall_clk.vhd); unused here: the source clock is main_clk,
+      -- no stalls, no diagnostics
+      src_clk_o       : out std_logic;
+      stall_cfg_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+      stall_i         : in  std_logic := '0';
+      vsync_i         : in  std_logic := '0';
+      stall_diag_o    : out std_logic_vector(95 downto 0)
    );
 end entity clk;
 
@@ -95,6 +102,7 @@ signal fast_locked        : std_logic;
 
 -- glitch-free mux output feeding the shared output BUFG
 signal main_clk_mmcm      : std_logic;
+signal main_clk           : std_logic;
 
 begin
 
@@ -243,8 +251,12 @@ begin
    main_clk_bufg : BUFG
       port map (
          I => main_clk_mmcm,
-         O => main_clk_o
+         O => main_clk
       );
+
+   main_clk_o   <= main_clk;
+   src_clk_o    <= main_clk;
+   stall_diag_o <= (others => '0');
 
    -------------------------------------
    -- Reset generation
@@ -260,7 +272,7 @@ begin
          -- toggling before the select can ever choose it (load-bearing: BUFGMUX_CTRL would
          -- otherwise forward a dead clock on the first native->fast switch).
          src_arst  => not (main_locked and fast_locked),   -- 1-bit input: Source reset signal.
-         dest_clk  => main_clk_o,        -- 1-bit input: Destination clock.
+         dest_clk  => main_clk,        -- 1-bit input: Destination clock.
          dest_arst => main_rst_o         -- 1-bit output: src_rst synchronized to the destination clock domain.
                                          -- This output is registered.
       );

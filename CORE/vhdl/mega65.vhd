@@ -243,7 +243,13 @@ port (
    cart_a_o                : out unsigned(15 downto 0);
    cart_data_oe_o          : out std_logic; -- 0 : tristate (i.e. input), 1 : output
    cart_d_i                : in  unsigned( 7 downto 0);
-   cart_d_o                : out unsigned( 7 downto 0)
+   cart_d_o                : out unsigned( 7 downto 0);
+
+   -- K325T stall machinery (A1200/DDR3 study stage 1, K325T/stall_clk.vhd): configuration byte
+   -- from the Rockchip bridge (VIDEO register, asynchronous) and the diagnostics (bridge STATUS
+   -- 60..71).  Unconnected on the MEGA65 boards (CORE/vhdl/clk.vhd ignores them).
+   k325t_stall_cfg_i       : in  std_logic_vector(7 downto 0) := (others => '0');
+   k325t_stall_diag_o      : out std_logic_vector(95 downto 0)
 );
 end entity MEGA65_Core;
 
@@ -582,7 +588,13 @@ begin
          sys_clk_i         => clk_i,           -- expects 100 MHz
          core_speed_i      => hr_core_speed,   -- "00"=native (28.375), "01"=fast (28.4375)
          main_clk_o        => main_clk,        -- CORE's 28.375 MHz clock
-         main_rst_o        => main_rst         -- CORE's reset, synchronized
+         main_rst_o        => main_rst,        -- CORE's reset, synchronized
+         -- K325T: stoppable clock (stall_clk.vhd); the R3..R6 clk.vhd ignores these
+         src_clk_o         => open,
+         stall_cfg_i       => k325t_stall_cfg_i,
+         stall_i           => '0',
+         vsync_i           => video_vs_o,
+         stall_diag_o      => k325t_stall_diag_o
       ); -- clk_gen
 
    main_clk_o  <= main_clk;

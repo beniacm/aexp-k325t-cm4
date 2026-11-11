@@ -91,6 +91,9 @@ set_false_path -from [get_cells i_sd_emu/miso_r_reg]
 ## keyboard link (kio8 from the core clock domain, kio10 back; ~1.6 us per half bit)
 set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_kbd_emu/kio8_s_reg*}]
 set_false_path -from [get_cells i_kbd_emu/kio10_reg]
+## (the keyboard emulator runs in the Amiga's main_clk since the stoppable clock, stall_clk.vhd: the
+## key matrix / control levels from rk_bridge's cpuclk registers reach its kio10 register asynchronously)
+set_false_path -from [get_clocks clk] -to [get_cells i_kbd_emu/kio10_reg]
 ## joysticks: quasi-static levels into M2M's debouncers
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_rk_bridge/joy*_reg*}]
 ## framework's external-memory reset synchroniser
