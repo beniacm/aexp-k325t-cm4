@@ -19,11 +19,16 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity tb_stall_ctrl is
+   generic (
+      G_N_NATIVE : natural := 1015808;   -- 31/32 x 2^20 (stage 1); stage 2: 950272 (29/32)
+      G_N_FAST   : natural := 1018045    -- stage 2: 952365
+   );
 end entity;
 
 architecture sim of tb_stall_ctrl is
    constant T     : time := 34.142 ns;
-   constant CAPB  : natural := 12;       -- small cap so that the overload phase is short
+   constant CAPB  : natural := 12;
+   constant KN    : real := real(G_N_NATIVE) / 1048576.0;     -- machine / source edges       -- small cap so that the overload phase is short
    signal clk     : std_logic := '0';
    signal fast    : std_logic := '0';
    signal cfg     : std_logic_vector(7 downto 0) := x"00";
@@ -46,7 +51,7 @@ begin
    clk <= not clk after T / 2 when not done;
 
    dut : entity work.stall_ctrl
-      generic map (G_CAP_BITS => CAPB)
+      generic map (G_CAP_BITS => CAPB, G_N_NATIVE => G_N_NATIVE, G_N_FAST => G_N_FAST)
       port map (clk_i => clk, fast_i => fast, cfg_i => cfg, stall_i => '0', vsync_i => vsync,
                 ce_o => ce, inj_o => inj, lag_o => lag, diag_o => diag);
 
@@ -77,9 +82,9 @@ begin
          end if;
          if inj_d = '1' then
             n_stall_tk <= n_stall_tk + 1;
-            d := d + 31.0 / 32.0;
+            d := d + KN;
          else
-            d := d - 1.0 / 32.0;
+            d := d - (1.0 - KN);
             if d < 0.0 then d := 0.0; end if;
          end if;
          if reset_max then fluid_max <= 0.0; elsif d > fluid_max then fluid_max <= d; end if;
@@ -163,9 +168,9 @@ begin
          t_off := n_src;
          lag_peak := to_integer(lag);
          wait until rising_edge(clk) and lag = 0;
-         check(n_src - t_off <= 32 * (lag_peak + 2),
+         check(real(n_src - t_off) <= real(lag_peak + 2) / (1.0 - KN) + 2.0,
                name & ": lag " & integer'image(lag_peak) & " repaid in " &
-               integer'image(n_src - t_off) & " ticks (<= 32 x (lag + 2))");
+               integer'image(n_src - t_off) & " ticks (<= (lag + 2) / (1 - K))");
          wait for 100 * T;
          snap(0);
          check(to_integer(w1) = obs_lag_max, name & ": lag_max " & integer'image(to_integer(w1)) &
@@ -192,9 +197,9 @@ begin
       a := n_src; b := n_mach;
       wait for 32 * 100000 * T;
       wait until rising_edge(clk);
-      check(n_mach - b = 31 * 100000 or n_mach - b = 31 * 100000 + 1 or n_mach - b = 31 * 100000 - 1,
+      check(abs(real(n_mach - b) - KN * real(n_src - a)) <= 1.5,
             "A: " & integer'image(n_mach - b) & " machine edges in " & integer'image(n_src - a) &
-            " source edges (31/32 = " & integer'image(31 * 100000) & " +- 1)");
+            " source edges (K x source = " & real'image(KN * real(n_src - a)) & " +- 1)");
       snap(0);
       check(w2 = 0 and w1 <= 1, "A: lag now " & integer'image(to_integer(w2)) & ", max " &
             integer'image(to_integer(w1)));
@@ -215,9 +220,9 @@ begin
       b := to_integer(w2);                -- source edges at the snapshot
       page(0);
       -- target = b x 31/32 (exact up to the start-up phase): machine edges = target - lag (+-1)
-      check(abs(real(a) - (real(b) * 31.0 / 32.0 - real(to_integer(w2)))) <= 1.5,
+      check(abs(real(a) - (real(b) * KN - real(to_integer(w2)))) <= 1.5,
             "whole run: " & integer'image(a) & " machine edges for " & integer'image(b) &
-            " source edges (31/32 = " & real'image(real(b) * 31.0 / 32.0) & ", lag " &
+            " source edges (K x source = " & real'image(real(b) * KN) & ", lag " &
             integer'image(to_integer(w2)) & ")");
       page(2);
       report "vsyncs " & integer'image(to_integer(w0)) & ", last at source tick " &
@@ -232,8 +237,9 @@ begin
       a := n_src; b := n_mach;
       wait for 1048576 * T;
       wait until rising_edge(clk);
-      check(abs(real(n_mach - b) - 1018045.0) <= 1.5,
-            "F: fast: " & integer'image(n_mach - b) & " machine edges in 2^20 source edges (1018045)");
+      check(abs(real(n_mach - b) - real(G_N_FAST)) <= 1.5,
+            "F: fast: " & integer'image(n_mach - b) & " machine edges in 2^20 source edges (" &
+            integer'image(G_N_FAST) & ")");
       fast <= '0';
       wait for 1000 * T;
       ---------------------------------------------------------------- G: overload, lag cap

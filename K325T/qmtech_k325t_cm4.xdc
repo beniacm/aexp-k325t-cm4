@@ -91,6 +91,13 @@ set_false_path -from [get_cells i_sd_emu/miso_r_reg]
 ## keyboard link (kio8 from the core clock domain, kio10 back; ~1.6 us per half bit)
 set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_kbd_emu/kio8_s_reg*}]
 set_false_path -from [get_cells i_kbd_emu/kio10_reg]
+## avm_mig's debug state (memory clock) into the stall monitor's probe sampler (debug only)
+set_false_path -to [get_cells mig_legacy_s_reg[0]]
+## line latency meter: configuration byte from the bridge (clk162) and its readout to the bridge
+set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/cfg_s1_reg*}]
+set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg* || NAME =~ i_lat_meter/r6_reg*}] \
+               -to   [get_clocks clk162]
+set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_avm_mig/*}] -to [get_cells -hierarchical -filter {NAME =~ CORE/clk_gen/i_stall_ctrl/pr_d_reg*}]
 ## joysticks: quasi-static levels into M2M's debouncers
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_rk_bridge/joy*_reg*}]
 ## framework's external-memory reset synchroniser
@@ -130,3 +137,6 @@ set_property BITSTREAM.CONFIG.CONFIGFALLBACK ENABLE [current_design]
 ## rk_iprog: request toggle and address come from the bridge clock (synchronised / stable)
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ i_iprog/tog_s_reg[0]*}]
 set_false_path -to [get_cells -hierarchical -filter {NAME =~ i_iprog/addr_s_reg*}]
+## the core's result mailbox (main_clk, changes only when the Amiga writes $C0-$FF) read by lat_meter
+set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/main_mbox_reg*}] \
+               -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]

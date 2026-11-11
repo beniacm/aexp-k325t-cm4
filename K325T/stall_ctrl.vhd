@@ -1,7 +1,8 @@
 --------------------------------------------------------------------------------
 -- stall_ctrl.vhd -- catch-up clock controller for a stoppable Amiga clock (K325T, A1200 study
--- stage 1).  Runs on the UNGATED source clock clk_i = 28.375 MHz x 32/31 = 29.290 MHz (the
--- native MMCM's VCO / 38.75) and decides for every source edge whether the next edge reaches
+-- stage 1).  Runs on the UNGATED source clock clk_i (28.375 MHz x 32/31 = 29.290 MHz in stage 1,
+-- x 32/29 = 31.310 MHz since stage 2; the native MMCM's VCO / 38.75 resp. / 36.25; the generics
+-- give the ratio) and decides for every source edge whether the next edge reaches
 -- the Amiga (ce_o -> BUFGCE of main_clk).
 --
 -- DDS: credit (in 2^-20 machine ticks) grows by N per source edge, N = 31/32 x 2^20 (native,
@@ -19,7 +20,8 @@
 --
 -- Configuration: the Rockchip bridge's VIDEO byte (command 0x70, unused by this core) =
 -- 1 rrr vvvv: register rrr := vvvv (bytes with bit 7 = 0 are ignored, m65d writes only 0..3):
---   0 mode: b0 injector on, b1 native rate (flicker-free ignored)
+--   0 mode: b0 injector on, b1 native rate (flicker-free ignored), b2 avm_mig without the
+--           burst abort on M2M resets (the old behaviour, to reproduce the frozen picture)
 --                                 1 e (rate exponent)      2 m (rate mantissa)
 --   3 de (duration exponent)      4 dm (duration mantissa)  5 j (duration jitter bits)
 --   6 b3 toggles = take a snapshot of all statistics, b2..0 = page shown in diag_o
@@ -32,7 +34,10 @@
 --   page 3: W0 = forgiven ticks (lag cap), W1:W2 = source tick count at the snapshot
 --   page 4: W0 = x"A1200001" (id) , W1:W2 = machine (passed) ticks at the snapshot
 --   page 5: W0 = probe(31:0) at the snapshot, W1 = probe(22) falling edges, W2 = ticks with any of
---           probe(26:24) set;  page 6: W0 = probe(63:32), W1 = probe(23) falling edges (debug)
+--           probe(26:24) set;  page 6: W0 = probe(63:32), W1 = chip cache line fills, W2 = write-backs
+--   register 7 bits 3..1 + register 0 bit 3: the chip cache (chip_cache.vhd), taken at a full reset:
+--           r7 b1 = chip RAM through the cache, b2 = 2 MB chip RAM, b3 & r0 b3 = shrink (sets / 1, 8,
+--           64, 512)
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -49,12 +54,18 @@ entity stall_ctrl is
       fast_i     : in  std_logic;          -- flicker-free target select (asynchronous)
       cfg_i      : in  std_logic_vector(7 downto 0);   -- bridge VIDEO byte (asynchronous)
       stall_i    : in  std_logic := '0';   -- external stall request (synchronous to clk_i)
+      miss_i     : in  std_logic := '0';   -- combinational stall (cache miss): blocks THIS edge;
+                                           -- must be stable before the clk_i edge it gates
       vsync_i    : in  std_logic;          -- machine vsync (a main_clk register)
       probe_i    : in  std_logic_vector(63 downto 0) := (others => '0');  -- main_clk signals (debug)
       ce_o       : out std_logic;          -- BUFGCE enable: '1' = the next edge passes
       inj_o      : out std_logic;          -- injected stall active (for a probe / test bench)
       lag_o      : out unsigned(31 downto 0);           -- current lag, machine ticks
-      diag_o     : out std_logic_vector(95 downto 0)
+      diag_o     : out std_logic_vector(95 downto 0);
+      mode_o     : out std_logic_vector(3 downto 0);   -- register 0 (b2: test switch for the top)
+      cache_o    : out std_logic_vector(3 downto 0);   -- register 7 bits 3..1 (cache) & register 0 bit 3
+      fills_i    : in  unsigned(31 downto 0) := (others => '0');   -- chip cache statistics (clk_i)
+      wbacks_i   : in  unsigned(31 downto 0) := (others => '0')
    );
 end entity stall_ctrl;
 
@@ -91,6 +102,7 @@ architecture rtl of stall_ctrl is
    signal we_fall, oe_fall, rst_cyc : unsigned(31 downto 0) := (others => '0');
    signal s_probe  : std_logic_vector(63 downto 0) := (others => '0');
    signal s_we_fall, s_oe_fall, s_rst_cyc : unsigned(31 downto 0) := (others => '0');
+   signal s_fills, s_wbacks : unsigned(31 downto 0) := (others => '0');
 
    -- snapshot
    signal s_src, s_mach, s_vs_ts : unsigned(63 downto 0) := (others => '0');
@@ -99,10 +111,12 @@ architecture rtl of stall_ctrl is
    signal s_seq    : unsigned(7 downto 0) := (others => '0');
    signal diag     : std_logic_vector(95 downto 0) := (others => '0');
 begin
-   ce_o   <= ce;
+   ce_o   <= ce and not miss_i;          -- the BUFGCE enable (combinational miss path)
    inj_o  <= inj;
    lag_o  <= lag_now;
    diag_o <= diag;
+   mode_o <= std_logic_vector(regs(0));
+   cache_o <= std_logic_vector(regs(7)(3 downto 1)) & regs(0)(3);
 
    process (clk_i)
       variable cr      : unsigned(40 downto 0);
@@ -155,10 +169,15 @@ begin
 
          ---------------------------------------------------------------- DDS / catch-up
          stall := inj or stall_i;
+         -- the edge happening now was granted by ce (decided at the previous edge); a miss blocked
+         -- it: refund the machine tick (the credit was spent when it was granted)
          if fast_s2 = '1' and regs(0)(1) = '0' then
             cr := resize(credit, 41) + G_N_FAST;
          else
             cr := resize(credit, 41) + G_N_NATIVE;
+         end if;
+         if ce = '1' and miss_i = '1' then
+            cr := cr + C_ONE;
          end if;
          pass := '0';
          if cr >= C_ONE and stall = '0' then
@@ -174,13 +193,15 @@ begin
 
          ---------------------------------------------------------------- statistics
          src_cnt <= src_cnt + 1;
-         if pass = '1' then
+         if pass = '1' and not (ce = '1' and miss_i = '1') then
             mach_cnt <= mach_cnt + 1;
-         elsif stall = '0' then
+         elsif pass = '0' and ce = '1' and miss_i = '1' then
+            mach_cnt <= mach_cnt - 1;
+         elsif pass = '0' and stall = '0' and miss_i = '0' then
             drops <= drops + 1;
          end if;
-         stall_d <= stall;
-         if stall = '1' then
+         stall_d <= stall or miss_i;
+         if stall = '1' or miss_i = '1' then
             stall_tk <= stall_tk + 1;
             if stall_d = '0' then
                stalls <= stalls + 1;
@@ -227,6 +248,8 @@ begin
             s_we_fall  <= we_fall;
             s_oe_fall  <= oe_fall;
             s_rst_cyc  <= rst_cyc;
+            s_fills    <= fills_i;
+            s_wbacks   <= wbacks_i;
          end if;
          case to_integer(regs(6)(2 downto 0)) is
             when 0 => diag <= std_logic_vector(regs(1)) & std_logic_vector(regs(2)) &
@@ -240,7 +263,7 @@ begin
             when 3 => diag <= std_logic_vector(s_forgiven) & std_logic_vector(s_src);
             when 4 => diag <= x"A1200001" & std_logic_vector(s_mach);
             when 5 => diag <= s_probe(31 downto 0) & std_logic_vector(s_we_fall) & std_logic_vector(s_rst_cyc);
-            when 6 => diag <= s_probe(63 downto 32) & std_logic_vector(s_oe_fall) & x"00000000";
+            when 6 => diag <= s_probe(63 downto 32) & std_logic_vector(s_fills) & std_logic_vector(s_wbacks);
             when others => diag <= (others => '0');
          end case;
       end if;

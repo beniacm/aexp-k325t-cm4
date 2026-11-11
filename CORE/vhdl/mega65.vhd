@@ -249,7 +249,22 @@ port (
    -- from the Rockchip bridge (VIDEO register, asynchronous) and the diagnostics (bridge STATUS
    -- 60..71).  Unconnected on the MEGA65 boards (CORE/vhdl/clk.vhd ignores them).
    k325t_stall_cfg_i       : in  std_logic_vector(7 downto 0) := (others => '0');
-   k325t_stall_diag_o      : out std_logic_vector(95 downto 0)
+   k325t_stall_diag_o      : out std_logic_vector(95 downto 0);
+   k325t_probe_i           : in  std_logic_vector(23 downto 0) := (others => '0');  -- debug (any clock)
+   k325t_stall_mode_o      : out std_logic_vector(3 downto 0);   -- controller register 0
+   -- K325T stage 2: the chip cache's MIG line port (hr_clk = MIG ui_clk; mig_arb.vhd in the top)
+   k325t_lp_req_o          : out std_logic;
+   k325t_lp_we_o           : out std_logic;
+   k325t_lp_addr_o         : out std_logic_vector(27 downto 0);
+   k325t_lp_wdata_o        : out std_logic_vector(511 downto 0);
+   k325t_lp_busy_i         : in  std_logic := '0';
+   k325t_lp_rvalid_i       : in  std_logic := '0';
+   k325t_lp_rdata_i        : in  std_logic_vector(127 downto 0) := (others => '0');
+   k325t_lp_done_i         : in  std_logic := '0';
+   -- K325T stage 2: result mailbox = the last values the Amiga wrote to chip RAM $0000C0-$0000FF
+   -- (68000 vectors 48-63, unused): test programs leave their result block there, so that a board
+   -- without a picture can read it (stall controller page 7, lat_meter.vhd); word i = bits 16i+15..16i
+   k325t_mbox_o            : out std_logic_vector(511 downto 0)
 );
 end entity MEGA65_Core;
 
@@ -352,6 +367,21 @@ signal amiga_cold_reset       : std_logic;
 signal amiga_chip_scrub       : std_logic;
 signal amiga_chip_scrub_addr  : std_logic_vector(17 downto 0);
 signal main_chip_addr         : std_logic_vector(17 downto 0);
+-- K325T stage 2: chip / slow RAM through chip_cache.vhd (identity mode = phase 2's layout)
+signal main_src_clk           : std_logic;
+signal main_cache_cfg         : std_logic_vector(3 downto 0);
+signal main_cache_on          : std_logic;   -- the cache's latched mode
+signal main_cache_miss        : std_logic;
+signal main_cache_rdata       : std_logic_vector(15 downto 0);
+signal main_cache_fills       : unsigned(31 downto 0);
+signal main_cache_wbacks      : unsigned(31 downto 0);
+signal main_cc_chip_sel       : std_logic;
+signal main_cc_slow_sel       : std_logic;
+signal main_cc_addr           : std_logic_vector(20 downto 1);
+signal main_cc_wdata          : std_logic_vector(15 downto 0);
+signal main_cc_we_n, main_cc_oe_n, main_cc_bhe_n, main_cc_ble_n : std_logic;
+signal main_mem_chip2m        : std_logic;   -- 2 MB chip RAM (cache mode only)
+signal main_mbox              : std_logic_vector(511 downto 0) := (others => '0');
 signal main_chip_data_u       : std_logic_vector(7 downto 0);
 signal main_chip_data_l       : std_logic_vector(7 downto 0);
 signal main_chip_wren_u       : std_logic;
@@ -590,16 +620,21 @@ begin
          main_clk_o        => main_clk,        -- CORE's 28.375 MHz clock
          main_rst_o        => main_rst,        -- CORE's reset, synchronized
          -- K325T: stoppable clock (stall_clk.vhd); the R3..R6 clk.vhd ignores these
-         src_clk_o         => open,
+         src_clk_o         => main_src_clk,
          stall_cfg_i       => k325t_stall_cfg_i,
          stall_i           => '0',
          vsync_i           => video_vs_o,
-         probe_i           => "00000000000000000000000000" & main_chip_ecs & main_mem_chip1m & main_mem_slow &
+         probe_i           => "00" & k325t_probe_i & main_chip_ecs & main_mem_chip1m & main_mem_slow &
                               main_fast_size & main_kick_512 & main_pwr_led & main_fdd_led &
                               amiga_chip_scrub & video_hblank_o & video_vs_o & main_reset_core_i &
                               main_reset_m2m_i & amiga_cold_reset & main_ram_oe_n & main_ram_we_n &
                               main_ram_addr,
-         stall_diag_o      => k325t_stall_diag_o
+         stall_diag_o      => k325t_stall_diag_o,
+         stall_mode_o      => k325t_stall_mode_o,
+         stall_cache_o     => main_cache_cfg,
+         miss_i            => main_cache_miss,
+         cache_fills_i     => main_cache_fills,
+         cache_wbacks_i    => main_cache_wbacks
       ); -- clk_gen
 
    main_clk_o  <= main_clk;
@@ -645,8 +680,10 @@ begin
    -- defaults are the AExp V1 machine: 512K chip + 512K slow, OCS)
    main_mem_chip1m <= main_osm_control_i(C_MENU_MEM_CHIP1M);
    main_mem_slow   <= not main_osm_control_i(C_MENU_MEM_CHIP512) and
-                      not main_osm_control_i(C_MENU_MEM_CHIP1M);
-   main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m;
+                      not main_osm_control_i(C_MENU_MEM_CHIP1M) and not main_mem_chip2m;
+   -- stage 2: 2 MB chip RAM only with chip RAM in the cache (r7 b2 of the stall controller)
+   main_mem_chip2m <= main_cache_cfg(2) and main_cache_on;
+   main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m or main_mem_chip2m;
    main_fast_size  <= "11" when main_osm_control_i(C_MENU_FAST_8M) = '1' else
                       "10" when main_osm_control_i(C_MENU_FAST_4M) = '1' else
                       "01" when main_osm_control_i(C_MENU_FAST_2M) = '1' else "00";
@@ -654,7 +691,7 @@ begin
    i_amiga_cold_boot : entity work.amiga_cold_boot
       port map (
          clk_i             => main_clk,
-         topology_i        => main_fast_size & main_chip_ecs & main_mem_chip1m & main_mem_slow,
+         topology_i        => main_fast_size & main_chip_ecs & (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
          cold_req_i        => main_reset_m2m_i,
          amiga_reset_o     => amiga_cold_reset,
          chip_scrub_o      => amiga_chip_scrub,
@@ -747,6 +784,7 @@ begin
          -- topology is installed before Kickstart rebuilds its memory list.
          slow_ram_i           => main_mem_slow,
          chip1m_i             => main_mem_chip1m,
+         chip2m_i             => main_mem_chip2m,
          ecs_i                => main_chip_ecs,
          fast_size_i          => main_fast_size,
          fast_sel_o           => main_fast_sel,
@@ -955,89 +993,71 @@ begin
    -- During an Amiga-local cold boot only, the existing Chip RAM port is
    -- overridden for two clocks to clear $000004-$000007. Both byte lanes are
    -- written together; the 68000 and chipset are held in reset throughout.
-   main_chip_addr   <= amiga_chip_scrub_addr when amiga_chip_scrub = '1' else main_ram_addr(18 downto 1);
-   main_chip_data_u <= (others => '0') when amiga_chip_scrub = '1' else main_ram_wrdata(15 downto 8);
-   main_chip_data_l <= (others => '0') when amiga_chip_scrub = '1' else main_ram_wrdata(7 downto 0);
-   main_chip_wren_u <= '1' when amiga_chip_scrub = '1' else
-                       main_chip_sel and not main_ram_we_n and not main_ram_bhe_n;
-   main_chip_wren_l <= '1' when amiga_chip_scrub = '1' else
-                       main_chip_sel and not main_ram_we_n and not main_ram_ble_n;
+   -- K325T stage 2: chip and slow RAM in chip_cache.vhd (the same 256 tiles).  Identity mode (cache
+   -- off, the default) is phase 2's layout and timing; cache mode keeps them in DDR3 behind the
+   -- block-RAM cache and stops the Amiga clock on a miss.  amiga_cold_boot's scrub of $4 enters as
+   -- an ordinary chip write (the 68000 and the chipset are held in reset meanwhile).
+   main_cc_chip_sel <= '1' when amiga_chip_scrub = '1' else
+                       '1' when main_ram_addr(22 downto 21) = "00" else '0';
+   main_cc_slow_sel <= '0' when amiga_chip_scrub = '1' else
+                       '1' when main_mem_chip1m = '0' and main_ram_addr(22 downto 19) = "1000" else '0';
+   main_cc_addr     <= "00" & amiga_chip_scrub_addr when amiga_chip_scrub = '1' else main_ram_addr(20 downto 1);
+   main_cc_wdata    <= (others => '0') when amiga_chip_scrub = '1' else main_ram_wrdata;
+   main_cc_we_n     <= '0' when amiga_chip_scrub = '1' else main_ram_we_n;
+   main_cc_oe_n     <= '1' when amiga_chip_scrub = '1' else main_ram_oe_n;
+   main_cc_bhe_n    <= '0' when amiga_chip_scrub = '1' else main_ram_bhe_n;
+   main_cc_ble_n    <= '0' when amiga_chip_scrub = '1' else main_ram_ble_n;
 
-   chip_ram_u : entity work.dualport_2clk_ram
-      generic map (
-         ADDR_WIDTH => 18,
-         DATA_WIDTH => 8
-      )
+   -- result mailbox (see the port): snoops chip RAM writes to word addresses $60-$7F
+   p_mbox : process (main_clk)
+      variable i : natural range 0 to 31;
+   begin
+      if rising_edge(main_clk) then
+         if main_cc_we_n = '0' and main_cc_chip_sel = '1' and amiga_chip_scrub = '0' and
+            main_cc_addr(20 downto 7) = "00000000000000" and main_cc_addr(6 downto 5) = "11" then
+            i := to_integer(unsigned(main_cc_addr(5 downto 1)));
+            if main_cc_bhe_n = '0' then main_mbox(16 * i + 15 downto 16 * i + 8) <= main_cc_wdata(15 downto 8); end if;
+            if main_cc_ble_n = '0' then main_mbox(16 * i + 7 downto 16 * i) <= main_cc_wdata(7 downto 0); end if;
+         end if;
+      end if;
+   end process p_mbox;
+   k325t_mbox_o <= main_mbox;
+
+   i_chip_cache : entity work.chip_cache
       port map (
-         clock_a   => main_clk,
-         address_a => main_chip_addr,
-         data_a    => main_chip_data_u,
-         wren_a    => main_chip_wren_u,
-         q_a       => main_chip_q_u,
+         clk_i        => main_src_clk,
+         reset_i      => main_reset_m2m_i,
+         cache_on_i   => main_cache_cfg(1),
+         shrink_i     => main_cache_cfg(0) & main_cache_cfg(3),
+         chip1m_i     => main_mem_chip1m,
+         chip_sel_i   => main_cc_chip_sel,
+         slow_sel_i   => main_cc_slow_sel,
+         addr_i       => main_cc_addr,
+         wdata_i      => main_cc_wdata,
+         we_n_i       => main_cc_we_n,
+         oe_n_i       => main_cc_oe_n,
+         bhe_n_i      => main_cc_bhe_n,
+         ble_n_i      => main_cc_ble_n,
+         rdata_o      => main_cache_rdata,
+         miss_o       => main_cache_miss,
+         fills_o      => main_cache_fills,
+         wbacks_o     => main_cache_wbacks,
+         mode_o       => main_cache_on,
+         ui_clk_i     => hr_clk_i,
+         lp_req_o     => k325t_lp_req_o,
+         lp_we_o      => k325t_lp_we_o,
+         lp_addr_o    => k325t_lp_addr_o,
+         lp_wdata_o   => k325t_lp_wdata_o,
+         lp_busy_i    => k325t_lp_busy_i,
+         lp_rvalid_i  => k325t_lp_rvalid_i,
+         lp_rdata_i   => k325t_lp_rdata_i,
+         lp_done_i    => k325t_lp_done_i
+      ); -- i_chip_cache
 
-         clock_b   => '0',
-         address_b => (others => '0'),
-         data_b    => (others => '0'),
-         wren_b    => '0',
-         q_b       => open
-      ); -- chip_ram_u
-
-   chip_ram_l : entity work.dualport_2clk_ram
-      generic map (
-         ADDR_WIDTH => 18,
-         DATA_WIDTH => 8
-      )
-      port map (
-         clock_a   => main_clk,
-         address_a => main_chip_addr,
-         data_a    => main_chip_data_l,
-         wren_a    => main_chip_wren_l,
-         q_a       => main_chip_q_l,
-
-         clock_b   => '0',
-         address_b => (others => '0'),
-         data_b    => (others => '0'),
-         wren_b    => '0',
-         q_b       => open
-      ); -- chip_ram_l
-
-   slow_ram_u : entity work.dualport_2clk_ram
-      generic map (
-         ADDR_WIDTH => 18,
-         DATA_WIDTH => 8
-      )
-      port map (
-         clock_a   => main_clk,
-         address_a => main_ram_addr(18 downto 1),
-         data_a    => main_ram_wrdata(15 downto 8),
-         wren_a    => main_slow_sel and not main_ram_we_n and not main_ram_bhe_n,
-         q_a       => main_slow_q_u,
-
-         clock_b   => '0',
-         address_b => (others => '0'),
-         data_b    => (others => '0'),
-         wren_b    => '0',
-         q_b       => open
-      ); -- slow_ram_u
-
-   slow_ram_l : entity work.dualport_2clk_ram
-      generic map (
-         ADDR_WIDTH => 18,
-         DATA_WIDTH => 8
-      )
-      port map (
-         clock_a   => main_clk,
-         address_a => main_ram_addr(18 downto 1),
-         data_a    => main_ram_wrdata(7 downto 0),
-         wren_a    => main_slow_sel and not main_ram_we_n and not main_ram_ble_n,
-         q_a       => main_slow_q_l,
-
-         clock_b   => '0',
-         address_b => (others => '0'),
-         data_b    => (others => '0'),
-         wren_b    => '0',
-         q_b       => open
-      ); -- slow_ram_l
+   main_chip_q_u <= main_cache_rdata(15 downto 8);
+   main_chip_q_l <= main_cache_rdata(7 downto 0);
+   main_slow_q_u <= main_cache_rdata(15 downto 8);
+   main_slow_q_l <= main_cache_rdata(7 downto 0);
 
    -- Kickstart: read-only from the Amiga side (wren_a fixed '0'); written only
    -- by the QNICE Shell during the mandatory auto-load (through kick_pipe_proc).

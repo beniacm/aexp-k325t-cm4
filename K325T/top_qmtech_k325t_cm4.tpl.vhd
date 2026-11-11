@@ -169,6 +169,40 @@ architecture synthesis of qmtech_k325t_cm4 is
    -- register (command 0x70, no Linux picture in this core), diagnostics = STATUS 60..71
    signal rk_vid_sel        : std_logic_vector(7 downto 0);
    signal stall_diag        : std_logic_vector(95 downto 0);
+   signal mig_dbg           : std_logic_vector(23 downto 0);   -- avm_mig state (debug probe)
+   -- avm_mig's side of the MIG arbiter (mig_arb.vhd: line port first, avm_mig second)
+   signal c1_addr           : std_logic_vector(27 downto 0);
+   signal c1_cmd            : std_logic_vector(2 downto 0);
+   signal c1_en, c1_rdy, c1_wend, c1_wren, c1_wrdy, c1_rdv : std_logic;
+   signal c1_wdata, c1_rdata : std_logic_vector(127 downto 0);
+   signal c1_wmask          : std_logic_vector(15 downto 0);
+   -- line port (latency meter now; the chip-RAM cache later)
+   signal lp_req, lp_we, lp_busy, lp_rvalid, lp_done : std_logic;
+   signal lp_addr           : std_logic_vector(27 downto 0);
+   signal lp_wdata          : std_logic_vector(511 downto 0);
+   signal lp_rdata          : std_logic_vector(127 downto 0);
+   signal lat_page7         : std_logic;
+   -- the line port's two users: the chip cache (first) and the latency meter
+   signal cc_req, cc_we, cc_busy, cc_rvalid, cc_done : std_logic;
+   signal cc_addr           : std_logic_vector(27 downto 0);
+   signal cc_wdata          : std_logic_vector(511 downto 0);
+   signal lm_req, lm_we, lm_busy, lm_done : std_logic;
+   signal lm_addr           : std_logic_vector(27 downto 0);
+   signal lm_wdata          : std_logic_vector(511 downto 0);
+   signal lp_pend_c, lp_pend_m, lp_own_m, lp_act : std_logic := '0';
+   -- Avalon debug (stage 2 A): the write burst avm_mig is in, as seen on its Avalon input
+   signal ad_wl, ad_bc       : unsigned(7 downto 0) := (others => '0');
+   signal ad_waddr, ad_raddr : std_logic_vector(31 downto 0) := (others => '0');
+   signal ad_since, ad_tw    : unsigned(31 downto 0) := (others => '0');
+   signal ad_nw, ad_nr       : unsigned(15 downto 0) := (others => '0');
+   signal ad_rbc             : std_logic_vector(7 downto 0) := (others => '0');
+   signal ad_dbg             : std_logic_vector(191 downto 0);
+   signal amiga_mbox         : std_logic_vector(511 downto 0);   -- the core's result mailbox
+   signal lat_aux           : std_logic_vector(95 downto 0);
+   signal diag_out          : std_logic_vector(95 downto 0);
+   signal stall_mode        : std_logic_vector(3 downto 0);    -- stall controller register 0
+   signal mig_legacy_s      : std_logic_vector(1 downto 0) := "00";   -- b2: old avm_mig behaviour
+   signal mig_avm_rst       : std_logic;
    -- configuration flash (Rockchip pass-through) and warm boot into another slot
    signal fl_sck, fl_cs_n, fl_mosi, fl_miso : std_logic;
    signal ip_toggle         : std_logic;
@@ -177,6 +211,7 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal pots_s1, core_pots : std_logic_vector(31 downto 0) := (others => '1');   -- in main_clk
    attribute ASYNC_REG : string;
    attribute ASYNC_REG of pots_s1, core_pots : signal is "TRUE";
+   attribute ASYNC_REG of mig_legacy_s : signal is "TRUE";
    signal joya_n, joyb_n    : std_logic_vector(4 downto 0);
    signal mouse1_n, mouse2_n : std_logic_vector(4 downto 0);   -- quadrature mouse lines
    signal caps_n, rest_n    : std_logic;
@@ -274,21 +309,113 @@ begin
 
    mem_not_ready <= mig_ui_rst or not mig_calib;
 
+   -- test switch (stall controller register 0 bit 2): the old wiring, no burst abort on M2M resets
+   process (mig_ui_clk)
+   begin
+      if rising_edge(mig_ui_clk) then
+         mig_legacy_s <= mig_legacy_s(0) & stall_mode(2);
+      end if;
+   end process;
+   mig_avm_rst <= hr_rst and not mig_legacy_s(1);
+
    i_avm_mig : entity work.avm_mig
       generic map (ADDR_BITS => 27)
       port map (
          clk => mig_ui_clk, rst => mem_not_ready,
          -- the framework's memory-side reset (every M2M reset): aborts a burst cleanly (avm_mig.vhd)
-         avm_rst => hr_rst,
+         avm_rst => mig_avm_rst, old_i => mig_legacy_s(1), dbg => mig_dbg,
          avm_write => mem_write, avm_read => mem_read, avm_address => mem_address,
          avm_writedata => mem_writedata, avm_byteenable => mem_byteenable,
          avm_burstcount => mem_burstcount, avm_readdata => mem_readdata,
          avm_readdatavalid => mem_readdatavalid, avm_waitrequest => mem_waitrequest,
+         app_addr => c1_addr, app_cmd => c1_cmd, app_en => c1_en, app_rdy => c1_rdy,
+         app_wdf_data => c1_wdata, app_wdf_end => c1_wend, app_wdf_wren => c1_wren,
+         app_wdf_mask => c1_wmask, app_wdf_rdy => c1_wrdy, app_rd_data => c1_rdata,
+         app_rd_data_valid => c1_rdv
+      );
+
+   -- the MIG's native UI shared by the line port (priority) and avm_mig (A1200 study C2)
+   i_mig_arb : entity work.mig_arb
+      port map (
+         clk => mig_ui_clk, rst => mem_not_ready,
+         lp_req => lp_req, lp_we => lp_we, lp_addr => lp_addr, lp_wdata => lp_wdata,
+         lp_busy => lp_busy, lp_rvalid => lp_rvalid, lp_rdata => lp_rdata, lp_done => lp_done,
+         c1_app_addr => c1_addr, c1_app_cmd => c1_cmd, c1_app_en => c1_en, c1_app_rdy => c1_rdy,
+         c1_wdf_data => c1_wdata, c1_wdf_end => c1_wend, c1_wdf_wren => c1_wren,
+         c1_wdf_mask => c1_wmask, c1_wdf_rdy => c1_wrdy, c1_rd_data => c1_rdata, c1_rd_valid => c1_rdv,
          app_addr => app_addr, app_cmd => app_cmd, app_en => app_en, app_rdy => app_rdy,
          app_wdf_data => app_wdf_data, app_wdf_end => app_wdf_end, app_wdf_wren => app_wdf_wren,
          app_wdf_mask => app_wdf_mask, app_wdf_rdy => app_wdf_rdy, app_rd_data => app_rd_data,
-         app_rd_data_valid => app_rd_data_valid
+         app_rd_valid => app_rd_data_valid
       );
+
+   -- line latency meter on the line port (stall monitor page 7, lat_meter.vhd)
+   i_lat_meter : entity work.lat_meter
+      port map (
+         clk => mig_ui_clk, rst => mem_not_ready, cfg_i => rk_vid_sel,
+         page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox,
+         lp_req => lm_req, lp_we => lm_we, lp_addr => lm_addr, lp_wdata => lm_wdata,
+         lp_busy => lm_busy, lp_done => lm_done
+      );
+
+   -- Avalon debug: mirror of avm_mig's write-burst bookkeeping, the last read burst, the time since
+   -- the end of the last M2M memory reset (ui_clk ticks, saturating) at the start of the open write
+   -- burst, and burst counts since that reset
+   process (mig_ui_clk)
+   begin
+      if rising_edge(mig_ui_clk) then
+         if ad_since /= x"FFFFFFFF" then ad_since <= ad_since + 1; end if;
+         if mem_write = '1' and mem_waitrequest = '0' then
+            if ad_wl = 0 then
+               ad_waddr <= mem_address; ad_bc <= unsigned(mem_burstcount);
+               ad_wl <= unsigned(mem_burstcount) - 1; ad_tw <= ad_since; ad_nw <= ad_nw + 1;
+            else
+               ad_wl <= ad_wl - 1;
+            end if;
+         end if;
+         if mem_read = '1' and mem_waitrequest = '0' then
+            ad_raddr <= mem_address; ad_rbc <= mem_burstcount; ad_nr <= ad_nr + 1;
+         end if;
+         if hr_rst = '1' then
+            ad_since <= (others => '0'); ad_nw <= (others => '0'); ad_nr <= (others => '0');
+            if mig_legacy_s(1) = '0' then ad_wl <= (others => '0'); end if;
+         end if;
+      end if;
+   end process;
+   ad_dbg <= std_logic_vector(ad_tw) & ad_raddr & std_logic_vector(ad_nw) & std_logic_vector(ad_nr) &
+             mem_address & ad_waddr &
+             std_logic_vector(ad_wl) & std_logic_vector(ad_bc) & mem_burstcount &
+             mem_write & mem_read & mem_waitrequest & mig_avm_rst & mig_dbg(19 downto 16);
+
+   -- line port mux: a request is held until the port is free; the chip cache goes first
+   process (mig_ui_clk)
+   begin
+      if rising_edge(mig_ui_clk) then
+         lp_req <= '0';
+         if cc_req = '1' then lp_pend_c <= '1'; end if;
+         if lm_req = '1' then lp_pend_m <= '1'; end if;
+         if lp_done = '1' then lp_act <= '0'; end if;
+         if lp_act = '0' and lp_busy = '0' and lp_req = '0' then
+            if lp_pend_c = '1' or cc_req = '1' then
+               lp_own_m <= '0'; lp_act <= '1'; lp_req <= '1'; lp_pend_c <= '0';
+            elsif lp_pend_m = '1' or lm_req = '1' then
+               lp_own_m <= '1'; lp_act <= '1'; lp_req <= '1'; lp_pend_m <= '0';
+            end if;
+         end if;
+         if mem_not_ready = '1' then
+            lp_pend_c <= '0'; lp_pend_m <= '0'; lp_act <= '0';
+         end if;
+      end if;
+   end process;
+   lp_we    <= lm_we    when lp_own_m = '1' else cc_we;
+   lp_addr  <= lm_addr  when lp_own_m = '1' else cc_addr;
+   lp_wdata <= lm_wdata when lp_own_m = '1' else cc_wdata;
+   cc_busy  <= lp_pend_c or (lp_act and not lp_own_m);
+   lm_busy  <= lp_pend_m or (lp_act and lp_own_m);
+   cc_rvalid <= lp_rvalid and not lp_own_m;
+   cc_done   <= lp_done and not lp_own_m;
+   lm_done   <= lp_done and lp_own_m;
+   diag_out <= lat_aux when lat_page7 = '1' else stall_diag;
 
    ---------------------------------------------------------------------------------------
    -- Rockchip bridge: SD sectors, key matrix, joysticks, QNICE UART
@@ -312,7 +439,7 @@ begin
          flash_mosi => fl_mosi, flash_miso => fl_miso,
          iprog_toggle => ip_toggle, iprog_addr => ip_addr,
          video_sel => rk_vid_sel,
-         video_diag => stall_diag(95 downto 64), video_diag2 => stall_diag(63 downto 0),
+         video_diag => diag_out(95 downto 64), video_diag2 => diag_out(63 downto 0),
          spi_active => open
       );
 

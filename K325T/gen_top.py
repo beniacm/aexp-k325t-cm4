@@ -81,7 +81,18 @@ core = remap(core, CORE, None)
 last = max(k for k, l in enumerate(core) if '=>' in l)
 core[last] = core[last].rstrip() + ','
 core.insert(last + 1, '''         k325t_stall_cfg_i       => rk_vid_sel,
-         k325t_stall_diag_o      => stall_diag''')
+         k325t_stall_diag_o      => stall_diag,
+         k325t_probe_i           => mig_dbg,
+         k325t_stall_mode_o      => stall_mode,
+         k325t_lp_req_o          => cc_req,
+         k325t_lp_we_o           => cc_we,
+         k325t_lp_addr_o         => cc_addr,
+         k325t_lp_wdata_o        => cc_wdata,
+         k325t_lp_busy_i         => cc_busy,
+         k325t_lp_rvalid_i       => cc_rvalid,
+         k325t_lp_rdata_i        => lp_rdata,
+         k325t_lp_done_i         => cc_done,
+         k325t_mbox_o            => amiga_mbox''')
 
 tpl = open(sys.argv[3]).read()
 tpl = tpl.replace('--@R6_DECLARATIONS@', '\n'.join(decl))

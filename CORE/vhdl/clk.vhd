@@ -83,7 +83,12 @@ entity clk is
       stall_i         : in  std_logic := '0';
       vsync_i         : in  std_logic := '0';
       probe_i         : in  std_logic_vector(63 downto 0) := (others => '0');
-      stall_diag_o    : out std_logic_vector(95 downto 0)
+      stall_diag_o    : out std_logic_vector(95 downto 0);
+      stall_mode_o    : out std_logic_vector(3 downto 0);
+      stall_cache_o   : out std_logic_vector(3 downto 0);
+      miss_i          : in  std_logic := '0';
+      cache_fills_i   : in  unsigned(31 downto 0) := (others => '0');
+      cache_wbacks_i  : in  unsigned(31 downto 0) := (others => '0')
    );
 end entity clk;
 
@@ -258,6 +263,8 @@ begin
    main_clk_o   <= main_clk;
    src_clk_o    <= main_clk;
    stall_diag_o <= (others => '0');
+   stall_mode_o <= (others => '0');
+   stall_cache_o <= (others => '0');
 
    -------------------------------------
    -- Reset generation

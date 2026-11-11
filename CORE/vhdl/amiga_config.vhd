@@ -158,6 +158,7 @@ entity amiga_config is
       -- takes effect during the Amiga-local cold boot requested by amiga_cold_boot.vhd.
       slow_ram_i       : in  std_logic;
       chip1m_i         : in  std_logic := '0';               -- K325T: 1 MB chip RAM (CC=01, no slow RAM)
+      chip2m_i         : in  std_logic := '0';               -- K325T stage 2: 2 MB chip RAM (CC=11, cache only)
       ecs_i            : in  std_logic := '0';               -- K325T: ECS chipset (0xF3 bit 3)
       fast_size_i      : in  std_logic_vector(1 downto 0) := "00"; -- K325T: Zorro II fast RAM (0xF5 FF)
 
@@ -238,6 +239,7 @@ architecture synthesis of amiga_config is
    -- slow_ram_i sampled during ST_RESET: one consistent value for the whole sequence
    signal slow_ram_q : std_logic := '1';
    signal chip1m_q   : std_logic := '0';
+   signal chip2m_q   : std_logic := '0';
    signal ecs_q      : std_logic := '0';
    signal fast_q     : std_logic_vector(1 downto 0) := "00";
 
@@ -262,6 +264,7 @@ begin
                cnt              <= G_START_DELAY;
                slow_ram_q       <= slow_ram_i;    -- freezes when reset_i releases
                chip1m_q         <= chip1m_i;
+               chip2m_q         <= chip2m_i;
                ecs_q            <= ecs_i;
                fast_q           <= fast_size_i;
                if reset_i = '0' then
@@ -307,8 +310,9 @@ begin
             when ST_PAYLOAD =>
                io_din_o <= C_SEQ(idx).payload;
                if idx = C_IDX_MEMCFG then
-                  io_din_o(2) <= slow_ram_q and not chip1m_q; -- SS[0]: '1' = 512KB slow RAM, '0' = none
-                  io_din_o(0) <= chip1m_q;                    -- CC: "01" = 1 MB chip (K325T)
+                  io_din_o(2) <= slow_ram_q and not chip1m_q and not chip2m_q; -- SS[0]: 512KB slow RAM
+                  io_din_o(0) <= chip1m_q or chip2m_q;        -- CC: "01" = 1 MB chip (K325T)
+                  io_din_o(1) <= chip2m_q;                    -- CC: "11" = 2 MB chip (K325T stage 2)
                   io_din_o(5 downto 4) <= fast_q;             -- FF: fast RAM size (K325T; informative,
                                                               -- cpu_wrapper gets fastramcfg directly)
                end if;

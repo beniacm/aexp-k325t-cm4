@@ -114,6 +114,7 @@ entity main is
       slow_ram_i              : in  std_logic;
       -- K325T phase 2: 1 MB chip RAM (the slow-RAM BRAM as the upper 512 KB) and ECS chipset
       chip1m_i                : in  std_logic := '0';
+      chip2m_i                : in  std_logic := '0';
       ecs_i                   : in  std_logic := '0';
       -- K325T phase 2: Zorro II fast RAM size "00" none, "01" 2 MB, "10" 4 MB, "11" 8 MB
       -- (cpu_wrapper autoconfig) and its memory port (amiga_fastram in mega65.vhd)
@@ -560,6 +561,7 @@ begin
          reset_i          => amiga_rst,
          slow_ram_i       => slow_ram_i,
          chip1m_i         => chip1m_i,
+         chip2m_i         => chip2m_i,
          ecs_i            => ecs_i,
          fast_size_i      => fast_size_i,
          io_uio_o         => io_uio,

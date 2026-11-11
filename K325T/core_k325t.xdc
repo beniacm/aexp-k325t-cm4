@@ -18,10 +18,10 @@
 ## are therefore timed automatically.
 ##
 ## K325T (A1200/DDR3 study, stage 1): the stoppable Amiga clock, K325T/stall_clk.vhd.  ONE MMCM
-## output (VCO 1135 MHz / 38.75 = 29.290 MHz = 28.375 x 32/31) drives two global buffers: a BUFG
+## output (VCO 1135 MHz / 36.25 = 31.310 MHz = 28.375 x 32/29; stage 1: / 38.75) drives two global buffers: a BUFG
 ## (the ungated source clock of the stall/catch-up controller, stall_ctrl.vhd) and a BUFGCE (main_clk,
 ## the machine clock; CE = a register in the source clock).  Both carry the same clock object
-## "main_clk" (period 34.14 ns): every path between the controller and the Amiga is synchronous, the
+## "main_clk" (period 31.94 ns): every path between the controller and the Amiga is synchronous, the
 ## BUFGCE CE pin is checked against I.  A gated main_clk only ever has FEWER edges than this clock,
 ## so the constraint is conservative.  The flicker-free twin MMCM and its BUFGMUX_CTRL are gone (the
 ## flicker-free FSM selects the controller's rate), and with them the set_case_analysis of CORE.xdc.
@@ -64,3 +64,10 @@ set_max_delay -datapath_only 13.400 \
 ##   combinational gating), so the async CLR pins get same-clock
 ##   recovery/removal checks that Vivado analyzes automatically - verify
 ##   them in the timing report of every build.
+
+## K325T stage 2: chip_cache.vhd -- miss request (source clock, held stable while the toggle
+## handshake is open) to the fill engine (MIG ui_clk) and the acknowledge toggle back
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/r_* || NAME =~ CORE/i_chip_cache/req_tgl_reg}] \
+    -to [get_clocks clk_pll_i]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/ack_tgl_reg}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/ack_s1_reg}]
