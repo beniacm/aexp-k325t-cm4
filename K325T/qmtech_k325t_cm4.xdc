@@ -106,6 +106,15 @@ set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_rk_bridge/pots_
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_mouse/*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_framework/i_joy_debouncer/j*_s_reg*}]
 set_false_path -to   [get_cells -hierarchical -filter {NAME =~ pots_s1_reg*}]
+## Zorro II fast RAM (amiga_fastram.vhd): request registers (core clock, held stable while the
+## toggle handshake is open) -> memory clock; acknowledge toggle and the cache data array
+## (written in the memory clock, read after the acknowledge) -> core clock
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_req_*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_* || NAME =~ CORE/i_amiga_fastram/FSM_*hr_state* || NAME =~ CORE/i_amiga_fastram/avm_* || NAME =~ CORE/i_amiga_fastram/dram_*}]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_ack_tgl*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_ack_d_reg*}]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/dram_*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_rdata_reg*}]
 
 ## ---------------------------------------------------------------- configuration flash / multiboot
 ## QSPI flash (S25FL128L), written by the Rockchip through rk_bridge; CCLK via STARTUPE2.

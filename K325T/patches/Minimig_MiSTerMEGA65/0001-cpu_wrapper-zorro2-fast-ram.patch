@@ -1,0 +1,40 @@
+diff --git a/rtl/cpu_wrapper.v b/rtl/cpu_wrapper.v
+index d799b6a..3c7745d 100644
+--- a/rtl/cpu_wrapper.v
++++ b/rtl/cpu_wrapper.v
+@@ -109,7 +109,14 @@ module cpu_wrapper
+ // sel_zram needs autoconfig'd fastram, sel_rtg needs a 32-bit address).
+ //assign ramsel       = cpu_req & ~sel_nmi_vector & (sel_zram | sel_chipram | sel_kickram | sel_dd | sel_rtg);
+ //assign ramshared    = sel_dd;
+-assign ramsel       = 1'b0;
++// K325T phase 2 (QMTech XC7K325T port, 2026-11-11): Zorro II fast RAM for the 68000.
++// ramsel comes back for autoconfigured fast RAM ONLY (sel_zram; with cpucfg=00 only the
++// Zorro II window $200000-$9FFFFF can be enabled). The parent serves it from DDR3 and
++// drives ramready (= /DTACK) like a fast RAM card; the chip bus sees no address strobe
++// (chip_as = ramsel | as_o below). sel_chipram/sel_kickram/sel_rtg stay 0 with a 68000;
++// sel_dd stays excluded (always acked on the chip bus, see above). With fastramcfg=000
++// (the A500 default) z2ram_ena never sets, so ramsel stays 0: unchanged A500 behaviour.
++//assign ramsel       = 1'b0;   (assigned at the end of the module, after the declarations)
+ assign ramshared    = 1'b0;
+ 
+ // NMI
+@@ -301,8 +308,9 @@ fx68k cpu_inst_o
+ 	// MiSTer2MEGA65 (AExp Amiga 500 port), June 2026: ramsel is tied to 0
+ 	// (no SDRAM cpu port), so DTACKn always comes from the chip bus, which
+ 	// minimig_m68k_bridge.v acknowledges for every address - no bus hangs.
+-	//.DTACKn(ramsel ? ~ramready : chip_dtack),
+-	.DTACKn(chip_dtack),
++	//.DTACKn(chip_dtack),
++	// K325T phase 2: /DTACK from the fast RAM controller during fast RAM cycles
++	.DTACKn(ramsel ? ~ramready : chip_dtack),
+ 
+ 	.FC0(fc_o[0]),
+ 	.FC1(fc_o[1]),
+@@ -544,4 +552,7 @@ end
+ //assign toccata_ena = ~ac_toccata;
+ assign toccata_ena = 1'b0;
+ 
++// K325T phase 2: fast RAM select (see the comment at the top of the module body)
++assign ramsel = cpu_req & ~sel_nmi_vector & sel_zram;
++
+ endmodule

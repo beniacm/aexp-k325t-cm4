@@ -159,6 +159,7 @@ entity amiga_config is
       slow_ram_i       : in  std_logic;
       chip1m_i         : in  std_logic := '0';               -- K325T: 1 MB chip RAM (CC=01, no slow RAM)
       ecs_i            : in  std_logic := '0';               -- K325T: ECS chipset (0xF3 bit 3)
+      fast_size_i      : in  std_logic_vector(1 downto 0) := "00"; -- K325T: Zorro II fast RAM (0xF5 FF)
 
       -- Minimig host/userio port (minimig.v:214-218)
       io_uio_o         : out std_logic;                     -- minimig IO_UIO  (userio IO_ENA)
@@ -238,6 +239,7 @@ architecture synthesis of amiga_config is
    signal slow_ram_q : std_logic := '1';
    signal chip1m_q   : std_logic := '0';
    signal ecs_q      : std_logic := '0';
+   signal fast_q     : std_logic_vector(1 downto 0) := "00";
 
 begin
 
@@ -261,6 +263,7 @@ begin
                slow_ram_q       <= slow_ram_i;    -- freezes when reset_i releases
                chip1m_q         <= chip1m_i;
                ecs_q            <= ecs_i;
+               fast_q           <= fast_size_i;
                if reset_i = '0' then
                   state <= ST_START_WAIT;
                end if;
@@ -306,6 +309,8 @@ begin
                if idx = C_IDX_MEMCFG then
                   io_din_o(2) <= slow_ram_q and not chip1m_q; -- SS[0]: '1' = 512KB slow RAM, '0' = none
                   io_din_o(0) <= chip1m_q;                    -- CC: "01" = 1 MB chip (K325T)
+                  io_din_o(5 downto 4) <= fast_q;             -- FF: fast RAM size (K325T; informative,
+                                                              -- cpu_wrapper gets fastramcfg directly)
                end if;
                if idx = C_IDX_CHIPCFG then
                   io_din_o(3) <= ecs_q;                       -- E: ECS chipset (K325T)

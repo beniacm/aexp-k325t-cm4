@@ -21,6 +21,7 @@ for p, body in re.findall(r'<File Path="([^"]+)">(.*?)</File>', x[a:b], re.S):
 mc = os.path.normpath(os.path.join(root, '../mega65-core/src/vhdl'))
 for f in [os.path.join(here, 'top_qmtech_k325t_cm4.vhd'), os.path.join(here, 'avm_mig.vhd'),
           os.path.join(here, 'm65kbd_emu.vhd'), os.path.join(here, 'amiga_mouse.vhd'),
+          os.path.join(here, 'amiga_fastram.vhd'),
           os.path.join(mc, 'sd_emu.vhdl'),
           os.path.join(mc, 'rk_bridge.vhdl'), os.path.join(mc, 'rk_iprog.vhdl')]:
     assert os.path.exists(f), f

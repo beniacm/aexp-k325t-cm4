@@ -1820,18 +1820,18 @@ RTC_LAST_MIN    .BLOCK 1                        ; last internal minute seen by
 ; instead, but when doing the sanity check calculations, you use 30208
 ;
 ; Budget (HELP_MENU in M2M/rom/options.asm, checked at runtime by LOG_HEAP1/
-; LOG_HEAP2): the 84 menu items (K325T phase 2: "RAM" submenu) are an
-; 859-character string plus the 19-word menu structure plus three per-item
-; arrays = 19 + 859 + 1 + 3 x 84 + 1 = 1132 words; on top of that, OPTM_HEAP
+; LOG_HEAP2): the 89 menu items (K325T phase 2: "RAM" submenu) are a
+; 923-character string plus the 19-word menu structure plus three per-item
+; arrays = 19 + 923 + 1 + 3 x 89 + 1 = 1211 words; on top of that, OPTM_HEAP
 ; needs one (OPTM_DX + 2)-wide buffer per submenu (6), manual ROM (1) and
 ; vdrive (0) plus one scratch buffer = 8 x 25 = 200 words. Total demand is
-; 1332 words, rounded up to the next 128-word boundary: 1408 words, leaving
-; 76 words headroom. Do not reserve a
+; 1411 words, rounded up to the next 128-word boundary: 1536 words, leaving
+; 125 words headroom. Do not reserve a
 ; large safety margin here: every word is taken directly from the file-browser
 ; heap. Whenever OPTM_SIZE, OPTM_ITEMS, OPTM_DX, or the submenu/drive/manual-ROM
 ; counts grow, recalculate both budgets and rebalance the HEAP_SIZE constants
 ; below by the same delta.
-MENU_HEAP_SIZE  .EQU 1408
+MENU_HEAP_SIZE  .EQU 1536
 
 #ifndef RELEASE
 
@@ -1839,13 +1839,13 @@ MENU_HEAP_SIZE  .EQU 1408
 ; this needs to be the last variable before the monitor variables as it is
 ; only defined as "BLOCK 1" to avoid a large amount of null-values in
 ; the ROM file
-HEAP_SIZE       .EQU 5760                       ; 7168 - 1408 = 5760
+HEAP_SIZE       .EQU 5632                       ; 7168 - 1536 = 5632
 HEAP            .BLOCK 1
 
 ; in RELEASE mode: 28.375k of heap for folders with many files
 #else
 
-HEAP_SIZE       .EQU 28800                      ; 30208 - 1408 = 28800
+HEAP_SIZE       .EQU 28672                      ; 30208 - 1536 = 28672
 HEAP            .BLOCK 1
 
 ; The monitor variables use 22 words, round to 32 for being safe and subtract

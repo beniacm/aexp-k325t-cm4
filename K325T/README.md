@@ -21,14 +21,22 @@ Board harness (Rockchip daemons, scripts, write-up): `mega65-k325t-cm4` (beniacm
 | `amiga_mouse.vhd` (+ `sim/tb_amiga_mouse.vhd`) | Amiga quadrature mouse from the bridge's position counters (new) |
 | `qmtech_k325t_cm4.xdc`, `qmtech_k325t_cm4_radxacm3_bus.xdc` | pins + timing; the CM-bus section per module |
 | `build.sh`, `build.tcl`, `gen_sources.py` | Vivado batch build (source list taken from `CORE/CORE-R6.xpr`) |
+| `amiga_fastram.vhd` (+ `sim/tb_amiga_fastram.vhd`) | Zorro II fast RAM in DDR3: 16 KB LUT-RAM cache, posted writes, toggle-handshake CDC (phase 2) |
+| `patches/` | changes to submodule files, applied by `build.sh` (phase 2) |
+| `tools/mk_sysinfo_adf.py` | boot-block SysInfo: Kickstart version, CPU, Agnus/Denise ids, memory list, raster-line timings, fast RAM test (phase 2) |
 | `tools/aexp_demo_test.py` | mounts demo ADFs one after the other, records the HDMI output (clip + frames) |
 | `tools/mk_writetest_adf.py` | boot-block floppy that writes a sector (write-back test, no Workbench needed) |
 | `tools/mk_inputtest_adf.py` | boot-block floppy showing JOY0DAT/JOY1DAT/CIA-A/POTGOR as bit stripes (mouse, joystick, buttons) |
 | `tools/mk_kbdtest_adf.py` | boot-block floppy reading Kickstart's keyboard.device (KBD_READMATRIX) |
 
+Submodule files changed (phase 2): only as patches, `patches/<submodule>/*.patch`, which
+`build.sh` applies to the submodule's working tree before every build (an applied patch is
+skipped, one that does not apply stops the build); the submodule pointers stay at upstream's
+commits.  Now: `patches/Minimig_MiSTerMEGA65/0001-cpu_wrapper-zorro2-fast-ram.patch`.
+
 Upstream files changed (generic-gated, defaults = upstream): `M2M/vhdl/framework.vhd`,
 `M2M/vhdl/av_pipeline/av_pipeline.vhd`, `M2M/vhdl/av_pipeline/digital_pipeline.vhd` (the C64
-port's `G_EXT_HR`, `G_TMDS_INVERT`, `G_NO_I2C`), `.gitignore`.  Nothing in `CORE/`.
+port's `G_EXT_HR`, `G_TMDS_INVERT`, `G_NO_I2C`), `.gitignore`; phase 2 changes `CORE/vhdl/` (mega65, main, config, amiga_config, amiga_cold_boot) and `CORE/m2m-rom/m2m-rom.asm` (heap budget), with the A500 defaults unchanged.
 
 Rockchip bridge core id **3** (STATUS byte 52).  The module's m65d (harness) then
 - maps a PC keyboard for AExp's **Amiga** keyboard mode (menu: Keyboard > Amiga, saved in the
@@ -52,6 +60,7 @@ SysInfo test (`tools/mk_sysinfo_adf.py`) give identical results.
 | **Kickstart 512 KB** (2.04, 3.1 A500/A600: `kick37175.A500`, `kick40063.A600`) | `/amiga/kick.rom`, size detected from the image (`$1111` = 256 KB, `$1114` = 512 KB) | 256 KB ROMs are mirrored at `$F80000`/`$FC0000` as before; 1 MB ROMs (`$E00000` extension: AROS, CD32) are not supported |
 | **chipset OCS / ECS** | menu "RAM: ..." > OCS / ECS Chipset | ECS = Agnus 8372A (VPOSR id `$20`) + Denise 8373 (DENISEID `$FC`) |
 | **memory**: 512K chip + 512K slow (default) / 512K chip only / 1M chip | menu "RAM: ..." | "1M Chip" uses the slow-RAM block RAM as the upper 512 KB of chip RAM (no slow RAM then) and forces ECS (an 8372A is needed for 1 MB) |
+| **fast RAM** none (default) / 2 / 4 / 8 MB | menu "RAM: ..." | Zorro II autoconfig board at `$200000` (as MiSTer's 68000 fast RAM), memory in DDR3 (`amiga_fastram.vhd`: 16 KB LUT-RAM cache, write-through); an expansion card, not part of an A500: its timing is the cache's (hits without wait states, misses wait for DDR3), the chip bus is not touched |
 
 A change in the "RAM" submenu cold-boots the emulated Amiga only (like the V1 Slow RAM toggle).
 Settings: see "Kickstart and floppies".
@@ -95,8 +104,9 @@ the other module fitted.  Radxa build of 2026-11-11: timing met (WNS +0.114 ns, 
   there.  Help opens the menu; on "ADF:" Space opens the browser (Space on a mounted disk
   ejects it), Return mounts.  The disk is read/write: changes are written back to the file on
   the card a few seconds after the Amiga stops writing.
-- Settings persist in `/amiga/aexp-V1.cfg` (84 bytes with the phase-2 menu; the V1 core's file has 74:
-  a file of the wrong size is ignored and the defaults apply; a new file of 84 x `$FF` = defaults).
+- Settings persist in **`/amiga/aexpk325.cfg`** (89 bytes; a new file of 89 x `$FF` = defaults; without
+  the file nothing is saved).  The V1 core's `/amiga/aexp-V1.cfg` (74 bytes) stays untouched, so both
+  bitstreams can share the card.
 - Reset: Ctrl+Alt+Del (or `m65ctl reset`) resets the Amiga only and keeps the disk mounted,
   like a real A500; `m65ctl hold_reset 1`, 2 s, `hold_reset 0` resets the whole core (disk
   ejected, Kickstart reloaded).

@@ -280,6 +280,53 @@ signal main_mem_slow          : std_logic;  -- 512 KB slow RAM at $C00000 (A501)
 signal main_mem_chip1m        : std_logic;  -- 1 MB chip RAM (forces ECS)
 signal main_chip_ecs          : std_logic;  -- ECS chipset (Agnus 8372A + Denise 8373)
 signal main_kick_512          : std_logic;  -- 512 KB Kickstart loaded (from the QNICE side)
+signal main_fast_size         : std_logic_vector(1 downto 0);  -- fast RAM: 00 none, 01 2 MB, 10 4 MB, 11 8 MB
+
+-- K325T phase 2: Zorro II fast RAM port (main.vhd -> amiga_fastram) and its DDR3 master
+signal main_fast_sel          : std_logic;
+signal main_fast_addr         : std_logic_vector(23 downto 1);
+signal main_fast_we           : std_logic;
+signal main_fast_uds_n        : std_logic;
+signal main_fast_lds_n        : std_logic;
+signal main_fast_wdata        : std_logic_vector(15 downto 0);
+signal main_fast_rdata        : std_logic_vector(15 downto 0);
+signal main_fast_ready        : std_logic;
+signal hr_fast_avm_write         : std_logic;
+signal hr_fast_avm_read          : std_logic;
+signal hr_fast_avm_address       : std_logic_vector(31 downto 0);
+signal hr_fast_avm_writedata     : std_logic_vector(15 downto 0);
+signal hr_fast_avm_byteenable    : std_logic_vector(1 downto 0);
+signal hr_fast_avm_burstcount    : std_logic_vector(7 downto 0);
+signal hr_fast_avm_readdata      : std_logic_vector(15 downto 0);
+signal hr_fast_avm_readdatavalid : std_logic;
+signal hr_fast_avm_waitrequest   : std_logic;
+-- fast RAM on (hr_clk): the floppy masters reach hr_core_* through i_avm_arbit_fast; off (the
+-- A500 default): directly, as in AExp V1 (no extra arbiter cycle on the floppy path)
+signal hr_fast_on             : std_logic;
+signal hr_fast_sel            : std_logic := '0';
+signal hr_quiet_cnt           : unsigned(5 downto 0) := (others => '0');
+signal hr_arb_write           : std_logic;
+signal hr_arb_read            : std_logic;
+signal hr_arb_address         : std_logic_vector(31 downto 0);
+signal hr_arb_writedata       : std_logic_vector(15 downto 0);
+signal hr_arb_byteenable      : std_logic_vector(1 downto 0);
+signal hr_arb_burstcount      : std_logic_vector(7 downto 0);
+signal hr_arb_waitrequest     : std_logic;
+signal hr_flpa_readdata       : std_logic_vector(15 downto 0);
+signal hr_flpa_readdatavalid  : std_logic;
+signal hr_flpa_waitrequest    : std_logic;
+signal hr_fasta_waitrequest   : std_logic;
+signal hr_fasta_readdatavalid : std_logic;
+-- the floppy masters (ADF engine + mount) after their arbiter, before the fast RAM one
+signal hr_flpm_avm_write         : std_logic;
+signal hr_flpm_avm_read          : std_logic;
+signal hr_flpm_avm_address       : std_logic_vector(31 downto 0);
+signal hr_flpm_avm_writedata     : std_logic_vector(15 downto 0);
+signal hr_flpm_avm_byteenable    : std_logic_vector(1 downto 0);
+signal hr_flpm_avm_burstcount    : std_logic_vector(7 downto 0);
+signal hr_flpm_avm_readdata      : std_logic_vector(15 downto 0);
+signal hr_flpm_avm_readdatavalid : std_logic;
+signal hr_flpm_avm_waitrequest   : std_logic;
 
 -- registered read-mux select: matches the 1-cycle BRAM read latency
 signal main_rd_sel            : std_logic_vector(1 downto 0);   -- 00=chip, 01=slow, 10=kick
@@ -463,6 +510,10 @@ constant C_MENU_MEM_CHIP512   : natural := 73;   -- 512K chip only
 constant C_MENU_MEM_CHIP1M    : natural := 74;   -- 1M chip (ECS Agnus)
 constant C_MENU_CHIPSET_OCS   : natural := 76;   -- OCS (default)
 constant C_MENU_CHIPSET_ECS   : natural := 77;   -- ECS
+constant C_MENU_FAST_NONE     : natural := 79;   -- no fast RAM (default)
+constant C_MENU_FAST_2M       : natural := 80;   -- 2 MB Zorro II fast RAM (DDR3)
+constant C_MENU_FAST_4M       : natural := 81;   -- 4 MB
+constant C_MENU_FAST_8M       : natural := 82;   -- 8 MB
 
 begin
 
@@ -579,11 +630,15 @@ begin
    main_mem_slow   <= not main_osm_control_i(C_MENU_MEM_CHIP512) and
                       not main_osm_control_i(C_MENU_MEM_CHIP1M);
    main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m;
+   main_fast_size  <= "11" when main_osm_control_i(C_MENU_FAST_8M) = '1' else
+                      "10" when main_osm_control_i(C_MENU_FAST_4M) = '1' else
+                      "01" when main_osm_control_i(C_MENU_FAST_2M) = '1' else "00";
 
    i_amiga_cold_boot : entity work.amiga_cold_boot
       port map (
          clk_i             => main_clk,
-         topology_i        => main_chip_ecs & main_mem_chip1m & main_mem_slow,
+         topology_i        => main_fast_size & main_chip_ecs & main_mem_chip1m & main_mem_slow,
+         cold_req_i        => main_reset_m2m_i,
          amiga_reset_o     => amiga_cold_reset,
          chip_scrub_o      => amiga_chip_scrub,
          chip_scrub_addr_o => amiga_chip_scrub_addr
@@ -676,6 +731,15 @@ begin
          slow_ram_i           => main_mem_slow,
          chip1m_i             => main_mem_chip1m,
          ecs_i                => main_chip_ecs,
+         fast_size_i          => main_fast_size,
+         fast_sel_o           => main_fast_sel,
+         fast_addr_o          => main_fast_addr,
+         fast_we_o            => main_fast_we,
+         fast_uds_n_o         => main_fast_uds_n,
+         fast_lds_n_o         => main_fast_lds_n,
+         fast_wdata_o         => main_fast_wdata,
+         fast_rdata_i         => main_fast_rdata,
+         fast_ready_i         => main_fast_ready,
 
          -- MEGA65 joysticks and paddles/mouse/potentiometers
          joy_1_up_n_i         => main_joy_1_up_n_i ,
@@ -1208,15 +1272,129 @@ begin
          s1_avm_readdatavalid_o => hr_adf_avm_readdatavalid,
          s1_avm_waitrequest_o   => hr_adf_avm_waitrequest,
 
-         m_avm_write_o          => hr_core_write_o,
-         m_avm_read_o           => hr_core_read_o,
-         m_avm_address_o        => hr_core_address_o,
-         m_avm_writedata_o      => hr_core_writedata_o,
-         m_avm_byteenable_o     => hr_core_byteenable_o,
-         m_avm_burstcount_o     => hr_core_burstcount_o,
-         m_avm_readdata_i       => hr_core_readdata_i,
-         m_avm_readdatavalid_i  => hr_core_readdatavalid_i,
-         m_avm_waitrequest_i    => hr_core_waitrequest_i
+         m_avm_write_o          => hr_flpm_avm_write,
+         m_avm_read_o           => hr_flpm_avm_read,
+         m_avm_address_o        => hr_flpm_avm_address,
+         m_avm_writedata_o      => hr_flpm_avm_writedata,
+         m_avm_byteenable_o     => hr_flpm_avm_byteenable,
+         m_avm_burstcount_o     => hr_flpm_avm_burstcount,
+         m_avm_readdata_i       => hr_flpm_avm_readdata,
+         m_avm_readdatavalid_i  => hr_flpm_avm_readdatavalid,
+         m_avm_waitrequest_i    => hr_flpm_avm_waitrequest
       ); -- i_avm_arbit_adf
+
+   ---------------------------------------------------------------------------------------------
+   -- K325T phase 2: Zorro II fast RAM in DDR3 (K325T/amiga_fastram.vhd): 16 KB LUT-RAM cache
+   -- in the core clock, line fills / posted writes as the third Avalon master on hr_core_*.
+   -- DDR3 word address $800000 (16 MB) = Amiga $200000; 8 MB at most (Zorro II, 68000).
+   ---------------------------------------------------------------------------------------------
+
+   i_amiga_fastram : entity work.amiga_fastram
+      generic map (
+         G_BASE_WORD => 16#800000#
+      )
+      port map (
+         clk_i               => main_clk,
+         sel_i               => main_fast_sel,
+         addr_i              => main_fast_addr,
+         we_i                => main_fast_we,
+         uds_n_i             => main_fast_uds_n,
+         lds_n_i             => main_fast_lds_n,
+         wdata_i             => main_fast_wdata,
+         rdata_o             => main_fast_rdata,
+         ready_o             => main_fast_ready,
+         hr_clk_i            => hr_clk_i,
+         hr_rst_i            => hr_rst_i,
+         avm_write_o         => hr_fast_avm_write,
+         avm_read_o          => hr_fast_avm_read,
+         avm_address_o       => hr_fast_avm_address,
+         avm_writedata_o     => hr_fast_avm_writedata,
+         avm_byteenable_o    => hr_fast_avm_byteenable,
+         avm_burstcount_o    => hr_fast_avm_burstcount,
+         avm_readdata_i      => hr_fast_avm_readdata,
+         avm_readdatavalid_i => hr_fast_avm_readdatavalid,
+         avm_waitrequest_i   => hr_fast_avm_waitrequest
+      ); -- i_amiga_fastram
+
+   i_cdc_fast_on : entity work.cdc_stable
+      generic map (
+         G_DATA_SIZE    => 1,
+         G_REGISTER_SRC => true
+      )
+      port map (
+         src_clk_i     => main_clk,
+         src_data_i(0) => main_fast_size(1) or main_fast_size(0),
+         dst_clk_i     => hr_clk_i,
+         dst_data_o(0) => hr_fast_on
+      ); -- i_cdc_fast_on
+
+   -- the select follows the menu (static; it changes with a cold boot of the Amiga) only
+   -- after 64 memory clocks without any request or read beat: no transaction is split
+   p_fast_sel : process (hr_clk_i)
+   begin
+      if rising_edge(hr_clk_i) then
+         if hr_core_read_o = '1' or hr_core_write_o = '1' or hr_core_readdatavalid_i = '1' or
+            hr_flpm_avm_read = '1' or hr_flpm_avm_write = '1' or
+            hr_fast_avm_read = '1' or hr_fast_avm_write = '1' then
+            hr_quiet_cnt <= (others => '0');
+         elsif hr_quiet_cnt /= 63 then
+            hr_quiet_cnt <= hr_quiet_cnt + 1;
+         end if;
+         if hr_quiet_cnt = 63 then
+            hr_fast_sel <= hr_fast_on;
+         end if;
+      end if;
+   end process p_fast_sel;
+
+   hr_core_write_o        <= hr_arb_write      when hr_fast_sel = '1' else hr_flpm_avm_write;
+   hr_core_read_o         <= hr_arb_read       when hr_fast_sel = '1' else hr_flpm_avm_read;
+   hr_core_address_o      <= hr_arb_address    when hr_fast_sel = '1' else hr_flpm_avm_address;
+   hr_core_writedata_o    <= hr_arb_writedata  when hr_fast_sel = '1' else hr_flpm_avm_writedata;
+   hr_core_byteenable_o   <= hr_arb_byteenable when hr_fast_sel = '1' else hr_flpm_avm_byteenable;
+   hr_core_burstcount_o   <= hr_arb_burstcount when hr_fast_sel = '1' else hr_flpm_avm_burstcount;
+   hr_arb_waitrequest     <= hr_core_waitrequest_i when hr_fast_sel = '1' else '1';
+   hr_flpm_avm_readdata      <= hr_flpa_readdata      when hr_fast_sel = '1' else hr_core_readdata_i;
+   hr_flpm_avm_readdatavalid <= hr_flpa_readdatavalid when hr_fast_sel = '1' else hr_core_readdatavalid_i;
+   hr_flpm_avm_waitrequest   <= hr_flpa_waitrequest   when hr_fast_sel = '1' else hr_core_waitrequest_i;
+   hr_fast_avm_waitrequest   <= hr_fasta_waitrequest  when hr_fast_sel = '1' else '1';
+   hr_fast_avm_readdatavalid <= hr_fasta_readdatavalid when hr_fast_sel = '1' else '0';
+
+   i_avm_arbit_fast : entity work.avm_arbit
+      generic map (
+         G_PREFER_SWAP  => false,
+         G_ADDRESS_SIZE => 32,
+         G_DATA_SIZE    => 16
+      )
+      port map (
+         clk_i                  => hr_clk_i,
+         rst_i                  => hr_rst_i,
+         s0_avm_write_i         => hr_fast_avm_write and hr_fast_sel,
+         s0_avm_read_i          => hr_fast_avm_read and hr_fast_sel,
+         s0_avm_address_i       => hr_fast_avm_address,
+         s0_avm_writedata_i     => hr_fast_avm_writedata,
+         s0_avm_byteenable_i    => hr_fast_avm_byteenable,
+         s0_avm_burstcount_i    => hr_fast_avm_burstcount,
+         s0_avm_readdata_o      => hr_fast_avm_readdata,
+         s0_avm_readdatavalid_o => hr_fasta_readdatavalid,
+         s0_avm_waitrequest_o   => hr_fasta_waitrequest,
+         s1_avm_write_i         => hr_flpm_avm_write and hr_fast_sel,
+         s1_avm_read_i          => hr_flpm_avm_read and hr_fast_sel,
+         s1_avm_address_i       => hr_flpm_avm_address,
+         s1_avm_writedata_i     => hr_flpm_avm_writedata,
+         s1_avm_byteenable_i    => hr_flpm_avm_byteenable,
+         s1_avm_burstcount_i    => hr_flpm_avm_burstcount,
+         s1_avm_readdata_o      => hr_flpa_readdata,
+         s1_avm_readdatavalid_o => hr_flpa_readdatavalid,
+         s1_avm_waitrequest_o   => hr_flpa_waitrequest,
+         m_avm_write_o          => hr_arb_write,
+         m_avm_read_o           => hr_arb_read,
+         m_avm_address_o        => hr_arb_address,
+         m_avm_writedata_o      => hr_arb_writedata,
+         m_avm_byteenable_o     => hr_arb_byteenable,
+         m_avm_burstcount_o     => hr_arb_burstcount,
+         m_avm_readdata_i       => hr_core_readdata_i,
+         m_avm_readdatavalid_i  => hr_core_readdatavalid_i and hr_fast_sel,
+         m_avm_waitrequest_i    => hr_arb_waitrequest
+      ); -- i_avm_arbit_fast
 
 end architecture synthesis;

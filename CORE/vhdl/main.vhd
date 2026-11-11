@@ -115,6 +115,17 @@ entity main is
       -- K325T phase 2: 1 MB chip RAM (the slow-RAM BRAM as the upper 512 KB) and ECS chipset
       chip1m_i                : in  std_logic := '0';
       ecs_i                   : in  std_logic := '0';
+      -- K325T phase 2: Zorro II fast RAM size "00" none, "01" 2 MB, "10" 4 MB, "11" 8 MB
+      -- (cpu_wrapper autoconfig) and its memory port (amiga_fastram in mega65.vhd)
+      fast_size_i             : in  std_logic_vector(1 downto 0) := "00";
+      fast_sel_o              : out std_logic;
+      fast_addr_o             : out std_logic_vector(23 downto 1);
+      fast_we_o               : out std_logic;
+      fast_uds_n_o            : out std_logic;
+      fast_lds_n_o            : out std_logic;
+      fast_wdata_o            : out std_logic_vector(15 downto 0);
+      fast_rdata_i            : in  std_logic_vector(15 downto 0) := x"0000";
+      fast_ready_i            : in  std_logic := '0';
 
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
@@ -489,7 +500,7 @@ begin
 
          cpucfg          => "00",                -- 68000; MUST be constant so the
                                                  -- removed-TG68K muxes constant-fold
-         fastramcfg      => "000",               -- no Zorro fast RAM
+         fastramcfg      => '0' & fast_size_i,   -- K325T: Zorro II fast RAM (autoconfig), 000 = none
          cachecfg        => "000",               -- no caches
          bootrom         => '0',                 -- normal A500 memory map
 
@@ -512,11 +523,11 @@ begin
          fastchip_selack => '0',
          fastchip_ready  => '0',
 
-         ramsel          => open,
+         ramsel          => fast_sel_o,          -- K325T: fast RAM cycle (Zorro II window)
          ramaddr         => open,
          ramdin          => open,
-         ramdout         => x"0000",
-         ramready        => '0',
+         ramdout         => fast_rdata_i,
+         ramready        => fast_ready_i,
          ramlds          => open,
          ramuds          => open,
          ramshared       => open,
@@ -528,6 +539,14 @@ begin
          cacr            => open,
          nmi_addr        => cpu_nmi_addr
       ); -- i_cpu_wrapper
+
+   -- K325T phase 2: the fast RAM port takes the CPU's raw bus (the chip bus sees no
+   -- address strobe during fast RAM cycles: chip_as = ramsel | AS in cpu_wrapper.v)
+   fast_addr_o  <= cpu_addr;
+   fast_we_o    <= not cpu_rw;
+   fast_uds_n_o <= cpu_uds_n;
+   fast_lds_n_o <= cpu_lds_n;
+   fast_wdata_o <= cpu_din;
 
    ---------------------------------------------------------------------------
    -- Host configuration FSM: replays MiSTer's HPS startup configuration
@@ -542,6 +561,7 @@ begin
          slow_ram_i       => slow_ram_i,
          chip1m_i         => chip1m_i,
          ecs_i            => ecs_i,
+         fast_size_i      => fast_size_i,
          io_uio_o         => io_uio,
          io_strobe_o      => cfg_strobe,
          io_din_o         => cfg_din,

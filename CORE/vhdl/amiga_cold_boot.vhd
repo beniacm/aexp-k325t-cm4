@@ -22,7 +22,12 @@ use ieee.numeric_std.all;
 entity amiga_cold_boot is
    port (
       clk_i             : in  std_logic;
-      topology_i        : in  std_logic_vector(2 downto 0);  -- {ecs, chip1m, slow}
+      topology_i        : in  std_logic_vector(4 downto 0);  -- {fast size(2), ecs, chip1m, slow}
+      -- K325T: the M2M (full) reset is a cold boot too.  In AExp V1 it was one by side effect:
+      -- the Slow RAM menu bit drops while QNICE reloads the settings, so every full reset ran
+      -- the scrub; the topology vector here does not change then.  Without it, Kickstart
+      -- warm-boots on what the last program left in memory (Eon -> Batman hung).
+      cold_req_i        : in  std_logic := '0';
 
       amiga_reset_o     : out std_logic;
       chip_scrub_o      : out std_logic;
@@ -40,7 +45,7 @@ architecture synthesis of amiga_cold_boot is
    constant C_RESET_HOLD_CYCLES : natural := 64;
 
    signal state            : t_state := IDLE;
-   signal topo_applied     : std_logic_vector(2 downto 0) := "001"; -- OSM default: OCS, A501 on
+   signal topo_applied     : std_logic_vector(4 downto 0) := "00001"; -- OSM default: no fast, OCS, A501 on
    signal reset_hold_count : natural range 0 to C_RESET_HOLD_CYCLES - 1 := 0;
 
 begin
@@ -61,7 +66,7 @@ begin
       if rising_edge(clk_i) then
          case state is
             when IDLE =>
-               if topology_i /= topo_applied then
+               if topology_i /= topo_applied or cold_req_i = '1' then
                   reset_hold_count <= C_RESET_HOLD_CYCLES - 1;
                   state            <= ASSERT_RESET;
                end if;

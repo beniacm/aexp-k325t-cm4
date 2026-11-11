@@ -184,3 +184,50 @@ alternatives and all host-side services (more drives, IDE, RTG).
 Menu entries come with each increment.  Every increment: build (`K325T/build.sh radxacm3`,
 timing met), JTAG test, demo regression in the default A500 configuration, commit, then flash
 slot 1 only after JTAG verification.
+
+## 4. Results (2026-11-11, Radxa CM3 board, verified over JTAG, then flash slot 1)
+
+**Increment 1 -- Kickstart 512 KB, ECS, 1 MB chip** (commit "phase 2 (1/2)").  Timing met
+(WNS +0.194 ns), 436 / 445 block RAM tiles (Vivado moved ascal's polyphase line buffers to
+LUT RAM, functionally the same), 39.6 k LUTs.  The 128-tile Kickstart needed a pipelined
+QNICE port (see `mega65.vhd`).  Checked with `tools/mk_sysinfo_adf.py` (boot-block SysInfo):
+KS 1.3 / 2.04 (37.132) / 3.1 (40.10) boot; OCS: VPOSR `$8000`, no DENISEID; ECS: VPOSR
+`$A000` (8372A PAL), DENISEID `$FC`; memory lists 512K+512K, 512K, 1M chip (the SysInfo screen
+itself at `$0F0000`, so bitplane and copper DMA read the upper half).
+
+**Increment 2 -- Zorro II fast RAM 2/4/8 MB in DDR3** (commit "phase 2 (2/2)").  Timing met
+(WNS +0.350 ns, WHS +0.050 ns), 436 RAMB36 (no new block RAM), 44.2 k LUTs (10.2 k LUT RAM:
+the cache 2 x 8K x 8 + 1K x 11 tags, the ascal line buffers).
+`amiga_fastram.vhd` + `sim/tb_amiga_fastram.vhd` (random 68000 cycles incl. byte writes with
+the real S2/S4 strobe timing, an Avalon model with random latency, random memory-side resets).
+Two bugs found on the board and then reproduced in the testbench before fixing: writes were
+latched at /AS instead of /UDS,/LDS (no byte enables), and a framework reset during a line
+fill acknowledged the fill without data.  KS 1.3 and 3.1 find the board ($200020-$A00000,
+8191 KB); a write/read pattern over all 8 MB passes; a DBRA loop from fast RAM takes the same
+45 raster lines as from chip RAM (cache hits, no wait states), 2048 longword reads take 71
+lines from fast vs 65 from chip (line fills).
+
+**Cycle equivalence of the default (A500) configuration**: the chip-bus memory path is
+unchanged by construction (256 KB ROM: address bit 18 forced 0 = the old mirror; slow-RAM
+decode unchanged when "1M Chip" is off; config words identical; with fast RAM off
+`z2ram_ena` never sets, so `ramsel` = 0 and cpu_wrapper's /AS and /DTACK are the old ones).
+Measured: the SysInfo values are identical to the V1 core's (increment 1: the capture is
+byte-identical; same raster-line timings in all builds); the five demos run through in the
+default configuration.  Sampled demo frames are byte-identical between V1 and the new core at
+some sample points (Batman after Eon: 12 of 44, SOTA increment 1: 7 of 14), but two V1 runs
+agree only as often (Batman: 8 of 44): the menu-driven mount (keys over the network) starts
+each demo with a jitter of frames, so frame md5s support, but cannot prove, equivalence.  The floppy image's DDR3 reads: with fast RAM on they pass one more Avalon arbiter (fast RAM
+is the third master); with fast RAM off a static select connects them directly as in V1 (a
+first build without the bypass shifted SOTA's timeline: SOTA loads while it plays, so the
+disk-read latency is visible in when its parts start -- also in V1, where ascal shares the
+memory; the bypass restores V1's path exactly).
+
+**Full reset = cold boot**: in V1 the M2M full reset (reset held > 1.5 s) ran the cold-boot
+scrub of `$4` by side effect (the Slow RAM menu bit drops while QNICE reloads the settings).
+The phase-2 topology vector does not change at that moment, so the first builds warm-booted
+after a full reset, and Batman Rises hung after Eon (V1 ran it: same card, same order).
+`amiga_cold_boot` now cold-boots on the M2M reset explicitly; Ctrl+Alt+Del (core reset) stays
+a warm reset as in V1.
+
+Left (reasons in section 3): 68020, more floppy drives, IDE/HDF, AGA, RTC from the module,
+turbo floppy, NTSC, audio filters.

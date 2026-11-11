@@ -19,6 +19,24 @@ case "$variant" in
                   || { echo "ERROR: CM bus section not replaced in $xdc" >&2; exit 1; } ;;
     *)        echo "usage: $0 [radxacm3]" >&2; exit 2 ;;
 esac
+# Changes to files of git submodules (sy2002's Minimig fork, ...) are not committed there: they
+# are patches in K325T/patches/<submodule directory name>/*.patch, applied to the submodule's
+# working tree here (idempotent: an already applied patch is skipped; one that applies neither
+# way stops the build).  The submodule pointers stay at upstream's commits.
+for pdir in "$here"/patches/*/; do
+    [ -d "$pdir" ] || continue
+    sub=$(find "$root" -maxdepth 3 -type d -name "$(basename "$pdir")" -not -path "*/K325T/*" | head -1)
+    [ -n "$sub" ] || { echo "ERROR: submodule for $pdir not found" >&2; exit 1; }
+    for p in "$pdir"*.patch; do
+        if git -C "$sub" apply --reverse --check "$p" 2>/dev/null; then
+            echo "patch already applied: ${p#$here/}"
+        elif git -C "$sub" apply --check "$p"; then
+            git -C "$sub" apply "$p" && echo "patch applied: ${p#$here/}"
+        else
+            echo "ERROR: ${p#$here/} does not apply to $sub" >&2; exit 1
+        fi
+    done
+done
 python3 "$here/gen_top.py" "$root/M2M/vhdl/top_mega65-r6.vhd" "$here/top_qmtech_k325t_cm4.vhd" \
         "$here/top_qmtech_k325t_cm4.tpl.vhd"
 python3 "$here/gen_sources.py"

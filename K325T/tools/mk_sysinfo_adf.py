@@ -20,7 +20,10 @@ Rows (32-bit values):
     19  the same, the code copied to the first fast RAM block (0 = no fast RAM)
     20  2048 longword reads (MOVE.L (A0)+,D0 x 4 per DBRA) from chip RAM ($10000), code in chip RAM
     21  the same from fast RAM (0 = no fast RAM)
-    22  write/read-back test of 256 KB of fast RAM: error count (0 = ok, -1 = no fast RAM)
+    22  write/read-back test of the first fast RAM block (4 KB above its start or above this code,
+        up to the benchmark area 64 KB below its end; pattern =
+        address XOR $5AA5C33C, all written before any is read: catches aliasing): error count
+        (0 = ok, -1 = no fast RAM)
     23  address of this screen (bitplane + copper list): the top 64 KB of chip RAM
         (MaxLocMem - $10000), so the display itself proves DMA from the highest chip RAM
 The machine stays in the display loop (reset to leave).
@@ -65,6 +68,7 @@ ml:     tst.l   (%a0)                       | ln_Succ = 0: the list's tail
 mlfast: move.l  %a2,%d0
         bne.s   mlnext
         move.l  20(%a0),%a2                 | first fast block: mh_Lower (rounded up below)
+        move.l  24(%a0),%d5                 | and its mh_Upper
 mlnext: move.l  (%a0),%a0
         dbra    %d7,ml
 mldone: lea     data+18*4(%pc),%a3
@@ -80,6 +84,27 @@ scrok:
         move.l  %a4,(23-18)*4(%a3)          | row 23 (a3 = row 18)
         move.w  #0x7fff,0xdff09a            | INTENA off
         move.w  #0x7fff,0xdff096            | DMACON off (the benchmarks run without DMA)
+        move.l  %a4,%sp                     | stack into the screen block (KS 2+ may keep it,
+        add.l   #0xf000,%sp
+                                            | and ExecBase, in fast RAM: the test overwrites it)
+        | fast RAM areas: d3 = pattern test start (above mh_Lower and above this code if it
+        | runs from fast RAM), a2 = benchmark area 64 KB below mh_Upper (= test end)
+        move.l  %a2,%d0
+        beq.s   nofs
+        move.l  %a2,%d3
+        lea     dataend(%pc),%a0
+        cmp.l   %d3,%a0
+        bls.s   ts1
+        cmp.l   %d5,%a0
+        bcc.s   ts1
+        move.l  %a0,%d3
+ts1:    add.l   #0x1000,%d3
+        and.w   #0xf000,%d3
+        move.l  %d5,%d0
+        sub.l   #0x10000,%d0
+        and.w   #0xf000,%d0
+        move.l  %d0,%a2
+nofs:
         | 18: loop count per frame, code in chip RAM
         bsr     bench
         move.l  %d2,(%a3)+
@@ -87,9 +112,6 @@ scrok:
         moveq   #0,%d2
         move.l  %a2,%d0
         beq.s   nofast1
-        add.l   #0x1000,%d0                 | skip the MemHeader / first chunk (Exec owns it,
-        and.w   #0xf000,%d0                 | but nothing else runs: the machine is ours now)
-        move.l  %d0,%a2
         lea     bench(%pc),%a0
         move.l  %a2,%a1
         moveq   #(benchend-bench)/2-1,%d0
@@ -113,15 +135,19 @@ nofast2: move.l %d2,(%a3)+
         move.l  %a2,%d0
         beq.s   nofast3
         moveq   #0,%d2
-        lea     0x1000(%a2),%a0
-        move.l  #0x10000-1,%d0
+        move.l  %d3,%a0
+        move.l  %a2,%d0                     | longwords from d3 to the benchmark area
+        sub.l   %a0,%d0
+        lsr.l   #2,%d0
+        subq.l  #1,%d0
+        move.l  %d0,%d4
         move.l  %a0,%a1
 wr:     move.l  %a1,%d1
         eor.l   #0x5aa5c33c,%d1
         move.l  %d1,(%a1)+
         subq.l  #1,%d0
         bpl.s   wr
-        move.l  #0x10000-1,%d0
+        move.l  %d4,%d0
         move.l  %a0,%a1
 rd:     move.l  %a1,%d1
         eor.l   #0x5aa5c33c,%d1
@@ -215,6 +241,7 @@ copbpl: .word   0x00e0,0x0000,0x00e2,0x0000
 copend:
         .even
 data:   .space  ROWS*4
+dataend:
 """
 
 

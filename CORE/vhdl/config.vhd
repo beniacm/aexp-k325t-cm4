@@ -355,7 +355,10 @@ constant SEL_CFG_FILE      : std_logic_vector(15 downto 0) := x"0101";
 -- START YOUR CONFIGURATION BELOW THIS LINE
 
 constant DIR_START         : string := "/amiga";
-constant CFG_FILE          : string := "/amiga/aexp-" & CORE_VERSION & ".cfg";
+-- K325T phase 2: own settings file (89 menu lines; the V1 core keeps its 74-byte
+-- aexp-V1.cfg, so both bitstreams can share one card).  8.3 name.
+--constant CFG_FILE          : string := "/amiga/aexp-" & CORE_VERSION & ".cfg";
+constant CFG_FILE          : string := "/amiga/aexpk325.cfg";
 
 --------------------------------------------------------------------------------------------------------------------
 -- General configuration settings: Reset, Pause, OSD behavior, Ascal, etc. (Selector 0x0110)
@@ -488,7 +491,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 84;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 89;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -500,7 +503,7 @@ constant OPTM_SIZE         : natural := 84;  -- amount of items including empty 
 -- Main menu view = 24 lines, HDMI Settings submenu view = 7 lines,
 -- HDMI Filter submenu view = 12 lines, VGA submenu view = 10 lines,
 -- OSM Scaling submenu view = 13 lines, OSM-open key submenu view = 8 lines,
--- RAM (Amiga hardware) submenu view = 10 lines.
+-- RAM (Amiga hardware) submenu view = 15 lines.
 -- The main view is the tallest, so OPTM_DY tracks it.
 constant OPTM_DX           : natural := 23;
 constant OPTM_DY           : natural := 24;
@@ -513,10 +516,11 @@ constant OPTM_DY           : natural := 24;
 --   line 57: Keyboard "Amiga" radio (C_MENU_KBD_AMIGA); 0 = MEGA65 mode (default)
 --   lines 62..65: OSM-open key radio (C_MENU_OSMKEY_*); Help (62, default) / F11 /
 --                 F13 / MEGA+Run-Stop -> m2m_keyb's menu-open key (qnice_keys bit 7)
---   lines 69..79: "RAM: %s" submenu (K325T phase 2, replaces the Slow RAM (A501) toggle
+--   lines 69..84: "RAM: %s" submenu (K325T phase 2, replaces the Slow RAM (A501) toggle
 --            of issue #20): memory radio 72 512K chip + 512K slow (default) / 73 512K
---            chip only / 74 1M chip (ECS), chipset radio 76 OCS (default) / 77 ECS
---            (C_MENU_MEM_* / C_MENU_CHIPSET_*). The HDL cold-boots only the emulated
+--            chip only / 74 1M chip (ECS), chipset radio 76 OCS (default) / 77 ECS,
+--            fast RAM radio 79 none (default) / 80 2 MB / 81 4 MB / 82 8 MB (Zorro II
+--            in DDR3) (C_MENU_MEM_* / C_MENU_CHIPSET_* / C_MENU_FAST_*). The HDL cold-boots only the emulated
 --            Amiga on a change, so that amiga_config.vhd replays the userio config
 --            while QNICE keeps running.
 -- An OCS PAL Amiga is a 50 Hz machine, so only 50 Hz HDMI modes are offered.
@@ -618,11 +622,16 @@ constant OPTM_ITEMS        : string :=
    " OCS Chipset\n"         &    -- 76: chipset radio: OCS; default
    " ECS Chipset\n"         &    -- 77: chipset radio: ECS
    "\n"                     &    -- 78: line
-   " Back to main menu\n"   &    -- 79: close submenu
-   "\n"                     &    -- 80: line
-   " About & Help\n"        &    -- 81: help
-   "\n"                     &    -- 82: line
-   " Close Menu\n";              -- 83: close
+   " No Fast RAM\n"         &    -- 79: fast RAM radio: none; default
+   " 2 MB Fast RAM\n"       &    -- 80: fast RAM radio: 2 MB Zorro II (DDR3)
+   " 4 MB Fast RAM\n"       &    -- 81: fast RAM radio: 4 MB
+   " 8 MB Fast RAM\n"       &    -- 82: fast RAM radio: 8 MB
+   "\n"                     &    -- 83: line
+   " Back to main menu\n"   &    -- 84: close submenu
+   "\n"                     &    -- 85: line
+   " About & Help\n"        &    -- 86: help
+   "\n"                     &    -- 87: line
+   " Close Menu\n";              -- 88: close
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -641,6 +650,7 @@ constant OPTM_G_OSMKEY     : integer := 9;   -- OSM-open key radio (issue #8): H
 constant OPTM_G_OSM_MODE   : integer := 10;  -- OSM Scaling radio; read in HDL (mega65.vhd)
 constant OPTM_G_MEM        : integer := 11;  -- memory radio (K325T; was the Slow RAM toggle of issues #20/#21); read and locally cold-booted in mega65.vhd
 constant OPTM_G_CHIPSET    : integer := 12;  -- chipset radio OCS / ECS (K325T); read and locally cold-booted in mega65.vhd
+constant OPTM_G_FAST       : integer := 13;  -- fast RAM radio none / 2 / 4 / 8 MB (K325T); read and locally cold-booted in mega65.vhd
 
 -- !!! DO NOT TOUCH !!!
 type OPTM_GTYPE is array (0 to OPTM_SIZE - 1) of integer range 0 to 2**OPTM_GTC- 1;
@@ -741,11 +751,16 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_CHIPSET + OPTM_G_STDSEL,           -- 76: OCS (default)
                                              OPTM_G_CHIPSET,                           -- 77: ECS
                                              OPTM_G_LINE,                              -- 78: Line
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 79: Close submenu / back to main menu
-                                             OPTM_G_LINE,                              -- 80: Line
-                                             OPTM_G_About   + OPTM_G_HELP,             -- 81: About & Help (WHS(1))
-                                             OPTM_G_LINE,                              -- 82: Line
-                                             OPTM_G_CLOSE                              -- 83: Close Menu
+                                             OPTM_G_FAST + OPTM_G_STDSEL,              -- 79: no fast RAM (default)
+                                             OPTM_G_FAST,                              -- 80: 2 MB
+                                             OPTM_G_FAST,                              -- 81: 4 MB
+                                             OPTM_G_FAST,                              -- 82: 8 MB
+                                             OPTM_G_LINE,                              -- 83: Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 84: Close submenu / back to main menu
+                                             OPTM_G_LINE,                              -- 85: Line
+                                             OPTM_G_About   + OPTM_G_HELP,             -- 86: About & Help (WHS(1))
+                                             OPTM_G_LINE,                              -- 87: Line
+                                             OPTM_G_CLOSE                              -- 88: Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------
