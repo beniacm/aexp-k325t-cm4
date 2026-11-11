@@ -278,6 +278,8 @@ begin
       generic map (ADDR_BITS => 27)
       port map (
          clk => mig_ui_clk, rst => mem_not_ready,
+         -- the framework's memory-side reset (every M2M reset): aborts a burst cleanly (avm_mig.vhd)
+         avm_rst => hr_rst,
          avm_write => mem_write, avm_read => mem_read, avm_address => mem_address,
          avm_writedata => mem_writedata, avm_byteenable => mem_byteenable,
          avm_burstcount => mem_burstcount, avm_readdata => mem_readdata,

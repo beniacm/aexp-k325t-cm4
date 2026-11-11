@@ -459,3 +459,60 @@ stage 2 puts the cache on the same DDR3 that ascal uses.
 Not done in this stage: the fast-RAM write/read test with the stoppable clock (the Zorro II menu
 option was not switched on), a key / mouse test under 15 us stalls (the new emulator parameters
 are by analysis only), a cleaner audio test signal, the stage-2 simulation groundwork.
+
+# Stage 2 of the A1200 route (branch `a1200-ddr3`, 2026-11-11, in progress)
+
+## A. The frozen picture after a full reset: cause and fix
+
+**Mechanism.**  A full M2M reset (`hold_reset`, a long reset-button press, the demo tool before
+every demo) asserts the framework's memory-side reset `hr_rst`: ascal, the framework's Avalon
+arbiter and the FIFOs restart.  `avm_mig` (the Avalon -> MIG bridge of this port) is reset only by
+"memory not ready" and kept whatever transaction it was in.  If the reset fell into a burst:
+- in the middle of a **write burst** (state S_WR, waiting for the rest of the beats), the next
+  master's **read** saw waitrequest low (S_WR accepted any request) and was then ignored: the
+  arbiter waited for read data for ever, ascal's Avalon master was stuck, the frame buffer was no
+  longer read or written (the HDMI output repeats one line buffer: the "white screen with vertical
+  lines"), the flicker-free loop stopped dithering (it follows ascal's write address), QNICE's
+  DDR3 accesses hung as well -- while the Amiga ran on (stage-1 probes: chip/slow-RAM writes
+  ~300,000/s).  No later M2M reset could clear it (avm_mig still not reset), only a new bitstream.
+- in the middle of a **read burst**, the remaining beats went to whichever master the restarted
+  arbiter granted next (wrong data, or a beat count that never matches).
+How often depends on how much of the time avm_mig spends inside a burst when the reset arrives:
+measured 1 in 3 to 1 in 33 resets on stage-1 builds, 1 in 33 on the published phase 2.
+
+**Fix** (`avm_mig.vhd`, new input `avm_rst` = the framework's `hr_rst`): a reset aborts the
+Avalon transaction without breaking the MIG protocol -- a partly gathered write word is dropped, a
+word already handed to the MIG (data + command) is completed, outstanding read words are drained
+from the MIG and discarded, waitrequest stays high until the bridge is idle; and S_WR never accepts
+a read.  The same change is a separate commit on `qmtech-k325t-cm4` (phase 2).
+
+**Second mechanism: ascal's write request survived the reset.**  With the avm_mig fix the board
+still froze after about 1 full reset in 20 (6 of 120, build F), but now the next full reset always
+cleared it.  A debug capture on avm_mig's Avalon input (build I, `stallmon.py avm`: the open write
+burst's start address, burst length, beats still missing, and when it began) caught one: 1.43 us
+after the end of the memory reset a write burst of 64 words began at $4100, 8 words came, 56 never
+did, and the next request (a read of 64 words) waited behind it -- 8 words are exactly one 128-bit
+beat of ascal, burst length 8 x 8.  `ascal.vhd` resets its Avalon process asynchronously but the
+line that clears `avl_write_i` in reset is commented out: a reset during one of ascal's write bursts
+held the write request high through the reset.  The memory side (avm_decrease, the arbiter, avm_mig)
+leaves reset one clock before ascal's Avalon process (its reset release is synchronised once more):
+avm_decrease took the stale request as the first beat of a new burst of 8, the next clock ascal
+(now in its idle state) dropped the request, and the burst never got its other 7 beats.  Fix: the
+reset clears `avl_write_i` (`M2M-UPSTREAM avl-write-reset`, one line in `ascal.vhd`; also a commit
+on `qmtech-k325t-cm4`).  The framework's comment in `clk_m2m.vhd` ("one side can not be reset in the
+middle of e.g. a burst transaction") names the rule; the HyperRAM builds may hit the same.
+
+**Proof on the board** (build J = both fixes, Kickstart 1.3, no disk, `hold_reset` 2.2 s, picture
+captured 15 s later and classified): **160 full resets, 160 times the insert-disk screen, no
+freeze**; the Avalon capture afterwards: bridge idle, every write burst complete.  Before (build F,
+avm_mig fix only): 7 freezes in 141 resets; the published phase 2 froze once in 3 boots of the
+determinism runs and once in 33 resets earlier.  (The freeze also cost a demo run: the reset before
+Enigma.)
+
+**Proof in simulation** (`sim/tb_avm_mig_reset.vhd`: random read / write bursts of 1-128 beats at
+random addresses checked against a reference memory, a MIG native-UI model with random ready
+signals and 15-60 clock read latency, resets at random moments of a transaction; the masters
+abandon their transaction cleanly -- which ascal did not, see the second mechanism): the bridge as it was hangs after 16 resets ("read burst
+never completed"); the fixed one runs 400 resets and 1,213 transactions (and, with `G_ARB`, 2,370
+line-port lines through `mig_arb.vhd` at the same time) without a hang, a wrong word or a MIG
+protocol error.
