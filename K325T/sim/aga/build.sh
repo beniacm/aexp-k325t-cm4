@@ -4,7 +4,7 @@
 #   RTL_DIR   Minimig rtl directory to simulate (default: this tree's submodule with the
 #             K325T patches applied, i.e. CORE/Minimig_MiSTerMEGA65/rtl after build.sh's patch
 #             step).  Pass MiSTer's Minimig-AGA rtl to compare against MiSTer's chipset.
-#   OUT       build directory (default: $SCRATCH/aga/build, outside the repository)
+#   OUT       build directory (default: ext/aga_groundwork/build, outside the repository)
 #   EXTRA     more Verilog files (MiSTer's rtl needs some of its new modules)
 #
 # The RTL is copied into OUT and three simulation-only fixes are applied to the copy (event-ordering
@@ -19,8 +19,8 @@ root="$(cd "$here/../../.." && pwd)"
 RTL="${1:-$root/CORE/Minimig_MiSTerMEGA65/rtl}"
 TG="${TG:-$root/CORE/Minimig_MiSTerMEGA65/rtl/tg68k}"
 FX="${FX:-$root/CORE/Minimig_MiSTerMEGA65/rtl/fx68k}"
-: "${SCRATCH:=/tmp/claude-1000/-home-me-projects-mega65/ae20aebe-73df-4a68-8048-a9d4df735cf0/scratchpad}"
-OUT="${OUT:-$SCRATCH/aga/build}"
+: "${SCRATCH:=$HOME/projects/mega65/ext/aga_groundwork}"
+OUT="${OUT:-$SCRATCH/build}"
 V=/home/linuxbrew/.linuxbrew/bin/verilator
 mkdir -p "$OUT/rtl/fx68k"
 cp "$RTL"/*.v "$RTL"/*.vh "$OUT/rtl/" 2>/dev/null || true
@@ -42,10 +42,13 @@ grep -q 'out<=mem\[out_ptr' "$R/paula_floppy_fifo.v" || { echo "fifo fix" >&2; e
     "$TG/TG68K_Pack.vhd" "$TG/TG68K_ALU.vhd" "$TG/TG68KdotC_Kernel.vhd" -e TG68KdotC_Kernel \
     > tg68k_raw.v 2> ghdl.log) || { cat "$OUT/ghdl.log" >&2; exit 1; }
 sed 's/^module TG68KdotC_Kernel$/module tg68k_ghdl/' "$OUT/tg68k_raw.v" > "$OUT/tg68k.v"
+# stage 3: the stage-2 chip_cache (with the AGA 64-bit read) -> Verilog, for --cache
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/M2M/vhdl/tdp_ram.vhd" \
+    "$root/K325T/chip_cache.vhd" -e chip_cache > chip_cache.v 2> ghdl_cache.log) || { cat "$OUT/ghdl_cache.log" >&2; exit 1; }
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $here/tg68k_wrap.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $here/tg68k_wrap.v $OUT/chip_cache.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j 4 -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \

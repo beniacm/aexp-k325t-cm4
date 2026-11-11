@@ -1,0 +1,24 @@
+diff --git a/rtl/minimig_m65.v b/rtl/minimig_m65.v
+index 840d8e7..9553ee3 100644
+--- a/rtl/minimig_m65.v
++++ b/rtl/minimig_m65.v
+@@ -45,6 +45,9 @@ module minimig_m65
+ 	output        ram_ble_n,      // lower byte enable (bits 7:0), active low
+ 	output        ram_we_n,       // write enable, active low
+ 	output        ram_oe_n,       // output/read enable, active low
++	// K325T stage 3: AGA wide fetch -- words A+1..A+3 of the 64-bit group of the slot's word,
++	// valid with ramdata_in at the clk7_en edge and held until the next clk7n_en (main.vhd)
++	input  [47:0] chip48,
+ 
+ 	// system
+ 	input         rst_ext,        // external reset request, active high
+@@ -134,7 +137,8 @@ minimig minimig_inst
+ 	._ram_ble      (ram_ble_n    ),
+ 	._ram_we       (ram_we_n     ),
+ 	._ram_oe       (ram_oe_n     ),
+-	.chip48        (48'h0        ), // AGA 64-bit fetch: OCS keeps fmode=0, logic prunes
++	// K325T stage 3: was 48'h0 (AGA 64-bit fetch tied off); OCS/ECS keep fmode = 0 and ignore it
++	.chip48        (chip48       ),
+ 
+ 	//system pins
+ 	.rst_ext       (rst_ext      ),

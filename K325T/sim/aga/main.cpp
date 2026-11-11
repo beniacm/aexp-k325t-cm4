@@ -96,6 +96,7 @@ int main(int argc, char** argv) {
   const char* save_fn = nullptr; int save_frame = -1; const char* restore_fn = nullptr;
   unsigned chipset = 0x00, mem = 0x03, cpu = 0x00;
   std::vector<int> shot_frames; bool px28 = false;
+  bool use_cache = false; int shrink = 0, lat_min = 20, lat_span = 40;
   const char* preload_fn = nullptr; uint32_t preload_addr = 0;
   const char* dump_fn = nullptr; uint32_t dump_addr = 0, dump_len = 0;
   int64_t stop_addr = -1; uint32_t stop_val = 0;
@@ -123,6 +124,9 @@ int main(int argc, char** argv) {
       while (p < l.size()) { size_t q = l.find(',', p); if (q == std::string::npos) q = l.size();
         shot_frames.push_back(atoi(l.substr(p, q - p).c_str())); p = q + 1; } }
     else if (a == "--px28") px28 = true;
+    else if (a == "--cache") use_cache = true;
+    else if (a == "--shrink") shrink = atoi(nx());
+    else if (a == "--lat") { lat_min = atoi(nx()); lat_span = atoi(nx()); }
     else if (a == "--preload") { preload_fn = nx(); preload_addr = strtoul(nx(), 0, 0); }
     else if (a == "--dump") { dump_addr = strtoul(nx(), 0, 0); dump_len = strtoul(nx(), 0, 0); dump_fn = nx(); }
     else if (a == "--stop") { stop_addr = strtoll(nx(), 0, 0); stop_val = strtoul(nx(), 0, 0); }
@@ -138,7 +142,12 @@ int main(int argc, char** argv) {
     if (!f) { perror(preload_fn); return 1; }
     std::vector<uint8_t> b(2 << 20); size_t n = fread(b.data(), 1, b.size(), f); fclose(f);
     uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];
-    for (size_t i = 0; i < n; i += 2) cm[((preload_addr + i) >> 1) & 0xfffff] = (uint16_t)((b[i] << 8) | b[i + 1]);
+    uint16_t* dd = (uint16_t*)&r->tb_top->ddr[0];
+    for (size_t i = 0; i < n; i += 2) {
+      uint16_t w = (uint16_t)((b[i] << 8) | b[i + 1]);
+      cm[((preload_addr + i) >> 1) & 0xfffff] = w;          // shadow (C++ peeks, self-check)
+      dd[((preload_addr + i) >> 1) & 0xfffff] = w;          // DDR3 model behind the cache
+    }
     fprintf(stderr, "preloaded %s: %zu bytes at %06x\n", preload_fn, n, preload_addr);
   }
   top->cfg_chipset = chipset; top->cfg_cpu = cpu; top->cfg_mem = mem;
@@ -169,9 +178,31 @@ int main(int argc, char** argv) {
     top->rst_ext = 0; cyc0 = 1000;
     fprintf(stderr, "restored %s at frame %u tick %llu\n", restore_fn, g_frame, (unsigned long long)g_tick);
   }
+  top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
+  top->lat_min = lat_min; top->lat_span = lat_span; top->cache_reset = use_cache;
+  // stage 3, --cache: three clocks.  Source clock 31.310345 MHz (stall_clk.vhd), MIG ui_clk 100 MHz;
+  // the machine clock is the source clock gated like the BUFGCE: a source edge reaches clk only
+  // when the cache's combinational miss is low just before it.  Machine time (g_tick) counts the
+  // machine edges only, so pictures and traces are in machine time as without the cache.
+  const uint64_t SRC_H = 15969, UI_H = 5000;   // half periods in ps
+  uint64_t t_src = SRC_H, t_ui = UI_H, src_edges = 0, stalled = 0;
+  bool src_lvl = false, ui_lvl = false;
+  auto machine_edge = [&]() {
+    if (!use_cache) { top->clk = 0; top->eval(); top->clk = 1; top->eval(); return; }
+    for (;;) {
+      if (t_ui <= t_src) { ui_lvl = !ui_lvl; top->ui_clk = ui_lvl; top->eval(); t_ui += UI_H; continue; }
+      src_lvl = !src_lvl; t_src += SRC_H;
+      if (!src_lvl) { top->src_clk = 0; top->clk = 0; top->eval(); continue; }
+      src_edges++;
+      if (src_edges == 64) top->cache_reset = 0;      // the full reset: the cache latches its mode
+      bool pass = !top->miss;
+      top->src_clk = 1; if (pass) top->clk = 1; top->eval();
+      if (pass) return;
+      stalled++;
+    }
+  };
   for (uint64_t cyc = cyc0;; cyc++) {
-    top->clk = 0; top->eval();
-    top->clk = 1; top->eval();
+    machine_edge();
     g_tick++;
     if (cyc == 200) top->rst_ext = 0;
     int vpos = top->o_vpos;
@@ -255,6 +286,11 @@ int main(int argc, char** argv) {
     }
   }
   if (g_active && g_out) fwrite(&g_cur, sizeof g_cur, 1, g_out);
+  if (use_cache)
+    fprintf(stderr, "cache: shrink %d, %llu source edges, %llu stalled (%.3f %%), fills %u, write-backs %u, "
+            "checked chip reads %u, wrong %u, wrong chip48 %u\n", shrink, (unsigned long long)src_edges,
+            (unsigned long long)stalled, src_edges ? 100.0 * stalled / src_edges : 0.0, top->fills, top->wbacks,
+            top->chk_n, top->chk_bad, top->chk48_bad);
   if (cput) fclose(cput);
   if (dump_fn) {
     uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];

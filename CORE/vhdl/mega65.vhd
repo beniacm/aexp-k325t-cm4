@@ -377,7 +377,8 @@ signal amiga_chip_scrub_addr  : std_logic_vector(17 downto 0);
 signal main_chip_addr         : std_logic_vector(17 downto 0);
 -- K325T stage 2: chip / slow RAM through chip_cache.vhd (identity mode = phase 2's layout)
 signal main_src_clk           : std_logic;
-signal main_cache_cfg         : std_logic_vector(3 downto 0);
+signal main_cache_cfg         : std_logic_vector(4 downto 0);   -- b4 AGA (stage 3)
+signal main_chip_aga          : std_logic;   -- AGA chipset (stage 3: with 2 MB chip RAM in the cache)
 signal main_cache_on          : std_logic;   -- the cache's latched mode
 signal main_cache_miss        : std_logic;
 signal main_cache_rdata       : std_logic_vector(15 downto 0);
@@ -706,6 +707,8 @@ begin
    -- stage 2: 2 MB chip RAM only with chip RAM in the cache (r7 b2 of the stall controller)
    main_mem_chip2m <= main_cache_cfg(2) and main_cache_on;
    main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m or main_mem_chip2m;
+   -- stage 3: AGA (register 7 b0 of the stall controller, like stage 2's 2 MB chip; no menu item yet)
+   main_chip_aga   <= main_cache_cfg(4) and main_mem_chip2m;
    main_fast_size  <= "11" when main_osm_control_i(C_MENU_FAST_8M) = '1' else
                       "10" when main_osm_control_i(C_MENU_FAST_4M) = '1' else
                       "10" when main_osm_control_i(C_MENU_FAST_Z3) = '1' else
@@ -771,6 +774,7 @@ begin
          ram_addr_o           => main_ram_addr,
          ram_data_o           => main_ram_wrdata,
          ram_data_i           => main_ram_rddata,
+         ram_data48_i         => main_cache_rdata48,
          ram_bhe_n_o          => main_ram_bhe_n,
          ram_ble_n_o          => main_ram_ble_n,
          ram_we_n_o           => main_ram_we_n,
@@ -816,6 +820,7 @@ begin
          chip1m_i             => main_mem_chip1m,
          chip2m_i             => main_mem_chip2m,
          ecs_i                => main_chip_ecs,
+         aga_i                => main_chip_aga,
          fast_size_i          => main_fast_size,
          cpu_i                => main_cpu,
          fast_z3_i            => main_fast_z3,

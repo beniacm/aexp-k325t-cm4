@@ -160,6 +160,7 @@ entity amiga_config is
       chip1m_i         : in  std_logic := '0';               -- K325T: 1 MB chip RAM (CC=01, no slow RAM)
       chip2m_i         : in  std_logic := '0';               -- K325T stage 2: 2 MB chip RAM (CC=11, cache only)
       ecs_i            : in  std_logic := '0';               -- K325T: ECS chipset (0xF3 bit 3)
+      aga_i            : in  std_logic := '0';               -- K325T stage 3: AGA chipset (0xF3 bit 4)
       fast_size_i      : in  std_logic_vector(1 downto 0) := "00"; -- K325T: Zorro II fast RAM (0xF5 FF)
       cpu_i            : in  std_logic_vector(1 downto 0) := "00"; -- K325T: CPU type (0xF4 TT; 11 = 68020)
 
@@ -243,6 +244,7 @@ architecture synthesis of amiga_config is
    signal chip1m_q   : std_logic := '0';
    signal chip2m_q   : std_logic := '0';
    signal ecs_q      : std_logic := '0';
+   signal aga_q      : std_logic := '0';
    signal fast_q     : std_logic_vector(1 downto 0) := "00";
    signal cpu_q      : std_logic_vector(1 downto 0) := "00";
 
@@ -269,6 +271,7 @@ begin
                chip1m_q         <= chip1m_i;
                chip2m_q         <= chip2m_i;
                ecs_q            <= ecs_i;
+               aga_q            <= aga_i;
                fast_q           <= fast_size_i;
                cpu_q            <= cpu_i;
                if reset_i = '0' then
@@ -322,6 +325,7 @@ begin
                end if;
                if idx = C_IDX_CHIPCFG then
                   io_din_o(3) <= ecs_q;                       -- E: ECS chipset (K325T)
+                  io_din_o(4) <= aga_q;                       -- G: AGA chipset (K325T stage 3)
                end if;
                if idx = C_IDX_CPUCFG then
                   io_din_o(1 downto 0) <= cpu_q;              -- TT: CPU type (K325T; minimig uses it

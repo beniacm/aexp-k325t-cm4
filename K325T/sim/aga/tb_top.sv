@@ -6,7 +6,21 @@
 // and a DPI hook that the C++ side uses to log every memory access with its source.
 // Simulation tooling only, not part of the core.
 module tb_top (
-  input  wire        clk,
+  input  wire        clk,             // the machine clock (gated source clock when use_cache)
+  // stage 3: chip RAM through the stage-2 chip_cache RTL (GHDL translation) with a DDR3 line-port
+  // model, instead of the ideal memory
+  input  wire        use_cache,
+  input  wire        src_clk,         // ungated source clock (the cache's port A, tags, misses)
+  input  wire        ui_clk,          // MIG ui_clk (fill engine, line-port model)
+  input  wire        cache_reset,     // the M2M full reset: latches mode and shrink, flushes
+  input  wire        cache_on,
+  input  wire [1:0]  shrink,
+  input  wire [7:0]  lat_min, lat_span,   // line-port latency in ui_clk cycles: min + random(span)
+  output wire        miss,            // combinational: the source edge must not reach clk
+  output wire [31:0] fills, wbacks,
+  output reg  [31:0] chk_bad = 0,     // chip reads whose cache data differ from the shadow memory
+  output reg  [31:0] chk48_bad = 0,
+  output reg  [31:0] chk_n = 0,
   input  wire        rst_ext,
   input  wire [15:0] cfg_chipset,   // 0xF3 payload  (bit4 AGA, bit3 ECS)
   input  wire [15:0] cfg_cpu,       // 0xF4 payload
@@ -119,6 +133,64 @@ module tb_top (
   wire [19:0] cw = ram_addr[20:1];
   wire [17:0] rw18 = ram_addr[18:1];
 
+  // ---------------- stage 3: the chip_cache RTL and the line-port model ----------------
+  wire [15:0] cc_rdata;
+  wire [47:0] cc_rdata48;
+  wire        cc_req, cc_we, lp_busy, lp_rvalid, lp_done;
+  wire [27:0] cc_addr;
+  wire [511:0] cc_wdata;
+  wire [127:0] lp_rdata;
+  wire        cc_mode;
+  chip_cache i_cache (
+    .clk_i(src_clk), .reset_i(cache_reset), .cache_on_i(cache_on), .shrink_i(shrink), .chip1m_i(1'b0),
+    .chip_sel_i(use_cache & is_chip), .slow_sel_i(1'b0), .addr_i(ram_addr[20:1]), .wdata_i(ram_wdata),
+    .we_n_i(ram_we_n), .oe_n_i(ram_oe_n), .bhe_n_i(ram_bhe_n), .ble_n_i(ram_ble_n),
+    .rdata_o(cc_rdata), .rdata48_o(cc_rdata48), .miss_o(miss), .fills_o(fills), .wbacks_o(wbacks),
+    .mode_o(cc_mode), .ui_clk_i(ui_clk), .lp_req_o(cc_req), .lp_we_o(cc_we), .lp_addr_o(cc_addr),
+    .lp_wdata_o(cc_wdata), .lp_busy_i(lp_busy), .lp_rvalid_i(lp_rvalid), .lp_rdata_i(lp_rdata),
+    .lp_done_i(lp_done));
+  // DDR3 behind mig_arb's line port: 2 MB chip RAM = backing words 0..1M-1 at G_DDR_BASE ($2000000)
+  reg [15:0] ddr [0:1048575] /*verilator public*/;
+  reg        lp_busy_r = 0, lp_rvalid_r = 0, lp_done_r = 0;
+  reg [127:0] lp_rdata_r = 0;
+  reg [9:0]  lp_cnt = 0;
+  reg [2:0]  lp_beat = 0;
+  reg        lp_isw = 0;
+  reg [14:0] lp_line = 0;
+  reg [31:0] lp_rnd = 32'h12345678;
+  assign lp_busy = lp_busy_r; assign lp_rvalid = lp_rvalid_r; assign lp_done = lp_done_r;
+  assign lp_rdata = lp_rdata_r;
+  integer k;
+  always @(posedge ui_clk) begin
+    lp_rvalid_r <= 0; lp_done_r <= 0;
+    lp_rnd <= {lp_rnd[30:0], lp_rnd[31] ^ lp_rnd[21] ^ lp_rnd[1] ^ lp_rnd[0]};
+    if (!lp_busy_r) begin
+      if (cc_req) begin
+        lp_busy_r <= 1; lp_isw <= cc_we; lp_line <= cc_addr[19:5]; lp_beat <= 0;
+        lp_cnt <= {2'b0, lat_min} + (lat_span == 0 ? 10'd0 : {2'b0, lp_rnd[7:0] % lat_span});
+        if (cc_we) for (k = 0; k < 32; k = k + 1) ddr[{cc_addr[19:5], k[4:0]}] <= cc_wdata[16*k +: 16];
+      end
+    end else if (lp_cnt != 0) lp_cnt <= lp_cnt - 1;
+    else if (lp_isw) begin lp_done_r <= 1; lp_busy_r <= 0; end
+    else begin
+      for (k = 0; k < 8; k = k + 1) lp_rdata_r[16*k +: 16] <= ddr[{lp_line, lp_beat[1:0], k[2:0]}];
+      lp_rvalid_r <= 1;
+      lp_beat <= lp_beat + 1;
+      if (lp_beat == 3) begin lp_done_r <= 1; lp_busy_r <= 0; end
+    end
+  end
+  // shadow check: at the clk7_en edge that ends a chip read slot the cache's data must equal the
+  // shadow memory (every chip write is also applied to chipmem below)
+  always @(posedge clk) if (use_cache && clk7_en && !ram_oe_n && is_chip) begin
+    chk_n <= chk_n + 1;
+    if (cc_rdata != chipmem[cw]) chk_bad <= chk_bad + 1;
+    if (cc_rdata48 != {chipmem[{cw[19:2], cw[1:0] + 2'd1}], chipmem[{cw[19:2], cw[1:0] + 2'd2}],
+                       chipmem[{cw[19:2], cw[1:0] + 2'd3}]}) chk48_bad <= chk48_bad + 1;
+  end
+  reg sel_cache_q = 0;
+  always @(posedge clk) sel_cache_q <= use_cache & is_chip;
+  wire [15:0] ramdata_mux = sel_cache_q ? cc_rdata : ram_q;
+
   always @(posedge clk) begin
     if (is_chip) ram_q <= chipmem[cw];
     else if (is_slow) ram_q <= slowmem[rw18];
@@ -134,7 +206,8 @@ module tb_top (
     // every tick, so by clk7n_en it held the NEXT slot's words: FMODE 1-3 pictures were wrong.)
     chip48_n <= {chipmem[{cw[19:2], cw[1:0] + 2'd1}], chipmem[{cw[19:2], cw[1:0] + 2'd2}],
                  chipmem[{cw[19:2], cw[1:0] + 2'd3}]};
-    if (clk7_en) chip48_q <= chip48_n;
+    // with the cache: the same holding register, loaded from the cache's 64-bit read
+    if (clk7_en) chip48_q <= use_cache ? cc_rdata48 : chip48_n;
     if (!ram_we_n) begin
       if (is_chip) begin
         if (!ram_bhe_n) chipmem[cw][15:8] <= ram_wdata[15:8];
@@ -157,7 +230,7 @@ module tb_top (
     ._cpu_as(cpu_as_n), ._cpu_uds(cpu_uds_n), ._cpu_lds(cpu_lds_n), .cpu_r_w(cpu_rw),
     ._cpu_dtack(cpu_dtack_n), ._cpu_reset(cpu_reset_n), ._cpu_reset_in(cpu_reset_out_n),
     .nmi_addr(nmi_addr), .ovr(),
-    .ram_data(ram_wdata), .ramdata_in(ram_q), .ram_address({ram_addr23, ram_addr}),
+    .ram_data(ram_wdata), .ramdata_in(ramdata_mux), .ram_address({ram_addr23, ram_addr}),
     ._ram_bhe(ram_bhe_n), ._ram_ble(ram_ble_n), ._ram_we(ram_we_n), ._ram_oe(ram_oe_n),
     .chip48(chip48_q),
     .rst_ext(rst_ext), .rst_out(), .clk(clk), .clk7_en(clk7_en), .clk7n_en(clk7n_en),

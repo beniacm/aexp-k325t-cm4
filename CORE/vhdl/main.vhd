@@ -66,6 +66,9 @@ entity main is
       ram_addr_o              : out std_logic_vector(22 downto 1);
       ram_data_o              : out std_logic_vector(15 downto 0);  -- write data
       ram_data_i              : in  std_logic_vector(15 downto 0);  -- read data
+      -- K325T stage 3: AGA wide fetch, words A+1..A+3 of the 64-bit group (chip_cache.vhd rdata48_o),
+      -- same timing as ram_data_i; held here from clk7_en to the next one (minimig's chip48)
+      ram_data48_i            : in  std_logic_vector(47 downto 0);
       ram_bhe_n_o             : out std_logic;                      -- byte enable bits 15:8, active low
       ram_ble_n_o             : out std_logic;                      -- byte enable bits 7:0, active low
       ram_we_n_o              : out std_logic;                      -- write enable, active low
@@ -119,6 +122,7 @@ entity main is
       chip1m_i                : in  std_logic := '0';
       chip2m_i                : in  std_logic := '0';
       ecs_i                   : in  std_logic := '0';
+      aga_i                   : in  std_logic := '0';   -- K325T stage 3: AGA chipset (0xF3 bit 4)
       -- K325T phase 2: Zorro II fast RAM size "00" none, "01" 2 MB, "10" 4 MB, "11" 8 MB
       -- (cpu_wrapper autoconfig) and its memory port (amiga_fastram in mega65.vhd)
       fast_size_i             : in  std_logic_vector(1 downto 0) := "00";
@@ -203,6 +207,7 @@ architecture synthesis of main is
 
          ram_data       : out std_logic_vector(15 downto 0);
          ramdata_in     : in  std_logic_vector(15 downto 0);
+         chip48         : in  std_logic_vector(47 downto 0);
          ram_address    : out std_logic_vector(22 downto 1);
          ram_bhe_n      : out std_logic;
          ram_ble_n      : out std_logic;
@@ -326,6 +331,10 @@ architecture synthesis of main is
    -- amiga_clk outputs
    signal clk7_en          : std_logic;
    signal clk7n_en         : std_logic;
+   -- K325T stage 3: the chip48 holding register (Denise takes {data16, chip48} at clk7n_en, two
+   -- ticks after the clk7_en edge at which it took the 16-bit word; by then the next slot's address
+   -- is on the memory port, so the 48 bits must be held: MiSTer's sdram_ctrl holds them the same way)
+   signal chip48_hold      : std_logic_vector(47 downto 0) := (others => '0');
    signal c1               : std_logic;
    signal c3               : std_logic;
    signal cck              : std_logic;
@@ -594,6 +603,7 @@ begin
          chip1m_i         => chip1m_i,
          chip2m_i         => chip2m_i,
          ecs_i            => ecs_i,
+         aga_i            => aga_i,
          fast_size_i      => fast_size_i,
          cpu_i            => cpu_i,
          io_uio_o         => io_uio,
@@ -800,6 +810,13 @@ begin
    -- The Minimig core itself
    ---------------------------------------------------------------------------
 
+   p_chip48 : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         if clk7_en = '1' then chip48_hold <= ram_data48_i; end if;
+      end if;
+   end process p_chip48;
+
    i_minimig : minimig_m65
       port map (
          cpu_address    => cpu_addr,
@@ -817,6 +834,7 @@ begin
 
          ram_data       => ram_data_o,
          ramdata_in     => ram_data_i,
+         chip48         => chip48_hold,
          ram_address    => ram_addr_o,
          ram_bhe_n      => ram_bhe_n_o,
          ram_ble_n      => ram_ble_n_o,
