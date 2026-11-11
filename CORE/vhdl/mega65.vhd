@@ -373,6 +373,7 @@ signal main_cache_cfg         : std_logic_vector(3 downto 0);
 signal main_cache_on          : std_logic;   -- the cache's latched mode
 signal main_cache_miss        : std_logic;
 signal main_cache_rdata       : std_logic_vector(15 downto 0);
+signal main_cache_rdata48     : std_logic_vector(47 downto 0);   -- AGA chip48 (stage 3)
 signal main_cache_fills       : unsigned(31 downto 0);
 signal main_cache_wbacks      : unsigned(31 downto 0);
 signal main_cc_chip_sel       : std_logic;
@@ -1040,6 +1041,7 @@ begin
          bhe_n_i      => main_cc_bhe_n,
          ble_n_i      => main_cc_ble_n,
          rdata_o      => main_cache_rdata,
+         rdata48_o    => main_cache_rdata48,
          miss_o       => main_cache_miss,
          fills_o      => main_cache_fills,
          wbacks_o     => main_cache_wbacks,

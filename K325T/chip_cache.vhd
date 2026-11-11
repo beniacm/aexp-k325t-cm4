@@ -24,7 +24,13 @@
 --    Replacement: an invalid way first, else pseudo-random.
 -- amiga_cold_boot's scrub of $4 (ExecBase) arrives as an ordinary chip write (mega65.vhd muxes it
 -- onto the port), so it goes through the cache like any other write.
--- Not in this version (study section 3): prefetchers, 64-bit AGA path, write miss without stall.
+-- AGA wide fetch (stage 3): the data RAM is organised 64 bits wide (8 byte lanes of 128 K x 8, the
+-- same 256 tiles): one port-A read gives the whole aligned 64-bit group of the accessed word; rdata_o
+-- is the accessed word, rdata48_o the other three words in sequential order from it (A+1, A+2, A+3
+-- modulo the group: MiSTer's SDRAM burst order, minimig's chip48), with the same timing as rdata_o.
+-- Port B moves a line as 8 x 64 bits (was 32 x 16).  Addressing, tags, identity layout, stalls and
+-- write behaviour are unchanged.
+-- Not in this version (study section 3): prefetchers, write miss without stall.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -50,6 +56,7 @@ entity chip_cache is
       bhe_n_i     : in  std_logic;
       ble_n_i     : in  std_logic;
       rdata_o     : out std_logic_vector(15 downto 0);
+      rdata48_o   : out std_logic_vector(47 downto 0);   -- AGA chip48: words A+1..A+3 of the group
       miss_o      : out std_logic;     -- combinational: stop the Amiga before the next edge
       -- statistics (clk_i)
       fills_o     : out unsigned(31 downto 0);
@@ -90,11 +97,13 @@ architecture rtl of chip_cache is
    signal miss        : std_logic;
    signal hway        : std_logic;
 
-   -- port A
+   -- port A (word address a_addr: index a_addr(18 downto 2), lane a_addr(1 downto 0))
    signal a_addr      : std_logic_vector(18 downto 0);
    signal a_wdata     : std_logic_vector(15 downto 0);
    signal a_we_u, a_we_l : std_logic;
-   signal q_u, q_l    : std_logic_vector(7 downto 0);
+   type q_t is array (0 to 3) of std_logic_vector(15 downto 0);
+   signal q           : q_t;                        -- the four words of the group
+   signal a_lane_q    : unsigned(1 downto 0) := (others => '0');   -- lane of the word in q
 
    -- miss handling (clk_i)
    type mst_t is (M_IDLE, M_WAIT, M_INSTALL, M_FLUSH);
@@ -118,10 +127,10 @@ architecture rtl of chip_cache is
    signal req_s1, req_s2, req_d : std_logic := '0';
    attribute ASYNC_REG of req_s1, req_s2 : signal is "TRUE";
    signal ack_tgl     : std_logic := '0';
-   signal b_addr      : std_logic_vector(18 downto 0) := (others => '0');
-   signal b_wdata     : std_logic_vector(15 downto 0) := (others => '0');
+   signal b_addr      : std_logic_vector(16 downto 0) := (others => '0');   -- 64-bit group index
+   signal b_wdata     : std_logic_vector(63 downto 0) := (others => '0');
    signal b_we        : std_logic := '0';
-   signal b_qu, b_ql  : std_logic_vector(7 downto 0);
+   signal b_q         : std_logic_vector(63 downto 0);
    signal f_cnt       : unsigned(5 downto 0) := (others => '0');
    signal f_line      : std_logic_vector(511 downto 0) := (others => '0');
    signal f_w         : unsigned(1 downto 0) := (others => '0');
@@ -156,18 +165,33 @@ begin
    a_we_l <= '1' when acc = '1' and we_n_i = '0' and ble_n_i = '0' and (mode = '0' or miss = '0') else '0';
 
    -- tdp_ram directly (dualport_2clk_ram passes its clocks through an expression: one delta of
-   -- delay that races the registers feeding it in simulation)
-   ram_u : entity work.tdp_ram
-      generic map (ADDR_WIDTH => 19, DATA_WIDTH => 8)
-      port map (clock_a => clk_i, address_a => a_addr, data_a => a_wdata(15 downto 8), wren_a => a_we_u,
-                q_a => q_u, clock_b => ui_clk_i, address_b => b_addr, data_b => b_wdata(15 downto 8),
-                wren_b => b_we, q_b => b_qu);
-   ram_l : entity work.tdp_ram
-      generic map (ADDR_WIDTH => 19, DATA_WIDTH => 8)
-      port map (clock_a => clk_i, address_a => a_addr, data_a => a_wdata(7 downto 0), wren_a => a_we_l,
-                q_a => q_l, clock_b => ui_clk_i, address_b => b_addr, data_b => b_wdata(7 downto 0),
-                wren_b => b_we, q_b => b_ql);
-   rdata_o <= q_u & q_l;
+   -- delay that races the registers feeding it in simulation).  8 byte lanes: lane k (word k of
+   -- the group) upper = 2k+1, lower = 2k; port B word k = b_wdata(16k+15 downto 16k).
+   g_lane : for k in 0 to 3 generate
+      signal we_u, we_l : std_logic;
+   begin
+      we_u <= a_we_u when unsigned(a_addr(1 downto 0)) = k else '0';
+      we_l <= a_we_l when unsigned(a_addr(1 downto 0)) = k else '0';
+      ram_u : entity work.tdp_ram
+         generic map (ADDR_WIDTH => 17, DATA_WIDTH => 8)
+         port map (clock_a => clk_i, address_a => a_addr(18 downto 2), data_a => a_wdata(15 downto 8),
+                   wren_a => we_u, q_a => q(k)(15 downto 8), clock_b => ui_clk_i, address_b => b_addr,
+                   data_b => b_wdata(16 * k + 15 downto 16 * k + 8), wren_b => b_we,
+                   q_b => b_q(16 * k + 15 downto 16 * k + 8));
+      ram_l : entity work.tdp_ram
+         generic map (ADDR_WIDTH => 17, DATA_WIDTH => 8)
+         port map (clock_a => clk_i, address_a => a_addr(18 downto 2), data_a => a_wdata(7 downto 0),
+                   wren_a => we_l, q_a => q(k)(7 downto 0), clock_b => ui_clk_i, address_b => b_addr,
+                   data_b => b_wdata(16 * k + 7 downto 16 * k), wren_b => b_we,
+                   q_b => b_q(16 * k + 7 downto 16 * k));
+   end generate;
+   -- the RAMs register the address every clk_i edge: the lane select follows one edge later
+   process (clk_i)
+   begin
+      if rising_edge(clk_i) then a_lane_q <= unsigned(a_addr(1 downto 0)); end if;
+   end process;
+   rdata_o   <= q(to_integer(a_lane_q));
+   rdata48_o <= q(to_integer(a_lane_q + 1)) & q(to_integer(a_lane_q + 2)) & q(to_integer(a_lane_q + 3));
 
 
    ---------------------------------------------------------------- tags and misses (clk_i)
@@ -257,18 +281,18 @@ begin
             when F_IDLE =>
                if req_s2 /= req_d then
                   f_cnt <= (others => '0');
-                  b_addr <= r_way & std_logic_vector(r_set) & "00000";
+                  b_addr <= r_way & std_logic_vector(r_set) & "000";
                   if r_vdirty = '1' then fst <= F_EVRD; else fst <= F_RDREQ; end if;
                end if;
             when F_EVRD =>
-               -- read the victim's 32 words from port B (one cycle of latency)
+               -- read the victim's 8 x 64 bits from port B (one cycle of latency)
                if f_cnt /= 0 then
-                  f_line(16 * to_integer(f_cnt - 1) + 15 downto 16 * to_integer(f_cnt - 1)) <= b_qu & b_ql;
+                  f_line(64 * to_integer(f_cnt - 1) + 63 downto 64 * to_integer(f_cnt - 1)) <= b_q;
                end if;
-               if f_cnt = 32 then
+               if f_cnt = 8 then
                   fst <= F_EVWR;
                else
-                  b_addr(4 downto 0) <= std_logic_vector(f_cnt(4 downto 0) + 1);
+                  b_addr(2 downto 0) <= std_logic_vector(f_cnt(2 downto 0) + 1);
                   f_cnt <= f_cnt + 1;
                end if;
             when F_EVWR =>
@@ -300,11 +324,11 @@ begin
                   end if;
                end if;
             when F_WRB =>
-               -- write the 32 words into the data RAM (port B)
-               b_addr <= r_way & std_logic_vector(r_set) & std_logic_vector(f_cnt(4 downto 0));
-               b_wdata <= f_line(16 * to_integer(f_cnt(4 downto 0)) + 15 downto 16 * to_integer(f_cnt(4 downto 0)));
+               -- write the line into the data RAM (port B), 8 x 64 bits
+               b_addr <= r_way & std_logic_vector(r_set) & std_logic_vector(f_cnt(2 downto 0));
+               b_wdata <= f_line(64 * to_integer(f_cnt(2 downto 0)) + 63 downto 64 * to_integer(f_cnt(2 downto 0)));
                b_we <= '1';
-               if f_cnt = 31 then fst <= F_ACK; end if;
+               if f_cnt = 7 then fst <= F_ACK; end if;
                f_cnt <= f_cnt + 1;
             when F_ACK =>
                ack_tgl <= not ack_tgl;

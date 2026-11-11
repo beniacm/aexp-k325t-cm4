@@ -32,6 +32,7 @@ architecture sim of tb_chip_cache is
    signal chip_sel, slow_sel, we_n, oe_n, bhe_n, ble_n : std_logic := '1';
    signal addr : std_logic_vector(20 downto 1) := (others => '0');
    signal wdata, rdata : std_logic_vector(15 downto 0) := (others => '0');
+   signal rdata48 : std_logic_vector(47 downto 0);
    signal fills, wbacks : unsigned(31 downto 0);
    signal mode : std_logic;
    signal lp_req, lp_we, lp_busy, lp_rvalid, lp_done : std_logic;
@@ -61,7 +62,7 @@ begin
       port map (clk_i => clk, reset_i => reset, cache_on_i => cache_on, shrink_i => shrink,
                 chip1m_i => '1', chip_sel_i => chip_sel, slow_sel_i => slow_sel, addr_i => addr,
                 wdata_i => wdata, we_n_i => we_n, oe_n_i => oe_n, bhe_n_i => bhe_n, ble_n_i => ble_n,
-                rdata_o => rdata, miss_o => miss, fills_o => fills, wbacks_o => wbacks, mode_o => mode,
+                rdata_o => rdata, rdata48_o => rdata48, miss_o => miss, fills_o => fills, wbacks_o => wbacks, mode_o => mode,
                 ui_clk_i => ui_clk, lp_req_o => lp_req, lp_we_o => lp_we, lp_addr_o => lp_addr,
                 lp_wdata_o => lp_wdata, lp_busy_i => lp_busy, lp_rvalid_i => lp_rvalid,
                 lp_rdata_i => lp_rdata, lp_done_i => lp_done);
@@ -91,7 +92,8 @@ begin
       type ref_t is array (natural range <>) of std_logic_vector(15 downto 0);
       variable ref : ref_t(0 to 2**21 - 1) := (others => (others => '0'));   -- chip 2M words? (1M) + slow
       variable s1, s2 : positive := 5; variable r : real;
-      variable a, ra, run, bad, nacc, ticks : natural := 0;
+      variable a, ra, run, bad, nacc, ticks, bad48, g : natural := 0;
+      variable w48 : std_logic_vector(47 downto 0);
       variable is_slow, is_wr : boolean;
       variable be : std_logic_vector(1 downto 0);
       variable d : std_logic_vector(15 downto 0);
@@ -135,6 +137,13 @@ begin
          tick; tick;                     -- ticks 0, 1
          tick;                           -- tick 2: the consumer edge
          if not is_wr then
+            -- stage 3: the AGA chip48 words (A+1, A+2, A+3 inside the aligned group of 4)
+            g := ra - (ra mod 4);
+            w48 := ref(g + (ra + 1) mod 4) & ref(g + (ra + 2) mod 4) & ref(g + (ra + 3) mod 4);
+            if rdata48 /= w48 then
+               bad48 := bad48 + 1;
+               if bad48 < 10 then report "chip48 at " & integer'image(ra) & " wrong" severity error; end if;
+            end if;
             if rdata /= ref(ra) then
                bad := bad + 1;
                if bad < 10 then
@@ -156,9 +165,9 @@ begin
       wait until rising_edge(clk);
       report "mode " & integer'image(G_MODE) & " shrink " & integer'image(G_SHRINK) & ": " &
              integer'image(nacc) & " accesses in " & integer'image(ticks) & " machine ticks, wrong reads " &
-             integer'image(bad) & ", fills " & integer'image(to_integer(fills)) & ", write-backs " &
+             integer'image(bad) & ", wrong chip48 " & integer'image(bad48) & ", fills " & integer'image(to_integer(fills)) & ", write-backs " &
              integer'image(to_integer(wbacks)) & ", MIG errors " & integer'image(mig_err);
-      if bad = 0 and mig_err = 0 and (G_MODE = 0 or fills > 0) then
+      if bad = 0 and bad48 = 0 and mig_err = 0 and (G_MODE = 0 or fills > 0) then
          report "TB_CHIP_CACHE_PASS";
       else
          report "TB_CHIP_CACHE_FAIL" severity error;
