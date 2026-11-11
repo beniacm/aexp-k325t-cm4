@@ -14,7 +14,7 @@ The code runs from chip RAM (no fast RAM: a stock A1200 runs it from chip RAM th
 instruction cache of the 68EC020; a loop body of 8 instructions fits in it).
 Results: 4 x 11 words at RESULT (chip RAM, for the bench: --dump), and on screen as rows of 32
 bit cells (marker row $FFFFFFFF, then one row per result: condition << 24 | loop << 16 | CCK),
-1 bitplane lores, cells 8 pixels x 4 lines, white = 1, so that an emulator screenshot can be
+1 bitplane lores, cells 8 pixels x 4 lines (row pitch 5 lines), white = 1, so that an emulator screenshot can be
 decoded the same way (decode subcommand).
 The 68020 build turns the instruction cache on first (MOVEC CACR, as Kickstart does on an A1200).
 Usage:  mk_cputime.py build OUTDIR      -> OUTDIR/cputime.bin (ORG, for the bench), cputime.adf,
@@ -223,7 +223,7 @@ show:   move.w  #0x7fff,0x96(%%a6)
         move.l  #0x%(magic)x,0x%(done)x
 9:      bra.s   9b
 
-row:                                        | d0 -> 32 cells at a0 (8 px x 4 lines), a0 += 6 lines
+row:                                        | d0 -> 32 cells at a0 (8 px x 4 lines), a0 += 5 lines
         moveq   #31,%%d1
 1:      moveq   #0,%%d2
         btst    %%d1,%%d0
@@ -236,7 +236,7 @@ row:                                        | d0 -> 32 cells at a0 (8 px x 4 lin
         move.b  %%d2,120(%%a2)
         addq.l  #1,%%a0
         dbra    %%d1,1b
-        lea     6*40-32(%%a0),%%a0
+        lea     5*40-32(%%a0),%%a0
         rts
 
         .balign 4
@@ -287,21 +287,23 @@ def decode(fn, xscale=2, yscale=1):
         if len(xs) < 32 * 6 * xscale * 0.8:
             continue
         x0 = xs[0]
-        if all(white(x0 + i * pitch + 2 * xscale, y) for i in range(32)):
+        if all(white(int(x0 + i * pitch + 2 * xscale), y) for i in range(32)):
             break
     else:
         return {"error": "marker row not found"}
     vals = {}
     rows = []
     for r in range(1 + 4 * len(LOOPS)):
-        yy = y + r * 6 * yscale + yscale
+        yy = int(y + r * 5 * yscale + yscale)
         v = 0
         for i in range(32):
-            v = (v << 1) | (1 if white(x0 + i * pitch + 3 * xscale, yy) else 0)
+            v = (v << 1) | (1 if white(int(x0 + i * pitch + 3 * xscale), yy) else 0)
         rows.append(v)
     if rows[0] != 0xFFFFFFFF:
         return {"error": "marker row decode %08x" % rows[0]}
     for v in rows[1:]:
+        if v == 0:
+            continue
         c, l, cck = v >> 24, (v >> 16) & 0xFF, v & 0xFFFF
         vals[(c, l)] = cck
     return table(vals)
@@ -321,8 +323,8 @@ if __name__ == "__main__":
     if len(a) >= 3 and a[1] == "build":
         build(a[2])
     elif len(a) >= 3 and a[1] == "decode":
-        xs = int(a[a.index("--xscale") + 1]) if "--xscale" in a else 2
-        ys = int(a[a.index("--yscale") + 1]) if "--yscale" in a else 1
+        xs = float(a[a.index("--xscale") + 1]) if "--xscale" in a else 2
+        ys = float(a[a.index("--yscale") + 1]) if "--yscale" in a else 1
         print(json.dumps(decode(a[2], xs, ys), indent=1))
     elif len(a) >= 3 and a[1] == "dump":
         print(json.dumps(dump(a[2]), indent=1))

@@ -941,3 +941,289 @@ bus), 436 RAMB36 (unchanged), 74 DSP48.
   14/17, Eon 13/32, Batman 8/44), as between two phase-2 runs (the menu-driven start jitters).
 - Not verified on the board: the 128 MB Zorro III board (SysInfo's pattern test over all 128 MB
   had not finished after 75 s; whether it is slow or hangs is open).
+
+# Stage 3 groundwork: AGA + 68EC020 in simulation (branch `a1200-aga`, 2026-11-11)
+
+Prepared on top of the committed head of `a1200-ddr3` (stage 1 + the stage-2 reset fixes) plus the
+68020 commit of `cpu-tg68k` (cherry-picked), so that it merges onto stage 2 when that lands.  No board,
+no Vivado: Verilator 5.054, GHDL 5 (TG68K -> Verilog), FS-UAE 3.1.66 (distribution package).
+
+## The bench (`sim/aga/`)
+
+`build.sh` builds the A1200 DDR3 study's trace bench from this tree's Minimig (submodule + K325T
+patches, three simulation-only race fixes applied to a copy) with the TG68K translated by
+`ghdl --synth --out=verilog` (same generics as cpu_wrapper's instance; `tg68k_wrap.v` gives it the
+lower-case port names).  cpu_wrapper's CPU comes from the 0xF4 config word as in MiSTer (0 = fx68k,
+3 = TG68K 68020).  Memory: 2 MB chip RAM as an ideal 1-tick memory, `chip48` modelled like MiSTer's
+SDRAM burst.  Options of `obj_dir/tb`: `--kick` (256/512 KB, read in place), `--chipset 0x10` (AGA),
+`--mem 0x03` (2 MB chip), `--cpu`, `--preload FILE ADDR` + `tools/mk_agatest.py`'s boot ROM (no
+Kickstart needed), `--shot/--shot-frames` (PPM, rows from Denise's syncs), `--px28`, `--dump`,
+`--stop ADDR VALUE`, `--out` (access trace for the cache model), `--cputrace`, `--save/--restore`.
+`mister/build_mister.sh` builds MiSTer's own full-system simulation (Minimig-AGA_MiSTer master
+`7d5d3c2`, read-only clone copied to the scratch area) with a video tap and the same preload/stop
+options, so that every payload also runs on MiSTer's current chipset, cpu_wrapper and 68EC020 model.
+Speed: ~2.2 s per frame (ours with the TG68K), ~6 s per frame (MiSTer's full system).
+
+Found on the way: the study's bench registered `chip48` on every tick, so by the time Denise copies
+it (clk7n_en, two ticks after the 16-bit word) it held the *next* slot's words.  Every FMODE 1-3
+picture was wrong in that bench (the study only counted traffic, so its numbers stand).  The
+SDRAM controller holds its `chip48` registers for the whole slot; the bench now latches them at
+the clk7_en edge where Denise takes the 16-bit word (see the interface spec below).  Also: MiSTer's
+own system simulation has the same copper race as ours (`agnus_copper.v` blocking assignments in
+separate clocked blocks): without the fix the copper never starts there either.
+
+## Results: Kickstart 3.1 boot and the AGA checks
+
+**Kickstart 3.1 (40.068, the A1200 ROM) with AGA + TG68K 68020 + 2 MB chip boots to the insert-disk
+screen** (first drawn between frame 200 and 250 of the run; frames 250-400 identical apart from the
+animation).  The access trace of this boot (frames 1-400, 16.4 M accesses) feeds the cache model.
+
+AGA tests (`tools/mk_agatest.py`, own code; every test is one still picture of 16 x 16 blocks whose
+24-bit colours follow from the documented register semantics; the checker samples every block and,
+for HAM8, every pixel of the modify sequence):
+
+| test | what | ours (AExp + K325T patches) | MiSTer master (full system) | FS-UAE 3.1.66 (A1200, KS 3.1, from the ADF) |
+|---|---|---|---|---|
+| pal256 | 8 planes lores FMODE 0, 256 colours via BPLCON3 banks 0-7 + LOCT | 256/256 | 256/256 | 256/256 |
+| fmode1 / fmode2 | the same with 32-bit fetches, DDFSTOP $C8 | 256/256 each | 256/256 each | 256/256 each |
+| fmode3 | 64-bit fetches, DDFSTOP $B8 | 256/256 | 256/256 | 256/256 |
+| ddf3c | fmode3 with DDFSTRT $3C (4 CCK off the 32-CCK fetch grid): the picture moves 8 lores px | moves 8 px | moves **64 px** (one 32-CCK fetch unit) | moves **64 px** |
+| hires8f3 | 8 planes hires FMODE 3 (640 px) | 256/256 | 256/256 | 256/256 |
+| xor | BPLCON4 BPLAM = $A5 from block row 8 (copper) | 256/256 | 256/256 | 256/256 |
+| ham8 | HAM8 (planes 1-2 control), palette + B/R/G modify, low 2 bits kept | 256/256 blocks, 1024/1024 pixels | 256/256, 1024/1024 | 256/256, 1024/1024 |
+| spr16 / spr32 / spr64 | 8 sprites, FMODE sprite width 16/32/64, BPLCON4 ESPRM=4 / OSPRM=9 colour banks | 8/8 each (width, height, colours) | 8/8 each | 8/8 each |
+
+One mismatch: **ddf3c** -- with FMODE 3 and a DDFSTRT that is not on the 32-CCK fetch grid, this
+tree starts the fetch 4 CCK later (picture 8 px right), MiSTer master and FS-UAE start one whole fetch
+unit later (64 px right).  Two independent references agree, so ours is the odd one; MiSTer's #278
+("FMODE 1/2/3 fetch that does not start on the 8 or 16 pixel step ... now matching WinUAE", Turrican 2
+AGA) is the likely fix to take.  My test's own expectation (8 px) was a guess, not documentation: the
+public AGA documents do not say what the hardware does here.  Everything else agrees with the
+documented semantics in all three.  What the tests do not
+cover, and where MiSTer master differs from AExp's base (`eb7a26e`, 2026-06-03; ~90 commits since,
+none of them in this tree): AGA fine positioning (35/70 ns bits of DIWHIGH and SPRxCTL, MiSTer #259,
+#260; 64-pixel sprites moved by the copper with them, Flink, #286), HBSTRT/HBSTOP fine bits (#261),
+a BPLxPT write right before its fetch (#262), FMODE 1-3 fetches that do not start on the 8/16-pixel
+step (Turrican 2 AGA, #278), BPLAM up to the last pixel of the window (`c1f14c3`), the final D write
+of a blit before the CPU with AGA (`6e84afe`), VHPOSR one colour clock high (#234), the DMA slot grid
+(#232/#239/#241), the 68EC020 timing model (#276, `09226f7`, below).  Unaligned FMODE 1-3 pointers:
+MiSTer (and this bench) deliver the words in SDRAM burst order (wrapping inside the 64-bit group);
+WinUAE says the real behaviour "is not simple masking" (changelog 3.5.0b7) -- unknown, not tested.
+
+## The wide-fetch interface the stage-2 cache must offer (chip48)
+
+Who wants what (Minimig RTL, `denise_bitplanes.v`, `denise_sprites_shifter.v`, `agnus_bitplanedma.v`,
+`agnus_spritedma.v`):
+
+| DMA | FMODE bits | data per slot | pointer step | Denise takes |
+|---|---|---|---|---|
+| bitplanes | BPL32/BPAGEM = 00 | 16 bit (`ramdata_in`) | 2 bytes | `data16` only |
+| bitplanes | 01 or 10 | 32 bit: word A + `chip48[47:32]` = word A+1 | 4 bytes | `{data16, chip48[47:32]}` |
+| bitplanes | 11 | 64 bit: word A + `chip48[47:0]` = words A+1..A+3 | 8 bytes | `{data16, chip48}` |
+| sprites (data and the POS/CTL fetches) | SPR32/SPAGEM = 00 / 01,10 / 11 | 16 / 32 / 64 bit as above | 2 / 4 / 8 bytes | same layout |
+| copper, blitter, audio, disk, refresh | -- | 16 bit | -- | -- |
+| CPU (68000, our TG68K) | -- | 16 bit | -- | -- |
+| CPU (MiSTer's 68EC020 with AGA, #276) | -- | 32 bit read or write in one CPU slot (word A, A+1; `chipRD2`/`chipWR2`) | -- | -- |
+
+Timing in machine ticks (28.375 MHz, one bus slot = 4 ticks; phase 1 = the tick after `clk7_en`;
+measured in the bench with `--debug`): the address (and _OE/_WE, byte enables) is on `ram_address`
+from phase 1 to phase 0 of the slot (4 ticks); the 16-bit word must be valid on `ramdata_in` at the
+`clk7_en` edge that ends phase 0 for chipset DMA (the CPU bridge latches earlier, at `!c1 & c3`: the
+study's "consumer edge n+2" is the binding one for a single memory); `chip48[47:0]` must be valid at
+the same `clk7_en` edge and **held until the following `clk7n_en` edge** (2 ticks later, when the next
+slot's address is already on the bus): Denise copies `{data16, chip48}` into BPLxDAT / the sprite
+registers there.  The extra words come in sequential order from A inside the aligned 64-bit group
+(A+1, A+2, A+3 modulo the group), which is MiSTer's SDRAM burst order; with aligned pointers (all
+software that works on a real A1200) that is simply the rest of the 64-bit word.
+
+**The 64-bit plan fits.**  One read of the 64-bit data RAM word that contains A serves every slot:
+lane A[2:1] to `ramdata_in`, the other three lanes rotated to `chip48` and registered at `clk7_en`
+(a 48-bit register next to the data RAM).  A fetch never crosses a 64-byte line (8-byte groups), so
+hit/miss and the stall decision stay per slot exactly as for 16-bit accesses; a miss must stall until
+the whole 64-bit word is in the data RAM (it arrives with the line anyway).  Rate: at most one 64-bit
+read per slot = one per 4 machine ticks (worst case 8 planes hires FMODE 3: 15,899 64-bit fetches per
+frame in the traces, ~6.4 MB/s), trivial for a port that can read every tick.  Writes stay 16-bit with
+byte enables for the chipset; a 68EC020 32-bit write (if MiSTer's #276 path is adopted) is two
+adjacent lanes of the same 64-bit word (aligned: A[1] = 0) in one slot, i.e. 4 byte enables of 8.
+`minimig_m65.v` ties `chip48` to 0 today: stage 3 connects it to this register.
+
+## CPU and chip-bus timing with the 68020
+
+Measured with `tools/mk_cputime.py` (11 loops x 4 bus conditions, colour clocks from VPOSR/VHPOSR,
+same beam phase for every start; code in chip RAM, instruction cache on where the CPU has one):
+
+@@CPUTIME_TABLE@@
+
+What each machine does:
+- **Ours (AExp + `cpu-tg68k`)**: TG68K runs at the 28.375 MHz clock enable and stalls for every bus
+  word.  Every opcode word and every data word (a long = two words) goes through cpu_wrapper's
+  68000-style chip-bus FSM (negedge, synchronised to ph1/ph2): at least 4 cycles of 7 MHz = 2 CCK per
+  16-bit access, the next request waits for the next ph1.  No instruction cache, no 32-bit chip
+  accesses, no throttle: register code runs at bus speed (one bus cycle per opcode word, ~2.8 CCK per
+  `add.l d0,d1` from chip RAM), MULU/DIVU are much faster than a 68020 (TG68K computes them in a few
+  clocks), the blitter in nasty mode blocks *all* CPU work (opcode fetches need the bus).
+- **MiSTer master**: the same TG68K, but cpu_wrapper merges two words into one 32-bit chip-bus cycle
+  with AGA (#276), fetches code through a 64-longword instruction cache model (`09226f7`), and with the
+  "stock speed" bit (0xF4 bit 5) `cpu_cycles.v` holds the CPU by a per-instruction cost from tables
+  (68020 user's manual cycle counts with head/tail overlap, chip access cost 9 CPU clocks).  Without
+  that bit (MiSTer's ordinary "68020") the CPU runs unthrottled (the `--cpu 7` column above: register
+  loops 15x faster than ours).
+- **FS-UAE 3.1.66** (WinUAE 3.3 core): "68020 cycle-exact" approximate model; WinUAE's own changelog
+  says that model is approximate (4.3.0: "Removed all 68020 cycle-exact CPU mode internal idle cycles
+  ... real 68020 best case results too slow ... worst case was still too fast"; 6.1 beta 4: "Adjusted
+  CPU stealing blitter cycles (blitter nasty) in 68020 CE mode ... due to lack of 68020 CE accuracy").
+- **Documentation** (MC68020/MC68EC020 User's Manual, section 8.2, cache case, at 14.18 MHz, 1 CCK =
+  4 CPU clocks): DBcc taken 6 clocks -> L0 3072 CCK; ADD Dn,Dn 2 -> L1 1408 CCK; MULU.W 27 ->
+  L6 14208 CCK; MOVE.L + DIVU.W 2 + 44 -> L7 23936 CCK; a bus cycle is at least 3 clocks (section 5),
+  the A1200's chip-RAM wait states come from Alice/Budgie and are not in public documentation.
+
+The list the user asked for:
+
+| aspect | status |
+|---|---|
+| chipset slot allocation (bitplane/sprite/copper/audio/disk/refresh/blitter, FMODE fetch patterns, DMA priorities) | **exact** to the extent Minimig is (cycle-based RTL; MiSTer master has ~90 later fixes, see above) |
+| which slots the CPU can get (the CPU only gets free slots, blitter nasty takes them) | exact on the chipset side; the CPU side decides how it uses them (below) |
+| CPU access width on the AGA chip bus (32 bit per slot on an A1200) | ours: 16 bit (two slots per long) -- **wrong**; MiSTer #276: 32 bit |
+| CPU instruction timing (clocks per instruction class, overlap, prefetch) | ours: TG68K's own timing at 28 MHz enable, **not** a 68020 (register ops faster or slower depending on the bus, MUL/DIV far too fast); MiSTer stock mode: **approximate** (manual tables, debt/credit throttle) |
+| instruction cache (256 bytes, 64 longwords; code loops do not touch the bus) | ours: **missing** (every fetch is a bus cycle); MiSTer: modelled |
+| CPU chip-RAM access length on a real A1200 (wait states, how Alice arbitrates the 020 against DMA, write buffering in Budgie) | **unknown** from public documents; WinUAE ("data latched by chipset buffers", 4.2.0) and MiSTer (9 clocks) use measured/approximated values |
+| interrupt latency, exception timing, bus phase of the 020 against the 7 MHz / CCK grid | **approximate** (TG68K + chip-bus FSM), not documented for Alice |
+| what a demo can notice | loops timed against the beam (raster splits by CPU, "busy wait then write" effects): ours runs register code ~4x slower and MUL/DIV ~2x faster than a 68EC020, CPU work under blitter nasty stops completely (a real 020 runs on from its cache); effects that need a frame's CPU budget (texture mappers, chunky-to-planar) will drop frames or run too fast relative to the original; music players and copper effects are chipset-timed and unaffected |
+
+Consequence for stage 3: "cycle-accurate A1200" for the CPU means taking MiSTer's #276 / `09226f7`
+work (32-bit chip cycles, instruction cache, the cycle-table throttle) into this tree, then
+calibrating against a real A1200 measurement, which nobody here has (the user has no A1200; MiSTer's
+PR #233 quotes real-A1200 rows of a "Copperline timing-test.adf" that could serve as a reference).
+
+## Memory traffic with AGA for the cache (study model, AGA + 68020 traces)
+
+`sim/aga/cache_grid.py` runs the study's model (`cachesim.cpp`) over traces from this bench, all
+with the TG68K 68020: the Kickstart 3.1 boot, the study's `aga8cpu` and `worst` programs (now with the
+68020), and the CPU timing probe.  155 runs; selection (stalled % of real time, max lag):
+
+| workload (TG68K 68020, AGA, 2 MB chip) | cache | prefetch | latency | h | stalls/frame | stalled us/frame mean / max | stalled % | max lag us |
+|---|---|---|---|---|---|---|---|---|
+| Kickstart 3.1 boot (frames 1-400) | 512 KB | all | B | 1/31 | 9.9 | 6.79 / 99.2 | 0.034 | 39.8 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | none | B | 1/31 | 21.0 | 14.78 / 198.1 | 0.074 | 33.2 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | none | C | 1/31 | 21.0 | 19.12 / 260.4 | 0.096 | 59.9 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | all | B | 1/31 | 0.3 | 0.24 / 91.0 | 0.001 | 33.8 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | all | C | 1/31 | 0.3 | 0.32 / 119.5 | 0.002 | 61.9 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | none | B | 0.1 | 21.0 | 14.78 / 198.2 | 0.074 | 1.1 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | none | C | 0.1 | 21.0 | 19.12 / 260.4 | 0.096 | 1.7 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | all | B | 0.1 | 0.3 | 0.24 / 90.9 | 0.001 | 1.1 |
+| Kickstart 3.1 boot (frames 1-400) | 1536 KB | all | C | 0.1 | 0.3 | 0.31 / 119.3 | 0.002 | 1.5 |
+| KS 3.1 idle (frames 300-400) | 512 KB | all | B | 1/31 | 7.0 | 4.75 / 13.6 | 0.024 | 2.2 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 512 KB | all | B | 1/31 | 4230.6 | 2975.34 / 3143.1 | 14.877 | 316319.1 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | none | B | 1/31 | 75.8 | 53.26 / 226.4 | 0.266 | 3.5 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | none | C | 1/31 | 75.8 | 69.14 / 291.9 | 0.346 | 5.1 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | all | B | 1/31 | 0.0 | 0.02 / 2.2 | 0.000 | 1.6 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | all | C | 1/31 | 0.0 | 0.02 / 2.7 | 0.000 | 2.1 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | none | B | 0.1 | 75.8 | 53.27 / 226.5 | 0.266 | 2.7 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | none | C | 0.1 | 75.8 | 69.14 / 291.6 | 0.346 | 4.1 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | all | B | 0.1 | 0.0 | 0.02 / 2.2 | 0.000 | 1.3 |
+| aga8cpu (8 pl hires FMODE 3 + memcpy 1 MB) | 1536 KB | all | C | 0.1 | 0.0 | 0.02 / 2.8 | 0.000 | 1.7 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 512 KB | all | B | 1/31 | 457.2 | 320.49 / 376.2 | 1.602 | 39.2 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | none | B | 1/31 | 258.9 | 182.04 / 494.1 | 0.910 | 38.2 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | none | C | 1/31 | 258.9 | 236.05 / 634.1 | 1.180 | 149.5 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | all | B | 1/31 | 157.8 | 110.90 / 295.8 | 0.555 | 3.1 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | all | C | 1/31 | 157.8 | 144.02 / 387.0 | 0.720 | 29.0 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | none | B | 0.1 | 258.9 | 182.03 / 493.1 | 0.910 | 3.3 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | none | C | 0.1 | 258.9 | 236.04 / 633.9 | 1.180 | 5.2 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | all | B | 0.1 | 157.8 | 110.91 / 296.1 | 0.555 | 1.1 |
+| worst (+ sprites, random blits, random CPU R/W 2 MB) | 1536 KB | all | C | 0.1 | 157.8 | 144.01 / 386.1 | 0.720 | 1.7 |
+| CPU timing probe | 512 KB | all | B | 1/31 | 17.9 | 12.24 / 38.4 | 0.061 | 21.3 |
+| CPU timing probe | 1536 KB | none | B | 1/31 | 39.6 | 27.89 / 659.3 | 0.139 | 285.7 |
+| CPU timing probe | 1536 KB | none | C | 1/31 | 39.6 | 36.08 / 848.2 | 0.180 | 530.9 |
+| CPU timing probe | 1536 KB | all | B | 1/31 | 0.1 | 0.04 / 0.7 | 0.000 | 0.7 |
+| CPU timing probe | 1536 KB | all | C | 1/31 | 0.1 | 0.07 / 1.5 | 0.000 | 1.5 |
+| CPU timing probe | 1536 KB | none | B | 0.1 | 39.6 | 27.89 / 659.3 | 0.139 | 5.8 |
+| CPU timing probe | 1536 KB | none | C | 0.1 | 39.6 | 36.12 / 849.5 | 0.181 | 8.7 |
+| CPU timing probe | 1536 KB | all | B | 0.1 | 0.1 | 0.04 / 0.7 | 0.000 | 0.7 |
+| CPU timing probe | 1536 KB | all | C | 0.1 | 0.1 | 0.07 / 1.5 | 0.000 | 1.5 |
+| KS 3.1 idle (frames 300-400) | 1536 KB | any | A/B/C | any | 0 | 0 | 0 | 0 |
+
+Reading: with the study's design (1.5 MB, 3-way, prefetchers) the AGA workloads with the 68020 stall
+as little as the study's 68000 ones (worst 0.55 % / 3.1 us at latency B, study 0.51 % / 1.5 us;
+aga8cpu ~0); FMODE 3 fetches are 64-bit and prefetchable, they never miss once the walkers run.
+Without prefetchers (a likely first stage-2 cache) the boot and the worst case stay below 1 % but
+lags reach 33-150 us at h = 1/31; h = 10 % brings every case below 6 us.  A 512 KB cache fails
+for programs that touch more than 1 MB (aga8cpu: 15-20 % stalled, unbounded lag).  The TG68K as
+used here moves chip RAM like a 68000 (opcode fetches over the bus, one word per 2 CCK), so these
+traces do *not* show a real 68EC020's pattern (fewer fetches, 32-bit data, faster bursts); the
+study's synthetic 020 cases (10 % random reads: 3.1 % stalled at latency B) remain the bound.
+**Stage 2's measured numbers were not available to this work** (its PORTING section on the pushed
+head has only the reset fixes); the comparison has to be made when stage 2 reports them.
+
+## The demo acceptance set (part B)
+
+Candidates were checked against public sources: pouet.net comments (prod pages, `which=` id),
+MiSTer-devel/Minimig-AGA_MiSTer issues and pull requests (the RTL this core is built from), the WinUAE
+changelog (`od-win32/winuaechangelog.txt` in tonioni/WinUAE, version/beta as found there), WinUAE
+GitHub issues, and the files' own readme texts.  Downloads (scene archives, freely distributed by the
+groups) are in `ext/a1200_demos/<name>/` with `manifest.json` / `manifest.md` (source URL, sha256,
+format, requirements); never in a repository.  Reference runs: FS-UAE 3.1.66 (WinUAE 3.3 core),
+A1200 quickstart model (68EC020 cycle-exact, AGA, 2 MB chip), the user's Kickstart 3.1 A1200 ROM
+read in place, `tools/run_fsuae.py` (SDL offscreen + `fsuae_capture.so`): H.264 video at 25 fps
+(every 2nd frame), a still every 10 s and FS-UAE's log in `ext/a1200_demos/ref/`, 150 s per demo.
+
+@@DEMO_TABLE@@
+
+Named in the brief but not identified: "Real" (no AGA production of that name on pouet; not
+verified).  Seen in the sources and not downloaded: Tenebra (Biosynthetic Design 1995, WinUAE
+1.1.1b5 "face part partial fix"; a bare executable: needs an OS boot device), Relic (Nerve Axis 1998;
+a WinUAE drawing bug, 6.0.2b10, not hardware), Tribute to Boerk (Keso, WinUAE issue #323: a 6.0 beta
+regression, fixed), Darkside AGA / Captured Dreams (The Black Lotus: need 030/060 to run smoothly,
+misterfpga.org thread "Amiga AGA Demos"), Smoke & Mirrors (WinUAE issue #394, a 6.x black screen,
+not reproduced by the author; 040/060 demo), Bacon of Hope and HAMazing (Desire: OCS/ECS, not A1200).
+Games with documented AGA behaviour that would make good acceptance cases too (commercial, not
+downloaded): Charlie J Cool AGA (MiSTer #288, Amiberry #1960), Flink CD32/AGA (MiSTer #285/#286),
+Turrican 2 AGA world 3 (MiSTer #158/#278), Zool 2 AGA (WinUAE 4.9.0b7: 7 planes FMODE 0).
+
+## What stage 3 must include, and the order
+
+From the requirements column (beyond AGA + 68EC020 + 2 MB chip):
+- **fast RAM, 4 MB** in the 68EC020's 24-bit window: Mindflow (2 MB 32-bit fast), Domination (6 MB
+  in total), Psychedelic / Fullmoon / Motion / Twisted (recommended or reported).  Phase 2's DDR3 fast
+  RAM (Zorro II window `$200000-$9FFFFF`, `amiga_fastram.vhd`) already serves the TG68K; on a real
+  A1200 it is a trapdoor card (32-bit, about 0-1 wait states at 14 MHz), so its wait-state timing is
+  a stage-3 calibration item, not a design change.
+- **a boot device for file-based releases**: ZiF and Psychedelic are hard-disk installs, Mindflow,
+  Domination and the Nexus 7 executable are single executables.  Two ways: IDE/HDF (Gayle is in the
+  RTL, the host side is missing: PORTING phase-2 item 7, large), or a small tool that writes a bootable
+  FFS ADF (Kickstart 3.1 has FFS in ROM) with the executable and a one-line startup-sequence (ROM-
+  resident commands only); everything except Psychedelic (2.4 MB) and ZiF (1.5 MB) fits one disk.
+- **multi-disk swapping**: Origin (2), Motion (2), Twisted (4), Artificial Paradise (2): the OSM
+  ADF mount can swap df0; a second drive (df1, `research_df1.md`) would match how some loaders look.
+- no candidate needs a 68030 or an FPU (the ones that want 030/060 were dropped).
+
+Proposed order (each step testable on the board against this bench and the FS-UAE baselines):
+1. Stage 2 merged (64-bit data RAM, 2 MB chip, stall clock).
+2. `chip48` from the 64-bit cache word (interface above), AGA config bit, Kickstart 3.1 A1200:
+   the `mk_agatest.py` ADFs must give the bench's pictures pixel for pixel; the A500 demo regression
+   unchanged.
+3. The AGA fixes of MiSTer master since `eb7a26e` (the list above; at least #278 for the ddf3c
+   mismatch, #259/#260/#261/#286 fine positioning, #262, `c1f14c3`, `6e84afe`) as a submodule patch,
+   re-run the tests on bench + board.
+4. The 68EC020: MiSTer's TG68K + cpu_wrapper with #276 (32-bit chip cycles, cycle tables) and
+   `09226f7` (instruction cache) and the follow-ups (`a189426`, `f1af4fe`, `cf24493`, `897af79`);
+   `mk_cputime.py` on the board against the bench; fx68k stays the A500 default, unchanged.
+5. Fast RAM 4 MB for the 020 (phase 2's), wait states tuned to a trapdoor card.
+6. Boot-device tool (FFS ADF from an executable) and df0 swapping; the demo set on the board,
+   compared with the FS-UAE baselines frame by frame where the demo is deterministic.
+7. IDE/HDF only if the demo set or the user needs it.
+
+## Files of this stage (branch `a1200-aga`)
+
+| file | what |
+|---|---|
+| `sim/aga/build.sh`, `tb_top.sv`, `main.cpp`, `tg68k_wrap.v`, `stubs.v` | the AGA + 68020 bench |
+| `sim/aga/run_agatests.sh` | the AGA tests on the bench (no Kickstart) |
+| `sim/aga/cache_grid.py` | the study's cache model over this bench's traces |
+| `sim/aga/mister/` | MiSTer's full-system simulation with a video tap (`build_mister.sh`, `run_mister_tests.sh`, `mif2hex.py`: its 68EC020 cycle tables are not initialised in Verilator otherwise) |
+| `tools/mk_agatest.py` | AGA test payloads, boot-block ADFs, expected colours, checker, bench boot ROM |
+| `tools/mk_cputime.py` | CPU / chip-bus timing probe (payload, ADF, decoders) |
+| `tools/run_fsuae.py`, `tools/fsuae_capture.c` | FS-UAE without a display: stills, video, log |
+
+Outside the repository: `ext/a1200_demos/` (downloads, `manifest.*`, `make_manifest.py`, `run_refs.sh`,
+`ref/` recordings and logs, `tools/ref_sheet.py`); simulation outputs and traces in the session
+scratch area (not kept).

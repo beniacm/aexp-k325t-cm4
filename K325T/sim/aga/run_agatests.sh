@@ -10,7 +10,7 @@ T="$O/tests"
 mkdir -p "$T"
 /usr/bin/python3 "$here/../../tools/mk_agatest.py" build "$T" > "$O/tests.txt"
 tests="$*"
-[ -n "$tests" ] || tests="pal256 fmode1 fmode2 fmode3 hires8f3 xor ham8 spr16 spr32 spr64"
+[ -n "$tests" ] || tests="pal256 fmode1 fmode2 fmode3 ddf3c hires8f3 xor ham8 spr16 spr32 spr64"
 cd "$B/run/a"
 for t in $tests; do
     nice -n 19 "$B/obj_dir/tb" --kick "$T/bootrom.bin" --chipset 0x10 --mem 0x03 --cpu ${CPU:-0x03} \

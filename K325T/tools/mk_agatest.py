@@ -109,6 +109,11 @@ def make_tests():
         t.fmode, t.ddfstop = fm, stop
         t.expect = expected_grid(t)
         tests.append(t)
+    t = Test("ddf3c", "as fmode3 with DDFSTRT $3C / DDFSTOP $BC (start 4 CCK after the 32-CCK fetch "
+             "grid): the picture must move 8 lores pixels right against fmode3 (origin delta)")
+    t.fmode, t.ddfstrt, t.ddfstop = 3, 0x3C, 0xBC
+    t.expect = expected_grid(t)
+    tests.append(t)
     t = Test("hires8f3", "8 bitplanes HIRES FMODE=3 (640 pixels, blocks of 40 hires pixels)")
     t.width, t.hires, t.fmode = 640, True, 3
     t.bplcon0 = 0x8211

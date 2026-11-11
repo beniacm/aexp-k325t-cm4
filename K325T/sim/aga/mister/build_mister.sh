@@ -16,6 +16,11 @@ sed -i -E 's/^(\s*)(copjmp1|copjmp2|strobe1|strobe2) = ([01]);/\1\2 <= \3;/; s/^
 sed -i -E 's/^(\s*)out=mem\[out_ptr\[10:0\]\];/\1out<=mem[out_ptr[10:0]];/' "$R/paula_floppy_fifo.v"
 sed -i -E 's/joy1enable = ([01]);/joy1enable <= \1;/' "$R/userio.v"
 [ "$(grep -cE '(copjmp1|copjmp2|strobe1|strobe2|strobe) <= ' "$R/agnus_copper.v")" -ge 9 ] || { echo "copper fix" >&2; exit 1; }
+# the 68EC020 cycle tables (Quartus ram_init_file attribute, ignored by Verilator): $readmemh
+/usr/bin/python3 "$here/mif2hex.py" "$R/tg68k/m68k_cyc_idx.mif" "$D/rtl/sim/system/m68k_cyc_idx.hex"
+/usr/bin/python3 "$here/mif2hex.py" "$R/tg68k/m68k_ea_idx.mif" "$D/rtl/sim/system/m68k_ea_idx.hex"
+grep -q 'readmemh("m68k_cyc_idx.hex"' "$R/cpu_cycles.v" || sed -i '/reg \[4:0\] ea_rom\[2048\];/a initial begin $readmemh("m68k_cyc_idx.hex", cyc_rom); $readmemh("m68k_ea_idx.hex", ea_rom); end  // K325T sim only' "$R/cpu_cycles.v"
+grep -q 'readmemh("m68k_cyc_idx.hex"' "$R/cpu_cycles.v" || { echo "cycle table fix" >&2; exit 1; }
 cd "$D/rtl/sim/system"
 sed -i 's/-j 24/-j 4/; s/^verilator /nice -n 19 verilator /; s/-march=native/-march=native/' build.sh
 PATH=/home/linuxbrew/.linuxbrew/bin:$PATH sh build.sh > build.log 2>&1 || { tail -30 build.log; exit 1; }

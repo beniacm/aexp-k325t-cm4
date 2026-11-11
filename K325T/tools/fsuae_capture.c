@@ -34,6 +34,10 @@ static long frame = 0;
 static FILE *vid = NULL;
 static int vw = 0, vh = 0;
 static unsigned char *buf = NULL;
+static int v0w = 0, v0h = 0;
+static long nvid = 0, nskip = 0;
+static int finished = 0;   /* after CAP_FRAMES: no more capture (FS-UAE still swaps while it quits;
+                              a new ffmpeg would truncate the video) */
 
 void SDL_GL_SwapWindow(void *win)
 {
@@ -59,9 +63,12 @@ void SDL_GL_SwapWindow(void *win)
     getsize(win, &w, &h);
     int want_v = video && skip > 0 && frame % skip == 0;
     int want_p = ppm && ppm_every > 0 && frame % ppm_every == 0;
+    if (finished) { want_v = 0; want_p = 0; }
     if ((want_v || want_p) && w > 0 && h > 0) {
         if (w != vw || h != vh || !buf) {
-            if (vid && (w != vw || h != vh)) { pclose(vid); vid = NULL; }
+            /* the video keeps the size of its first frame: frames of another size (FS-UAE's
+             * start-up) are not written to it, only counted */
+            if (vid && (w != vw || h != vh)) nskip++;
             free(buf);
             buf = malloc((size_t)w * h * 3);
             vw = w; vh = h;
@@ -69,8 +76,10 @@ void SDL_GL_SwapWindow(void *win)
         rb(GL_BACK);
         ps(GL_PACK_ALIGNMENT, 1);
         rp(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, buf);
+        if (want_v && vid && (w != v0w || h != v0h)) { nskip++; want_v = 0; }
         if (want_v) {
             if (!vid) {
+                v0w = w; v0h = h;
                 char cmd[2048];
                 double fps = getenv("CAP_FPS") ? atof(getenv("CAP_FPS")) : 50.0 / skip;
                 snprintf(cmd, sizeof cmd, "nice -n 19 ffmpeg -loglevel error -y -f rawvideo -pix_fmt rgb24 "
@@ -78,7 +87,7 @@ void SDL_GL_SwapWindow(void *win)
                          "-pix_fmt yuv420p -threads 1 '%s'", w, h, fps, video);
                 vid = popen(cmd, "w");
             }
-            if (vid) fwrite(buf, 1, (size_t)w * h * 3, vid);
+            if (vid) { fwrite(buf, 1, (size_t)w * h * 3, vid); nvid++; }
         }
         if (want_p) {
             char fn[1024];
@@ -95,6 +104,9 @@ void SDL_GL_SwapWindow(void *win)
     frame++;
     if (maxf && frame == maxf) {
         if (vid) { pclose(vid); vid = NULL; }
+        fprintf(stderr, "[capture] %ld swaps, %ld video frames (%dx%d), %ld frames of another size skipped\n",
+                frame, nvid, v0w, v0h, nskip);
+        finished = 1;
         kill(getpid(), SIGINT);
     }
 }

@@ -7,7 +7,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 D="$1"; O="$2"; T="$3"; shift 3
 mkdir -p "$O"
 tests="$*"
-[ -n "$tests" ] || tests="pal256 fmode1 fmode2 fmode3 hires8f3 xor ham8 spr16 spr32 spr64"
+[ -n "$tests" ] || tests="pal256 fmode1 fmode2 fmode3 ddf3c hires8f3 xor ham8 spr16 spr32 spr64"
 cd "$D/rtl/sim/system"
 for t in $tests; do
     nice -n 19 ./obj_dir/Vtb_top --rom "$T/bootrom.bin" --preload "$T/$t.bin" 0x1c0000 --cpu ${CPU:-7} \
