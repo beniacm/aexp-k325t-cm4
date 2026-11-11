@@ -1662,7 +1662,13 @@ BEGIN
       avl_readdataack<='0';
       avl_readack<='0';
       avl_read_i<='0';
-      --avl_write_i<='0';
+      -- M2M-UPSTREAM avl-write-reset (K325T, 2026-11-11): the write request must drop in reset.
+      -- Left out, a reset during a write burst held avl_write_i high through the reset; the memory
+      -- side (avm_decrease, the arbiter, the controller, all on the same hr_rst) came out of reset
+      -- one clock before this process and took the stale request as the first 128-bit beat of a new
+      -- BLEN burst, which then never got its other beats: the memory bus hung (frozen HDMI picture)
+      -- until the next memory reset.  Measured on the K325T: about 1 full reset in 20.
+      avl_write_i<='0';
       avl_write_sync<='0';
       avl_write_sync2<='0';
       avl_write_pulse<='0';
