@@ -1,0 +1,61 @@
+K325T stage 3: port of MiSTer-devel/Minimig-AGA_MiSTer 6e84afe
+"agnus: the final D write of a blit before the CPU with AGA" -- adapted (AExp base has no blitter
+active/BLT_FROZEN output; only flush is added; blit_flush declared before its first use for Vivado).
+Gated by aga: OCS/ECS unchanged.
+--- a/rtl/agnus.v
++++ b/rtl/agnus.v
+@@ -132,6 +132,9 @@
+ //chip address, register address and control signal multiplexer
+ //AND dma priority handler
+ //first item in this if else if list has highest priority
++// K325T stage 3 (MiSTer 6e84afe): the blitter's final D write states (declared before its first use)
++wire        blit_flush;
++
+ always @(*)
+ begin
+ 	if (dma_dsk) begin
+@@ -200,7 +203,7 @@
+ 		reg_address = reg_address_cop;
+ 		dbwe = 0;
+ 	end
+-	else if (dma_blt && bls_cnt!=BLS_CNT_MAX) begin
++	else if (dma_blt && (bls_cnt!=BLS_CNT_MAX || aga && blit_flush)) begin   // K325T stage 3 (MiSTer 6e84afe)
+ 		// bus allocated to blitter
+ 		cpu_custom = 0;
+ 		dbr = 1;
+@@ -260,7 +263,8 @@
+ wire ena_cop = ~dma_bpl;
+ //dma enable for blitter tells the blitter that no higher priority dma channel is using the bus
+ //since blitter has the lowest priority and can use any dma slot (even and odd) all other dma channels block blitter activity
+-wire ena_blt = ~(dma_ref | dma_dsk | dma_aud | dma_spr | dma_bpl | dma_cop) && bls_cnt!=BLS_CNT_MAX ? 1'b1 : 1'b0;
++// K325T stage 3 (MiSTer 6e84afe): with AGA the final D write of a blit is not held off by the CPU
++wire ena_blt = ~(dma_ref | dma_dsk | dma_aud | dma_spr | dma_bpl | dma_cop) && (bls_cnt!=BLS_CNT_MAX || aga && blit_flush) ? 1'b1 : 1'b0;
+ 
+ //--------------------------------------------------------------------------------------
+ 
+@@ -427,6 +431,7 @@
+ 	.we(we_blt),
+ 	.zero(blit_zero),
+ 	.busy(blit_busy),
++	.flush(blit_flush),
+ 	.int3(int3),
+ 	.data_in(data_in),
+ 	.data_out(data_blt),
+--- a/rtl/agnus_blitter.v
++++ b/rtl/agnus_blitter.v
+@@ -89,6 +89,7 @@
+ 	output	we,							// write enable (blitter writes to memory)
+ 	output	reg zero,					// blitter zero status
+ 	output	reg busy,					// blitter busy status
++	output	flush,						// K325T stage 3 (MiSTer 6e84afe): final D write states
+ 	output	int3,						// blitter finish interrupt request
+ 	input 	[15:0] data_in,	    		// bus data in
+ 	output	[15:0] data_out,			// bus data out
+@@ -528,6 +529,7 @@
+ 
+ // blitter finish interrupt request
+ assign int3 = done;
++assign flush = blt_state == BLT_E || blt_state == BLT_F;   // K325T stage 3 (MiSTer 6e84afe)
+ 
+ // FSM start control (one bus clock cycle delay for cycle exact compatibility)
+ always @(posedge clk)
