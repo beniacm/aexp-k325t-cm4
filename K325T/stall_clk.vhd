@@ -35,6 +35,7 @@ entity clk is
       stall_cfg_i     : in  std_logic_vector(7 downto 0);   -- bridge VIDEO byte (asynchronous)
       stall_i         : in  std_logic := '0';                -- external stall request (src_clk_o)
       vsync_i         : in  std_logic;   -- machine vsync (main_clk register)
+      probe_i         : in  std_logic_vector(63 downto 0) := (others => '0');  -- debug (main_clk)
       stall_diag_o    : out std_logic_vector(95 downto 0)    -- bridge STATUS 60..71 (src_clk_o)
    );
 end entity clk;
@@ -91,6 +92,7 @@ begin
          cfg_i   => stall_cfg_i,
          stall_i => stall_i,
          vsync_i => vsync_i,
+         probe_i => probe_i,
          ce_o    => ce,
          inj_o   => open,
          lag_o   => open,

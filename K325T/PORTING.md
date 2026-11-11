@@ -238,3 +238,224 @@ built the same firmware ROM and a bitstream identical to the flashed one except 
 the .bit header (build time); same timing (WNS +0.350 ns).  Flash slot 1 holds this core
 since 2026-11-11 (slot 0 read back unchanged before/after; cold start, core switching both
 ways, MEGA65 smoke test passed).
+
+# Stage 1 of the A1200 route: a stoppable Amiga clock (branch `a1200-ddr3`, 2026-11-11)
+
+The A1200/DDR3 study (`ext/aexp3_a1200_ddr3_study/A1200_DDR3_STUDY.md` in the harness tree, verdict
+"go with conditions") puts chip RAM and Kickstart into DDR3 behind a block-RAM cache and stops the
+Amiga's clock on a cache miss.  Its condition C1 is this stage: all Amiga memory stays in block RAM
+exactly as in phase 2, the stall + catch-up clock is added, ARTIFICIAL stalls are injected, and
+nothing the Amiga can observe may change.  Experimental: JTAG only, never in flash.
+
+## What was built
+
+| file | what |
+|---|---|
+| `stall_clk.vhd` | replaces `CORE/vhdl/clk.vhd` in the K325T build (same entity `clk`; `gen_sources.py` swaps the file): one MMCM (VCO 1135 MHz, upstream's native leg), CLKOUT0 / 38.75 = **29.290323 MHz = 28.375 x 32/31** into a BUFG (the ungated source clock) and a **BUFGCE** (`main_clk`).  The flicker-free twin MMCM and its BUFGMUX_CTRL are gone (one MMCM fewer). |
+| `stall_ctrl.vhd` | in the source clock: DDS credit in 2^-20 machine ticks, + 31/32 per source edge (or the flicker-free "fast" target x 455/454); an edge passes while the credit is >= 1 tick and no stall is requested; the BUFGCE enable is a register.  Lag cap 2^19 machine ticks (18.5 ms), the excess is forgiven and counted.  Injector (xorshift32): start probability (m+1)/2^(e+8) per source tick, duration ((dm+1) << de) + random(0 .. 2^j-1) ticks of 34.14 ns.  Monitor (snapshot): lag now / max, stall count, stalled ticks, dropped pulses, forgiven ticks, machine vsync count with its source-tick time stamp, source and machine tick counters.  Register 0 bit 1 forces the native rate (flicker-free ignored). |
+| top, `gen_top.py`, `mega65.vhd` | the bridge's VIDEO register (command 0x70, unused by this core: no Linux picture) writes the controller's registers (`1rrrvvvv`; m65d only ever writes 0..3), bridge STATUS 60..71 return the selected monitor page; `mega65.vhd` passes them through and feeds the machine vsync; the flicker-free FSM is unchanged, it now selects the DDS rate |
+| `m65kbd_emu`, `amiga_mouse` | stall-tolerant: keyboard frame-sync threshold 30 us (was 5 us), mouse one step per 20 us (was 1 us); see "where the study was wrong" |
+| `core_k325t.xdc` | `CORE/CORE.xdc` with `main_clk` defined on the MMCM output (both buffers carry it: every controller <-> Amiga path is synchronous) |
+| `sim/tb_stall_ctrl.vhd` | GHDL bench of the controller |
+| `tools/stallmon.py` | on the module: `preset off/rtl/mix/burst15/budget/overload`, `set`, `clear`, `read`, `log`, `rate SECS` |
+| `tools/mk_stalltest_adf.py` | boot-block machine-time test (below); `tools/frame_counter_clip.py` (dropped / repeated frames in a clip), `tools/tone_analyze.py` (recorded tone) |
+
+Injector presets (`stallmon.py`): **rtl** 0.68 us stalls ~197 per frame (0.67 %: the study's worst
+RTL workload), **mix** 0.31-2.46 us ~349 per frame (2.4 %), **burst15** 15.3 us ~20 per frame
+(1.5 %), **budget** 0.68 us ~833 per frame (2.85 %), **overload** 0.68 us ~1620 per frame (5.5 %).
+
+## Simulation
+
+`sim/tb_stall_ctrl.vhd` (GHDL 5, the configuration written exactly as the Rockchip does, results
+read back through the snapshot pages): without stalls 3,100,001 machine edges in 3,200,001 source
+edges (31/32), never two drops in a row, lag 0; random stalls at four settings (0.7 us x 188/frame,
+0.3-2.4 us x 340/frame, 15 us x 21/frame, 0.7 us x 811/frame): no edge passes during a stall, the
+lag never exceeds the fluid debt + 1 tick, reported lag max = observed (68 / 330 / 1963 / 401
+ticks), stall counts and stalled ticks equal the bench's; over the whole run (13.2 M source ticks)
+machine edges = 31/32 x source edges - lag (no edge lost or invented); fast rate 1,018,046 per 2^20
+(1,018,045 expected); overload: the lag stops at the cap, the excess is counted.  `TB_STALL_CTRL_PASS`.
+
+## Timing (Radxa CM3 build, Vivado 2025.2.1, 4 jobs)
+
+Final build (the one committed): WNS +0.182 ns, WHS +0.050 ns, all constraints met; the worst
+path is in the Rockchip bridge (clk162), as in phase 2 (+0.350 ns).  `main_clk` at 34.141 ns
+(29.29 MHz, was 35.165 ns): intra-clock WNS +8.906 ns (earlier stage-1 builds +6.98 to +8.44;
+phase 2: +9.531 ns at 35.165 ns); worst path Paula's floppy FIFO pointer -> chip-RAM block-RAM
+address, ~24.7 ns of which ~22.7 ns route (the spread of the 256 chip/slow tiles).  BUFGCE CE
+(register -> CE0): data path 1.46 ns, setup slack +30.7 ns, hold slack +0.96 ns.  Controller worst
+path 9.0 ns.  Utilisation: 44,365 LUTs (phase 2: 44,159), 27,958 registers, 436 / 445 RAMB36
+(unchanged), 15 / 32 global buffers (2 BUFGCTRL), 5 MMCMs (phase 2: 6).  The only critical warning is the
+pre-existing Vivado 12-3645 (`add_files` one file at a time in `sources.tcl`, a run-time note).
+
+## Board results (Radxa CM3 carrier, JTAG; logs and captures in the session scratch, not in git)
+
+Unless noted the results below come from the first stage-1 builds (keyboard / mouse emulators in
+`main_clk`); the final build (emulators at 100 MHz, see below) repeated SysInfo off / mix
+(identical), Kickstart 3.1 with mix (identical to phase 2: exec 40.10, the same memory list, 45 /
+65 lines, screen at $050000) and the live presets on the determinism test (0 mismatches).
+
+**Injection off = phase 2 in machine time.**  SysInfo (KS 1.3, 512K + 512K): the decoded capture is
+identical to phase 2's (Agnus OCS PAL, memory list $C004E8-$C7E800 + $000420-$080000, 2048 DBRA 45
+lines, 2048 longword reads 65 lines).  The source clock is exactly 31/32 machine: `stallmon rate`
+over 65 s: machine clock 28,375,000.001 Hz, frame rate 49.920128 Hz (+0.00 ppm against native).
+
+**SysInfo with every preset** (set before the full reset, so Kickstart, the boot and the
+measurement all ran with stalls): rtl, mix, burst15, budget, overload -- the decoded values are
+identical to injection off in all five, including the overload, where the machine ran 2.5 % slower
+than real time.
+
+**Machine-time determinism test** (`mk_stalltest_adf.py`, 976.6 Hz tone + per-frame workload):
+every frame, out of STOP, the copper interrupt (line $40) starts a 4 KB blitter clear, then a 4 KB
+blitter copy (A -> D, minterm alternating $F0/$0F per frame) while the CPU reads VHPOSR and the blit
+destination 512 times, with 5 lores bitplanes and 2 audio channels stealing slots; the checksum of
+what the CPU read changes with any lost or added bus cycle.  All frames of a run (even and odd
+parity separately) must give the same checksum; the screen counts mismatches.  Two fixed points
+exist after the boot (the STOP wake-up phase depends on where the takeover code met the beam):
+entry $407E with checksums 27dbf6f3 / 0c253188 and entry $4080 with 4fb7cb6d / d6730798.  Phase 2
+gave the first in 3 of 3 boots, stage 1 the first in 3 of 6 boots and the second in 3 of 6: the
+same two families, bit for bit.  (A first version with a 998.6 Hz tone had frame-to-frame
+differences on phase 2 as well: audio DMA takes slots the blitter would use, and a period not
+locked to the line moves them from frame to frame; the tone now uses period 227 = one line.)
+Then, with the test running, the injector was switched live through all presets (FF off: 30 s
+each with audio; FF on: 120 s each with a clip; the final bitstream: 30 s each again): 53,562
+frames, **0 mismatching frames**, the checksums unchanged.
+
+| preset (FF on, 120 s) | stalls / frame | stalled | lag max | frame rate (rate window) | HDMI clip (6000 captured frames) |
+|---|---|---|---|---|---|
+| off | 0 | 0 | 0 | 49.999685 Hz (window started right after an overload: repayment) | all +1 |
+| rtl | 195.3 | 0.667 % | 115 ticks = 4.05 us | 50.000038 Hz (+0.8 ppm) | all +1 except one dongle slip |
+| mix | 348.8 | 2.41 % | 1731 = 61.0 us | 50.000070 Hz | all +1 |
+| burst15 | 19.8 | 1.52 % | 4829 = 170.2 us | 50.000070 Hz | all +1 |
+| budget | 833.8 | 2.85 % | 4207 = 148.3 us | 50.000131 Hz | all +1 |
+| mix, 300 s | 348.9 | 2.41 % | 1748 = 61.6 us | **50.000000 Hz (+0.00 ppm)**, machine clock 28,420,399.6 Hz | - |
+
+With flicker-free off the machine runs at exactly 49.920128 Hz under rtl (+0.00 ppm over 30 s) and
+within -0.03 / -0.08 / -1.9 ppm under mix / budget / burst15 in 30 s windows (the vsync time stamps
+carry the current lag, up to 130 us, so short windows scatter); the clip shows the expected
+repeated frame every 12.5 s (626 captured frames), as phase 2 does without flicker-free.  The
+capture dongle (MS2130, 50 fps) slips one frame now and then against the board, phase 2 too.
+
+**Audio** (HDMI audio of the capture dongle, `sudo arecord -D hw:2,0`, 48 kHz, 20 s, flicker-free
+off so that the pitch does not dither by 0.22 % once a second; `tone_analyze.py`): frequency
+976.5528-976.5530 Hz in off / rtl / mix / burst15 / budget (dongle clock; phase 2: 976.5516 Hz in
+another recording).  The measurement floor is high: Paula's 16-step sine has images that alias in
+the 48 kHz path (harmonics -23 dB, non-harmonic residual -22.4 dB, "jitter" of 2 ms phase blocks
+3.0 us RMS with injection off).  rtl: 2.96 us RMS, residual -22.4 dB (= off, its 4 us lag is below
+the floor); mix 3.9 us / -21.9 dB; budget 4.2 us / -21.8 dB; burst15 8.5 us RMS (69 us max) /
+-18.9 dB: the lag excursions of 15 us stalls (up to 130-170 us) are audible in principle as time
+jitter of the waveform.  Not measured: a cleaner tone (no aliasing) to push the floor down.
+
+**Overload** (5.5 % stalled, beyond the 3.1 % headroom): the lag reaches the 18.5 ms cap and
+stays there (`lag_now` 524,276-524,288 ticks, `forgiven` counting: 22.8 M ticks in 30 s), the
+machine runs at 27.67 MHz (-2.49 %), 48.68 frames/s; the tone drops to 952.6 Hz (-43 cents); ascal
+repeats a frame about every 0.75 s (39-40 repeated frames in 30 s of clip); the machine-time test
+still counts 0 mismatches and SysInfo is identical: exact in machine time, slow in real time, as the
+study predicted.  After the overload the capped debt is repaid in 0.57 s (31 x 18.5 ms) at the
+source rate.
+
+## What the study got right, and where it was wrong or optimistic
+
+Right, and now measured:
+- The BUFGCE-gated clock (study option A) is invisible to the machine by construction, and the
+  board agrees: SysInfo identical under all presets, 0 mismatching frames of the bus-cycle
+  checksum over ~63,000 frames with live switching, phase 2's checksum family reproduced bit for bit.
+- 29.290 MHz = 28.375 x 32/31 from the existing VCO, the 31/32 DDS: machine clock 28,375,000.00 Hz
+  (+0.00 ppm) without stalls and with 0.67 % stalls; with flicker-free on and 2.4 % stalls the
+  frame rate is 50.000000 Hz over 300 s.
+- The CE decision is easy to time: register -> BUFGCE CE has +30.7 ns slack; the Amiga domain
+  closes at 29.29 MHz with +8.4 ns (study: +9.5 ns at 28.44 MHz, ~38 MHz possible).
+- ascal, the floppy engine (demos, below) and the fast-RAM handshake run through stalls without
+  a change; ascal showed no dropped or repeated frame with flicker-free on up to 170 us of lag.
+- Overload behaves as described: exact in machine time, slower in real time, frame repeats.
+
+Wrong or optimistic:
+1. **Real-time couplings outside the gated domain were missed** (section 1.3 lists only the M2M
+   paths).  This port has two in the top level, both in the 100 MHz board clock: `m65kbd_emu`
+   takes a kio8-high phase longer than 5 us as the keyboard link's frame sync (a stall over ~3 us
+   inside one 1.6 us half period would reset its bit counter: wrong keys for a scan), and
+   `amiga_mouse` makes one quadrature step per microsecond (two steps inside one stall and
+   userio.v would count wrongly).  Found by reading the code, not by a failure on the board.  A
+   first fix clocked both with `main_clk` (machine time); those builds showed the frozen-picture
+   problem described below much more often (stuck after 3-11 full resets; with Kickstart 3.1 in 2 of
+   2 boots, where SysInfo had run to its end loop behind a frozen picture), while the same design
+   with the two emulators back on 100 MHz booted KS 3.1 and froze once in 25 resets, like phase 2
+   (once in 33).  Why the emulators' clock changes the freeze rate is not understood (their paths
+   are synchronous either way; a placement-dependent crossing inside ascal is one suspicion).
+   The final build keeps them at 100 MHz and makes them stall-tolerant instead: frame-sync
+   threshold 30 us (the sync pulse is ~42 us, a half period 1.6 us), one mouse step per 20 us.
+2. **The catch-up headroom is not independent of flicker-free** (section 2.2): the source clock is
+   fixed, so the headroom is 1 - K: 3.125 % at the native target but 2.91 % at the flicker-free
+   "fast" target, which the loop selects about half of the time.  Measured with 2.85 % stalls
+   (budget preset): lag max 35.7 us with flicker-free off, 148 us with it on.
+3. **Lag maxima grow with the observation time and near the budget.**  The study's 2.6 us (2.7 s
+   traces) became 3.6-4.05 us for the same stall rate over 30-120 s of Poisson-like arrivals; at
+   2.4 % the lag reached 61 us, at 2.85 % 148 us.  The bound "lag <= the largest stall cluster" is
+   right, but clusters get long when the average approaches the headroom: plan for h well above the
+   expected stall fraction.
+4. **Audio jitter**: at the RTL workload's rate it is below the measurement floor (as predicted);
+   with 15 us stalls the waveform jitter is measurable (8.5 us RMS).  The audio FIFO of section 1.4
+   becomes necessary as soon as stage 2's real stalls produce lags of tens of microseconds.
+5. Minor: the study's plan keeps the native output on CLKOUT1 = /40; not needed (the DDS gives
+   28.375 MHz exactly).  Pulse dropping is regular (one edge in 32), real-time jitter 34 ns.
+
+Existing real-time couplings that stalls do not create but shift: the ADF engine serves Paula from
+DDR3 in real time with flow control, so disk loading was never deterministic in machine time (V1
+and phase 2 neither); fast-RAM wait states come from the DDR3 latency in real time (an expansion
+card, not cycle-exact); with stalls both look slightly faster to the machine.
+
+**Demos** (`tools/aexp_demo_test.py`, all five, final bitstream).  Injector off: Enigma, Arte and
+Eon (with the disk swap) ran through; SOTA and Batman Rises showed a frozen white / black picture
+from before the disk was even mounted (the frozen-picture problem of the next paragraph, right
+after the demo tool's full reset); both ran when repeated (SOTA's frames at 20/30/40 s byte-identical
+to a phase-2 recording, Batman's colour counts as in phase 2).  Injector **mix** (2.4 % stalled,
+25 M stalls during the run, lag max 61.6 us): all five ran through, Batman including disk 2;
+sampled frames byte-identical to phase-2 recordings at several points (SOTA 40 s; Batman 100 / 110 /
+120 s same colour counts as phase 2's).
+
+**A pre-existing reset problem, found on the way.**  A full M2M reset (`hold_reset`, as the demo
+tool does before every demo) sometimes leaves the picture frozen at Kickstart 1.3's white boot
+screen; further full resets do not clear it (a new bitstream does).  Measured with 20-second
+reset loops (`aexp4_resetloop.py`, KS 1.3, no disk): stage 1 stuck after 8, 8, 3 and 25 resets
+(also with the keyboard / mouse emulators back on the 100 MHz clock) and with the flicker-free rate
+forced to native after 11; **phase 2 (its own bitstream over JTAG) 20 of 20, then stuck after 12**.
+So it is not caused by the stoppable clock (rates 5 in ~55 resets vs 1 in 33 are not
+distinguishable with these counts).  In the stuck state the machine clock and the Amiga's vsync run
+(49.920128 Hz), the flicker-free loop no longer dithers (ascal's write address does not move: the
+frame buffer is not being written), and the HDMI audio is silent.  With the debug pages of the
+final build (`stallmon.py probe`) the frozen state was caught again (first reset after the
+determinism test): **the Amiga runs** (chip/slow-RAM writes ~300,000 per second, no reset asserted,
+Kickstart working out of slow RAM) while the HDMI picture stays frozen; likewise the two "Kickstart
+3.1 does not boot" results of an earlier build were this freeze: the CPU was in SysInfo's final
+loop.  So it is the video path (ascal's input side or its frame-buffer writes, which no M2M reset
+resets: ascal's reset is only the MMCM lock), not the Amiga.  Not resolved here.
+
+## Go / no-go for stage 2 (2 MB chip RAM through the cache on ECS / 68000)
+
+**Go.**  The deciding facts:
+- Stalls are invisible in machine time: SysInfo identical under every preset including overload;
+  the bus-cycle checksum unchanged over ~63,000 frames with 0.7 us, 0.3-2.5 us and 15 us stalls at
+  0.7-5.5 % of real time; phase 2's checksum family reproduced; demos run with 2.4 % stalls.
+- The long-term rate is exact (31/32 to 0.00 ppm; 50.000000 Hz with flicker-free over 300 s with
+  2.4 % stalls); HDMI showed no dropped or repeated frame below the headroom.
+- Timing is easy: CE +30.7 ns slack, Amiga domain +8.4 ns at 29.29 MHz.
+Conditions for stage 2, from what was measured here:
+1. **More headroom than 3.1 %.**  With flicker-free the effective headroom is 2.9 %, and lag
+   tails grow long well before the average reaches it (61 us at 2.4 %, 148 us at 2.85 %).  The
+   Amiga domain has 8.4 ns of slack at 34.1 ns, so a faster source clock is cheap: e.g. VCO / 36.25
+   = 31.31 MHz (h = 10 %, the study's own suggestion for random CPU reads) needs ~32 ns paths, the
+   worst is 24.7 ns today (to be shown again with the cache's 64-bit data RAM).
+2. **The miss decision must reach CE combinationally** (tag compare in the tick between address and
+   consumer edge); here CE is a register (one tick of latency, fine for injected stalls).  The CE pin
+   has 30 ns of slack, so a LUT or two in front of it is no problem.
+3. **An audio FIFO** (study 1.4) as soon as real stall clusters reach tens of microseconds:
+   15 us stalls already showed measurable waveform jitter.
+4. **Dedicated MIG port** with priority over ascal (study C2) - not started here.
+5. Everything outside `main_clk` that talks to the Amiga in real time must be listed and moved or
+   decoupled (this stage found two the study missed).
+Open, not caused by the stoppable clock: the frozen-picture-after-full-reset problem above (phase 2
+has it too; ascal stops writing the frame buffer while the Amiga runs) should be understood before
+stage 2 puts the cache on the same DDR3 that ascal uses.
+
+Not done in this stage: the fast-RAM write/read test with the stoppable clock (the Zorro II menu
+option was not switched on), a key / mouse test under 15 us stalls (the new emulator parameters
+are by analysis only), a cleaner audio test signal, the stage-2 simulation groundwork.

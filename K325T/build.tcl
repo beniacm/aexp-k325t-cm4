@@ -27,12 +27,13 @@ set_property strategy Performance_ExtraTimingOpt [get_runs impl_1]
 set jobs [expr {[info exists env(VIVADO_JOBS)] ? $env(VIVADO_JOBS) : 4}]
 set_param general.maxThreads $jobs
 # the runs are child processes: give every step the same limit through a pre-step hook
-set mt [open $root/CORE/CORE-K325T.maxthreads.tcl w]
+file mkdir $here/.Xil
+set mt [open $here/.Xil/maxthreads.tcl w]
 puts $mt "set_param general.maxThreads $jobs"
 close $mt
 foreach {run step} {synth_1 SYNTH_DESIGN impl_1 OPT_DESIGN impl_1 PLACE_DESIGN impl_1 PHYS_OPT_DESIGN
                     impl_1 ROUTE_DESIGN impl_1 POST_ROUTE_PHYS_OPT_DESIGN impl_1 WRITE_BITSTREAM} {
-    set_property STEPS.$step.TCL.PRE [file normalize $root/CORE/CORE-K325T.maxthreads.tcl] [get_runs $run]
+    set_property STEPS.$step.TCL.PRE [file normalize $here/.Xil/maxthreads.tcl] [get_runs $run]
 }
 
 launch_runs synth_1 -jobs $jobs

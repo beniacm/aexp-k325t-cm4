@@ -594,6 +594,11 @@ begin
          stall_cfg_i       => k325t_stall_cfg_i,
          stall_i           => '0',
          vsync_i           => video_vs_o,
+         probe_i           => "00000000000000000000000000" & main_chip_ecs & main_mem_chip1m & main_mem_slow &
+                              main_fast_size & main_kick_512 & main_pwr_led & main_fdd_led &
+                              amiga_chip_scrub & video_hblank_o & video_vs_o & main_reset_core_i &
+                              main_reset_m2m_i & amiga_cold_reset & main_ram_oe_n & main_ram_we_n &
+                              main_ram_addr,
          stall_diag_o      => k325t_stall_diag_o
       ); -- clk_gen
 

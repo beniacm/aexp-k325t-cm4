@@ -331,12 +331,15 @@ begin
    kb_left_n <= not rk_ctrl(5);
    rest_n <= not rk_ctrl(1);
 
-   -- in the Amiga's (stoppable) clock: m2m_keyb drives kio8 from main_clk, so a stall must not
-   -- look like the long kio8-high frame sync (a 100 MHz counter would see one in a 5 us stall)
+   -- 100 MHz, as in phase 2.  m2m_keyb drives kio8 from the stoppable main_clk: a stall stretches a
+   -- kio8 half period (1.6 us); the frame sync is ~42 us of kio8 high, so a 30 us threshold keeps
+   -- stalls up to ~28 us from looking like a sync (the phase-2 value, 5 us, did not).  (Clocking the
+   -- emulator and the mouse with main_clk instead broke Kickstart 3.1 boots in the stage-1 builds;
+   -- cause not understood, see PORTING.md.)
    i_kbd_emu : entity work.m65kbd_emu
-      generic map (SYNC_CYCLES => 142)     -- 5 us of machine time at 28.375 MHz
+      generic map (SYNC_CYCLES => 3000)    -- 30 us at 100 MHz
       port map (
-         clk => main_clk, kio8 => kio8, kio10 => kio10,
+         clk => clk100, kio8 => kio8, kio10 => kio10,
          matrix_col_idx => kb_col_idx, matrix_col => kb_col,
          capslock_n => caps_n, restore_n => rest_n,
          up_n => kb_up_n, left_n => kb_left_n          -- cursor up / left keys
@@ -362,12 +365,12 @@ begin
    i_iprog : entity work.rk_iprog
       port map (clk => clk100, iprog_toggle => ip_toggle, iprog_addr => ip_addr);
 
-   -- Amiga mouse: counters from the Rockchip -> quadrature lines + buttons.  In the Amiga's
-   -- (stoppable) clock, so that steps are 1 us apart in machine time: at 100 MHz several
-   -- transitions could fall into one stall and userio.v would miscount them
+   -- Amiga mouse: counters from the Rockchip -> quadrature lines + buttons.  100 MHz as in phase 2,
+   -- one transition per 20 us (was 1 us): a stall of the Amiga clock must not hide two steps from
+   -- userio.v's 2-FF sampling (stalls up to ~19 us); 50,000 counts/s is still far above a USB mouse
    i_mouse : entity work.amiga_mouse
-      generic map (STEP_CLKS => 28)        -- 1 us per transition (machine time)
-      port map (clk => main_clk, pots => rk_pots, port1_n => mouse1_n, port2_n => mouse2_n,
+      generic map (STEP_CLKS => 2000)      -- 20 us per transition
+      port map (clk => clk100, pots => rk_pots, port1_n => mouse1_n, port2_n => mouse2_n,
                 core_pots => mouse_pots);
 
    -- the pot values (button levels) into the core's clock domain (upstream: the framework's

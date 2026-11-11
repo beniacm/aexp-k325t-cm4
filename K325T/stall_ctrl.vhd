@@ -31,6 +31,8 @@
 --   page 2: W0 = machine vsync count, W1:W2 = source tick count at the last vsync (64 bits)
 --   page 3: W0 = forgiven ticks (lag cap), W1:W2 = source tick count at the snapshot
 --   page 4: W0 = x"A1200001" (id) , W1:W2 = machine (passed) ticks at the snapshot
+--   page 5: W0 = probe(31:0) at the snapshot, W1 = probe(22) falling edges, W2 = ticks with any of
+--           probe(26:24) set;  page 6: W0 = probe(63:32), W1 = probe(23) falling edges (debug)
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -48,6 +50,7 @@ entity stall_ctrl is
       cfg_i      : in  std_logic_vector(7 downto 0);   -- bridge VIDEO byte (asynchronous)
       stall_i    : in  std_logic := '0';   -- external stall request (synchronous to clk_i)
       vsync_i    : in  std_logic;          -- machine vsync (a main_clk register)
+      probe_i    : in  std_logic_vector(63 downto 0) := (others => '0');  -- main_clk signals (debug)
       ce_o       : out std_logic;          -- BUFGCE enable: '1' = the next edge passes
       inj_o      : out std_logic;          -- injected stall active (for a probe / test bench)
       lag_o      : out unsigned(31 downto 0);           -- current lag, machine ticks
@@ -84,6 +87,10 @@ architecture rtl of stall_ctrl is
    signal vs_cnt, stalls, stall_tk, drops, forgiven : unsigned(31 downto 0) := (others => '0');
    signal lag_now, lag_max : unsigned(31 downto 0) := (others => '0');
    signal vs_d     : std_logic := '0';
+   signal pr_d     : std_logic_vector(63 downto 0) := (others => '0');
+   signal we_fall, oe_fall, rst_cyc : unsigned(31 downto 0) := (others => '0');
+   signal s_probe  : std_logic_vector(63 downto 0) := (others => '0');
+   signal s_we_fall, s_oe_fall, s_rst_cyc : unsigned(31 downto 0) := (others => '0');
 
    -- snapshot
    signal s_src, s_mach, s_vs_ts : unsigned(63 downto 0) := (others => '0');
@@ -189,6 +196,10 @@ begin
             vs_cnt <= vs_cnt + 1;
             vs_ts  <= src_cnt;
          end if;
+         pr_d <= probe_i;
+         if pr_d(22) = '1' and probe_i(22) = '0' then we_fall <= we_fall + 1; end if;
+         if pr_d(23) = '1' and probe_i(23) = '0' then oe_fall <= oe_fall + 1; end if;
+         if probe_i(24) = '1' or probe_i(25) = '1' or probe_i(26) = '1' then rst_cyc <= rst_cyc + 1; end if;
          if regs(7)(0) /= clr_tog then
             clr_tog  <= regs(7)(0);
             lag_max  <= (others => '0');
@@ -212,6 +223,10 @@ begin
             s_lag_now  <= lag_now;
             s_lag_max  <= lag_max;
             s_seq      <= s_seq + 1;
+            s_probe    <= pr_d;
+            s_we_fall  <= we_fall;
+            s_oe_fall  <= oe_fall;
+            s_rst_cyc  <= rst_cyc;
          end if;
          case to_integer(regs(6)(2 downto 0)) is
             when 0 => diag <= std_logic_vector(regs(1)) & std_logic_vector(regs(2)) &
@@ -224,6 +239,8 @@ begin
             when 2 => diag <= std_logic_vector(s_vs_cnt) & std_logic_vector(s_vs_ts);
             when 3 => diag <= std_logic_vector(s_forgiven) & std_logic_vector(s_src);
             when 4 => diag <= x"A1200001" & std_logic_vector(s_mach);
+            when 5 => diag <= s_probe(31 downto 0) & std_logic_vector(s_we_fall) & std_logic_vector(s_rst_cyc);
+            when 6 => diag <= s_probe(63 downto 32) & std_logic_vector(s_oe_fall) & x"00000000";
             when others => diag <= (others => '0');
          end case;
       end if;

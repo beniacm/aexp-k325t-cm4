@@ -82,6 +82,7 @@ entity clk is
       stall_cfg_i     : in  std_logic_vector(7 downto 0) := (others => '0');
       stall_i         : in  std_logic := '0';
       vsync_i         : in  std_logic := '0';
+      probe_i         : in  std_logic_vector(63 downto 0) := (others => '0');
       stall_diag_o    : out std_logic_vector(95 downto 0)
    );
 end entity clk;

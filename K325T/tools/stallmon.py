@@ -8,6 +8,7 @@ python3-spidev; writes nothing to the module's flash).
     stallmon.py clear                lag max and event counters to 0
     stallmon.py read                 one snapshot, key=value
     stallmon.py log SECS [EVERY]     a snapshot every EVERY seconds (default 10), one line each
+    stallmon.py probe                debug builds: main_clk probe vector, RAM write/read counts
     stallmon.py rate SECS            machine frame rate (vsyncs against the ungated source clock),
                                      machine clock, stall statistics over SECS seconds
 
@@ -151,6 +152,17 @@ def main():
             if time.time() - t0 >= secs:
                 break
             time.sleep(every)
+    elif cmd == "probe":
+        # debug pages 5/6 (builds with the probe vector): main_clk signals at the snapshot
+        b.snapshot()
+        p5, p6 = b.page(5), b.page(6)
+        v = p6[0] << 32 | p5[0]
+        print("ram_addr=%06x (byte %06x) we_n=%d oe_n=%d cold_reset=%d reset_m2m=%d reset_core=%d vs=%d "
+              "hblank=%d scrub=%d fdd_led=%d pwr_led=%d kick512=%d fast=%d slow=%d chip1m=%d ecs=%d "
+              "ram_writes=%d ram_reads=%d reset_ticks=%d" %
+              (v & 0x3FFFFF, (v & 0x3FFFFF) << 1, v >> 22 & 1, v >> 23 & 1, v >> 24 & 1, v >> 25 & 1,
+               v >> 26 & 1, v >> 27 & 1, v >> 28 & 1, v >> 29 & 1, v >> 30 & 1, v >> 31 & 1, v >> 32 & 1,
+               v >> 33 & 3, v >> 35 & 1, v >> 36 & 1, v >> 37 & 1, p5[1], p6[1], p5[2]))
     elif cmd == "rate":
         rate(b, float(sys.argv[2]))
     else:
