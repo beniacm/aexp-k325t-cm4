@@ -1,0 +1,69 @@
+K325T: port of MiSTer-devel/Minimig-AGA_MiSTer 2bddf21 (class b: changes OCS/ECS behaviour)
+"Fix Risky Woods SFX" (#253): the 8520 timers start counting two E-clock stages after START
+(E-clock source), as WinUAE.  Evidence: Risky Woods sound effects on OCS/ECS with a 68000.
+--- a/rtl/cia_timera.v
++++ b/rtl/cia_timera.v
+@@ -37,6 +37,7 @@
+ wire  count;              // Count enable signal
+ reg    [2:0] cnt_sync;    // CNT pin synchroniser and edge detect
+ wire  cnt_rise;           // CNT pin positive transition
++reg    [1:0] start_delay;
+ 
+ always @(posedge clk)
+   if (reset)
+@@ -47,7 +48,21 @@
+ assign cnt_rise = cnt_sync[1] & ~cnt_sync[2];
+ 
+ // Count source selected by CRA bit 5 (INMODE)
+-assign count = tmcr[5] ? cnt_rise : eclk;
++assign count = tmcr[5] ? cnt_rise : (eclk & start_delay[1]);
++
++always @(posedge clk)
++  if (clk7_en) begin
++    if (reset)
++      start_delay <= 2'b00;
++    else if (!start)
++      start_delay <= 2'b00;
++    else if (thi_load && oneshot)
++      start_delay <= 2'b00;
++    else if (tcr && wr && !data_in[0])
++      start_delay <= 2'b00;
++    else if (eclk)
++      start_delay <= {start_delay[0],1'b1};
++  end
+ 
+ // Timer Control Register (CRA) bit definitions:
+ // Bit 0: START - Start/stop timer (1=start, 0=stop)
+--- a/rtl/cia_timerb.v
++++ b/rtl/cia_timerb.v
+@@ -36,6 +36,7 @@
+ wire  count;              // Count enable signal
+ reg    [2:0] cnt_sync;    // CNT pin synchroniser and edge detect
+ wire  cnt_rise;           // CNT pin positive transition
++reg    [1:0] start_delay;
+ 
+ always @(posedge clk)
+   if (reset)
+@@ -47,7 +48,21 @@
+ 
+ // Count source selected by CRB bits 6:5 (INMODE)
+ assign count = tmcr[6] ? (tmcr[5] ? (tmra_ovf & cnt_sync[1]) : tmra_ovf)
+-                       : (tmcr[5] ? cnt_rise : eclk);
++                       : (tmcr[5] ? cnt_rise : (eclk & start_delay[1]));
++
++always @(posedge clk)
++  if (clk7_en) begin
++    if (reset)
++      start_delay <= 2'b00;
++    else if (!start)
++      start_delay <= 2'b00;
++    else if (thi_load && oneshot)
++      start_delay <= 2'b00;
++    else if (tcr && wr && !data_in[0])
++      start_delay <= 2'b00;
++    else if (eclk)
++      start_delay <= {start_delay[0],1'b1};
++  end
+ 
+ // Timer Control Register (CRB) bit definitions:
+ // Bit 0: START - Start/stop timer (1=start, 0=stop)
