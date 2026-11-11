@@ -1,0 +1,13 @@
+K325T: port of MiSTer-devel/Minimig-AGA_MiSTer d16cd84 (class b: changes OCS/ECS behaviour)
+"agnus: fix false interlace mode", applied unchanged.
+--- a/rtl/agnus_beamcounter.v
++++ b/rtl/agnus_beamcounter.v
+@@ -364,7 +364,7 @@
+ //in interlaced mode every second frame is vtotal+1 long
+ wire last_line = long_frame ? extra_line : vpos_equ_vtotal;
+ 
+-assign field1 = ~long_frame;
++assign field1 = (~long_frame) & lace;
+ 
+ //generate end of frame signal
+ wire end_of_frame = vpos_inc & last_line;
