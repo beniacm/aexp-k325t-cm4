@@ -4,7 +4,10 @@ keyboard.device (no Workbench needed).
 
 The boot block opens keyboard.device (on a copy of the boot IORequest), installs a small copper
 list (no bitplanes) and then loops on KBD_READEVENT: the raw key code of every key event
-(ie_Code: bit 7 = release) is shown as 8 horizontal bit stripes from raster line $40 (most
+(ie_Code: bit 7 = release) is shown as 8 horizontal bit stripes
+(--matrix: KBD_READMATRIX instead, polled; the stripes show matrix byte 4 = raw keys $20..$27,
+A S D F G H J K, 1 = held - input.device reads KBD_READEVENT too and takes every other event,
+so the event mode alone shows only half of them) from raster line $40 (most
 significant bit first; 4 lines per bit + 2 black; white = 1, blue = 0).  The copper keeps the
 stripes on screen while the CPU waits in DoIO.  Decode a 1280x720 capture of the 720p output:
     mk_kbdtest_adf.py --decode FRAME.png
@@ -12,6 +15,10 @@ stripes on screen while the CPU waits in DoIO.  Decode a 1280x720 capture of the
 import struct, sys
 
 Y0, STEP = 0x40, 6                       # first stripe line, lines per bit (4 on + 2 gap)
+
+
+MATRIX = False        # --matrix [N]: KBD_READMATRIX, show matrix byte N (default 4: A S D F G H J K)
+MBYTE = 4             #   byte 12 = $60..$67: LShift RShift Caps Ctrl LAlt RAlt LAmiga RAmiga
 
 
 def assemble():
@@ -31,12 +38,18 @@ def assemble():
     p += W(0x33C0, 0x00DF, 0xF088)               # move.w d0,$dff088    COPJMP1
     p += [("label", "loop")]
     p += [("pcrel", 0x43FA, "kbreq")]            # lea kbreq(pc),a1
-    p += W(0x337C, 0x0009, 0x001C)               # move.w #9,28(a1)     KBD_READEVENT
+    if MATRIX:
+        p += W(0x337C, 0x000A, 0x001C)           # move.w #10,28(a1)    KBD_READMATRIX
+    else:
+        p += W(0x337C, 0x0009, 0x001C)           # move.w #9,28(a1)     KBD_READEVENT
     p += [("pcrel", 0x41FA, "ievent")]           # lea ievent(pc),a0
     p += W(0x2348, 0x0028)                       # move.l a0,40(a1)     io_Data
-    p += W(0x237C, 0x0000, 0x0016, 0x0024)       # move.l #22,36(a1)    io_Length
+    p += W(0x237C, 0x0000, 0x000D if MATRIX else 0x0016, 0x0024)   # io_Length 13 (the 1.x matrix size) / 22
     p += W(0x4EAE, 0xFE38)                       # jsr DoIO(a6)
-    p += [("pcrel", 0x303A, "ievent6")]          # move.w ievent+6(pc),d0   ie_Code
+    if MATRIX:
+        p += [("pcrel", 0x103A, "matrix%d" % MBYTE)]   # move.b matrix byte MBYTE,d0
+    else:
+        p += [("pcrel", 0x303A, "matrix6")]      # move.w ievent+6(pc),d0   ie_Code
     p += [("pcrel", 0x41FA, "copval")]           # lea copval(pc),a0
     p += W(0x7407)                               # moveq #7,d2
     p += [("label", "bl")]
@@ -62,9 +75,12 @@ def assemble():
         p += W(((y + 4) << 8) | 0x01, 0xFFFE, 0x0180, 0x0000)   # gap: black
     p += W(0xFFFF, 0xFFFE)
     p += [("label", "ievent")]
-    p += W(0, 0, 0)
-    p += [("label", "ievent6")]
-    p += W(0, 0, 0, 0, 0, 0, 0, 0)               # rest of the InputEvent (22 bytes)
+    for k in range(0, 16, 2):                    # matrix bytes 0..15 (labels matrixN)
+        p += [("label", "matrix%d" % k)]
+        p += [("bytes", b"\0")]
+        p += [("label", "matrix%d" % (k + 1))]
+        p += [("bytes", b"\0")]
+    p += [("bytes", bytes(6))]                   # (22 bytes: the InputEvent, ie_Code at +6)
     p += [("label", "kbname")]
     p += [("bytes", b"keyboard.device\0")]
     p += [("align4",)]
@@ -141,6 +157,12 @@ def decode(png):
 
 
 if __name__ == "__main__":
+    if "--matrix" in sys.argv:
+        MATRIX = True
+        i = sys.argv.index("--matrix")
+        if i + 1 < len(sys.argv) and sys.argv[i + 1].isdigit():
+            MBYTE = int(sys.argv.pop(i + 1))
+        sys.argv.remove("--matrix")
     if sys.argv[1] == "--decode":
         v, y0 = decode(sys.argv[2])
         print("key code $%02x (%s, $%02x) first stripe row %d" % (v, "release" if v & 0x80 else "press",

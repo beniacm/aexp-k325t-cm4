@@ -10,7 +10,8 @@ each + 1 black line; white = 1, blue = 0):
     3  JOY1DAT low byte  = port 2 (joystick): bit 1 right, bit 1 ^ bit 0 down
     4  JOY1DAT high byte = port 2: bit 1 left, bit 1 ^ bit 0 up
     5  CIA-A PRA: bit 6 = port 1 fire (left mouse button), bit 7 = port 2 fire (0 = pressed)
-    6  number of keyboard bytes received (wraps); POTGOR (right / middle button) is not shown
+    6  POTGOR high byte: bit 2 = port 1 right button, bit 0 = port 1 middle (0 = pressed)
+       (--first4: number of keyboard bytes instead; stripes 0/3/4/5 = the first four bytes)
 It reads the keyboard SDR like a raw CIA reader (no handshake pulse: AExp paces on the SDR read).  Read the stripes back with
     mk_inputtest_adf.py --decode FRAME.png      (a 1280x720 capture of the 720p output)
 """
@@ -30,7 +31,8 @@ def assemble():
     prog += [("pcrel", 0x43FA, "keyvar")]        # lea keyvar(pc),a1
     prog += W(0x2689)                            # move.l a1,(a3)    table[0] = &keyvar
     prog += [("pcrel", 0x45FA, "cntvar")]        # lea cntvar(pc),a2
-    prog += W(0x274A, 0x0018)                    # move.l a2,24(a3)  table[6] = &cntvar
+    if FIRST4:
+        prog += W(0x274A, 0x0018)                # move.l a2,24(a3)  table[6] = &cntvar
     if FIRST4:                                   # table[3..5] = the 2nd..4th keyboard byte
         for k, off in ((1, 12), (2, 16), (3, 20)):
             prog += W(0x41E9, k, 0x2748, off)    # lea k(a1),a0 ; move.l a0,off(a3)
@@ -145,7 +147,7 @@ def bootblock():
     return bytes(b)
 
 NAMES = ["key", "joy0dat_lo(mouse x)", "joy0dat_hi(mouse y)", "joy1dat_lo", "joy1dat_hi",
-         "ciaa_pra", "kbd_bytes"]
+         "ciaa_pra", "potgor_hi"]
 
 def decode(png):
     """the 56 bit stripes from a 1280x720 capture of the 720p output (2.5 output rows per
