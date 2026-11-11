@@ -18,6 +18,17 @@
 --   while that write is handed to the MIG).
 --
 -- ADDR_BITS Avalon word-address bits are used (27 = 256 MB); higher bits wrap.
+--
+-- avm_rst (2026-11-11): the reset of the Avalon side (the framework's hr_rst, asserted by every
+-- M2M reset).  The MIG and this bridge are reset only when the memory is not ready, so before this
+-- input a full M2M reset could arrive in the middle of a burst: the masters and the arbiter started
+-- afresh while this bridge still waited for write beats (S_WR, where it also showed waitrequest
+-- low to a READ and then ignored it -> the arbiter waited for read data for ever: ascal's frame
+-- buffer froze until the next bitstream load) or still delivered beats of an old read burst.
+-- Now avm_rst aborts the Avalon transaction: a partly gathered write word is dropped, a write word
+-- already handed to the MIG is completed, outstanding read words are drained from the MIG and
+-- discarded; waitrequest stays high until the bridge is idle again.  And a read is never accepted
+-- in S_WR.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -30,6 +41,7 @@ entity avm_mig is
   port (
     clk                 : in  std_logic;   -- MIG ui_clk
     rst                 : in  std_logic;   -- ui_clk_sync_rst or not calibrated
+    avm_rst             : in  std_logic := '0';   -- Avalon-side reset (framework hr_rst), see above
     -- Avalon-MM slave
     avm_write           : in  std_logic;
     avm_read            : in  std_logic;
@@ -59,7 +71,7 @@ architecture rtl of avm_mig is
   constant CMD_WR : std_logic_vector(2 downto 0) := "000";
   constant CMD_RD : std_logic_vector(2 downto 0) := "001";
 
-  type st_t is (S_IDLE, S_RD, S_RD_END, S_WR, S_FLUSH);
+  type st_t is (S_IDLE, S_RD, S_RD_END, S_WR, S_FLUSH, S_DRAIN);
   signal st : st_t := S_IDLE;
 
   -- read side
@@ -86,12 +98,17 @@ architecture rtl of avm_mig is
 
   signal rd_issue     : std_logic;
   signal fifo_pop     : std_logic;
+  signal flush_abort  : std_logic := '0';   -- an avm_rst came during S_FLUSH: idle after it
+  signal aborts       : unsigned(3 downto 0) := (others => '0');
 begin
 
-  avm_waitrequest <= '0' when rst = '0' and (st = S_IDLE or st = S_WR) else '1';
+  avm_waitrequest <= '0' when rst = '0' and avm_rst = '0' and
+                              (st = S_IDLE or (st = S_WR and avm_read = '0')) else '1';
 
-  rd_issue <= '1' when st = S_RD and rd_cmd_left /= 0 and inflight < 15 else '0';
-  fifo_pop <= '1' when st = S_RD and cur_valid = '0' and f_cnt /= 0 else '0';
+  rd_issue <= '1' when st = S_RD and avm_rst = '0' and rd_cmd_left /= 0 and inflight < 15 else '0';
+  fifo_pop <= '1' when (st = S_RD and cur_valid = '0' and f_cnt /= 0) or
+                       (st = S_DRAIN and f_cnt /= 0) else '0';
+
 
   -- Write: the data goes into the MIG's write-data FIFO first; the command follows once
   -- the data has been taken (or in the same cycle).  UG586 allows data at most two
@@ -138,7 +155,25 @@ begin
         inflight  <= (others => '0');
         w_mask    <= (others => '1');
         cmd_ok    <= '0'; dat_ok <= '0';
+        flush_abort <= '0';
+      elsif avm_rst = '1' and (st = S_WR or st = S_RD or st = S_RD_END or
+                               (st = S_IDLE and (inflight /= 0 or f_cnt /= 0))) then
+        -- abort the Avalon transaction (see the header); the MIG side stays consistent
+        if push then f_wp <= f_wp + 1; end if;
+        if push then f_cnt <= f_cnt + 1; end if;
+        cur_valid <= '0';
+        w_mask    <= (others => '1');
+        aborts    <= aborts + 1;
+        if st = S_WR then
+          st <= S_IDLE;                        -- the partly gathered word is dropped
+        else
+          rd_cmd_left <= (others => '0');      -- no more read commands; drain what is in flight
+          st <= S_DRAIN;
+        end if;
       else
+        if avm_rst = '1' and st = S_FLUSH then
+          flush_abort <= '1';
+        end if;
         -- FIFO pointers
         if push then f_wp <= f_wp + 1; end if;
         if pop then
@@ -198,7 +233,8 @@ begin
             if (cmd_ok = '1' or (app_rdy = '1' and (dat_ok = '1' or app_wdf_rdy = '1'))) and
                (dat_ok = '1' or app_wdf_rdy = '1') then
               w_mask <= (others => '1');
-              if w_left = 0 then
+              flush_abort <= '0';
+              if w_left = 0 or flush_abort = '1' or avm_rst = '1' then
                 st <= S_IDLE;
               else
                 w_word_addr <= w_word_addr + 1;
@@ -209,6 +245,13 @@ begin
 
           when S_RD_END =>
             st <= S_IDLE;
+
+          when S_DRAIN =>
+            -- discard the read words still coming from the MIG (popped by fifo_pop)
+            cur_valid <= '0';
+            if inflight = 0 and f_cnt = 0 then
+              st <= S_IDLE;
+            end if;
 
           when S_RD =>
             if rd_issue = '1' and app_rdy = '1' then
