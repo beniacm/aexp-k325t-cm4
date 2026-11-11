@@ -90,6 +90,9 @@ the other module fitted.  Radxa build of 2026-11-11: timing met (WNS +0.114 ns, 
   `m65d_stop.sh` before and `systemctl start m65d` after), then `M65_SLOT1=amiga` in
   `/root/m65/m65d.env` and `m65d_restart.sh`.  Ctrl+Alt+F2 / `m65ctl core slot1` starts it,
   Ctrl+Alt+F1 returns to the MEGA65 (slot 0, unchanged).
+- On the Radxa CM3 module: `/root/m65/bit/aexp_k325t_cm4_radxacm3.bit` = this core (phase 2,
+  in slot 1 since 2026-11-11), `/root/m65/bit/aexp_v1_k325t_cm4_radxacm3.bit` = the V1 port
+  (A500 only), the way back: `m65flash.py write 1 /root/m65/bit/aexp_v1_k325t_cm4_radxacm3.bit`.
 - Back to the C64 core in slot 1: `m65flash.py write 1 /root/m65/bit/c64_k325t_cm4_radxacm3.bit`
   and `M65_SLOT1=c64` (or remove the line).  Only one of the two fits slot 1 at a time.
 

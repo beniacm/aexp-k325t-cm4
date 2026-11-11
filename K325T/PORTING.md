@@ -231,3 +231,10 @@ a warm reset as in V1.
 
 Left (reasons in section 3): 68020, more floppy drives, IDE/HDF, AGA, RTC from the module,
 turbo floppy, NTSC, audio filters.
+
+**Reproducibility** (2026-11-11): a fresh clone of this branch + `git submodule update --init`
++ the QNICE tool build + `K325T/build.sh radxacm3` applied the Minimig patch ("patch applied"),
+built the same firmware ROM and a bitstream identical to the flashed one except 3 bytes of
+the .bit header (build time); same timing (WNS +0.350 ns).  Flash slot 1 holds this core
+since 2026-11-11 (slot 0 read back unchanged before/after; cold start, core switching both
+ways, MEGA65 smoke test passed).
