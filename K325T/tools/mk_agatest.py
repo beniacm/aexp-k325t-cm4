@@ -17,7 +17,7 @@ origin, which is located by the colour of block (0,0)).
 Usage:
   mk_agatest.py build OUTDIR            all tests: OUTDIR/<test>.bin, .adf, .json (expected),
                                         OUTDIR/bootrom.bin (bench boot ROM that jumps to ORG)
-  mk_agatest.py bootrom OUT ORG         a bench boot ROM that jumps to ORG (e.g. the DDR3 study's
+  mk_agatest.py bootrom OUT ORG [--icache]  a bench boot ROM that jumps to ORG (e.g. the DDR3 study's
                                         workload programs at 0x1E0000)
   mk_agatest.py check TEST FRAME [--xscale N]   compare a frame (PPM from the bench: 2 columns
                                         per lores pixel; PNG from FS-UAE: give --xscale)
@@ -425,12 +425,15 @@ BOOTROM = r"""
         .long   0,0
         move.b  #3,0xbfe201                 | CIA-A DDRA: OVL, LED outputs
         move.b  #2,0xbfe001                 | OVL = 0 (chip RAM at 0), LED off
+%(icache)s
         jmp     0x%(org)x
 """
 
 
-def make_bootrom(org=ORG):
-    code = assemble(BOOTROM % dict(org=org), 0xF80000)
+def make_bootrom(org=ORG, icache=False):
+    # icache: 68020 instruction cache on (MOVEC CACR) as Kickstart leaves it; 68020+ only
+    ic = "        moveq   #1,%d0\n        movec   %d0,%cacr" if icache else ""
+    code = assemble(BOOTROM % dict(org=org, icache=ic), 0xF80000)
     return code + bytes(0x40000 - len(code))
 
 
@@ -581,7 +584,7 @@ if __name__ == "__main__":
     if len(sys.argv) >= 3 and sys.argv[1] == "build":
         build(sys.argv[2])
     elif len(sys.argv) >= 4 and sys.argv[1] == "bootrom":      # bootrom OUT ORG
-        open(sys.argv[2], "wb").write(make_bootrom(int(sys.argv[3], 0)))
+        open(sys.argv[2], "wb").write(make_bootrom(int(sys.argv[3], 0), "--icache" in sys.argv))
     elif len(sys.argv) >= 4 and sys.argv[1] == "check":
         xs = 2
         if "--xscale" in sys.argv:

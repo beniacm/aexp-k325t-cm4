@@ -230,4 +230,26 @@ always @(posedge emu.clk_sys) begin
 	end
 end
 
+// K325T stage-3 groundwork: the chip-bus access trace of ../tb_top.sv (same DPI hook and record
+// meaning: 1 cpu 2 bpl 3 spr 4 cop 5 aud 6 dsk 7 blt 8 ref; fmode {spr, bpl}), so that the cache
+// model can see MiSTer's 68EC020 (32-bit chip cycles, instruction cache, cycle tables)
+import "DPI-C" function void trace_tick(input int phase, input int addr, input int oe_n,
+                                        input int we_n, input int src, input int fm,
+                                        input int hpos, input int vpos, input int dbr,
+                                        input int c1c3);
+wire t_dsk = emu.minimig.AGNUS1.dma_dsk;
+wire t_ref = emu.minimig.AGNUS1.dma_ref;
+wire t_aud = emu.minimig.AGNUS1.dma_aud;
+wire t_bpl = emu.minimig.AGNUS1.dma_bpl;
+wire t_spr = emu.minimig.AGNUS1.ack_spr;
+wire t_cop = emu.minimig.AGNUS1.ack_cop;
+wire t_blt = emu.minimig.AGNUS1.ack_blt;
+wire [3:0] t_src = t_dsk ? 4'd6 : t_ref ? 4'd8 : t_aud ? 4'd5 : t_bpl ? 4'd2 : t_spr ? 4'd3 :
+                   t_cop ? 4'd4 : t_blt ? 4'd7 : 4'd1;
+always @(posedge emu.clk_sys)
+	trace_tick({30'b0, emu.minimig.clk7_en, emu.minimig.clk7n_en}, {9'b0, emu.minimig.ram_address[23:1]},
+	           {31'b0, emu.minimig._ram_oe}, {31'b0, emu.minimig._ram_we}, {28'b0, t_src},
+	           {28'b0, emu.minimig.AGNUS1.spr1.fmode[3:2], emu.minimig.AGNUS1.bpd1.fmode[1:0]},
+	           {23'b0, emu.minimig.AGNUS1.hpos}, {21'b0, emu.minimig.AGNUS1.vpos}, {31'b0, emu.minimig.dbr}, 32'd0);
+
 endmodule

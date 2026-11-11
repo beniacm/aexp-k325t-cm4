@@ -1052,7 +1052,41 @@ adjacent lanes of the same 64-bit word (aligned: A[1] = 0) in one slot, i.e. 4 b
 Measured with `tools/mk_cputime.py` (11 loops x 4 bus conditions, colour clocks from VPOSR/VHPOSR,
 same beam phase for every start; code in chip RAM, instruction cache on where the CPU has one):
 
-@@CPUTIME_TABLE@@
+| condition / loop (CCK for 2048 instructions) | ours 68000 (fx68k) | ours 68020 (TG68K, AExp+cpu-tg68k) | MiSTer "68020" (unthrottled) | MiSTer stock 68EC020 (#276 tables) | FS-UAE 68020 CE | 68EC020 manual, cache case, zero-wait memory |
+|---|---|---|---|---|---|---|
+| c0 DMA off / L0 dbra (2048x) | 10405 | 12412 | 789 | 3058 | 4136 | 3072 |
+| c0 DMA off / L1 add.l d0,d1 | 9584 | 5727 | 371 | 1397 | 1578 | 1408 |
+| c0 DMA off / L2 move.l (a0),d0 chip | 13693 | 13955 | 4379 | 6520 | 4674 | 3456 |
+| c0 DMA off / L3 move.w (a0),d0 chip | 9593 | 9841 | 4379 | 6525 | 4677 | 3456 |
+| c0 DMA off / L4 move.l d0,(a0) chip | 13693 | 13955 | 4379 | 4403 | 4407 | 2432 |
+| c0 DMA off / L5 move.w d0,(a0) chip | 9592 | 9841 | 4379 | 4403 | 4405 | 2432 |
+| c0 DMA off / L6 mulu.w d2,d0 | 46440 | 5727 | 371 | 14702 | 13354 | 14208 |
+| c0 DMA off / L7 move.l d0,d1 + divu.w d2,d1 | 59404 | 13955 | 4981 | 23917 | 29224 | 23936 |
+| c0 DMA off / L8 move.w $dff006,d0 | 17760 | 18069 | 6217 | 7050 | 8796 | 3968 |
+| c0 DMA off / L9 move.l (a0)+,d0 chip | 13695 | 13955 | 4379 | 6525 | 6755 | 3456 |
+| c0 DMA off / L10 move.l d0,(a0)+ chip | 13693 | 13955 | 4379 | 4403 | 4405 | 2432 |
+| c1 8pl lores FMODE0 / L0 dbra (2048x) | 36070 | 42465 | 891 | 2936 | 4292 | >= 3072 |
+| c1 8pl lores FMODE0 / L1 add.l d0,d1 | 31545 | 19708 | 437 | 1397 | 1579 | >= 1408 |
+| c1 8pl lores FMODE0 / L2 move.l (a0),d0 chip | 46096 | 47865 | 14546 | 18619 | 15922 | >= 3456 |
+| c1 8pl lores FMODE0 / L4 move.l d0,(a0) chip | 46097 | 47864 | 14546 | 14733 | 14738 | >= 2432 |
+| c1 8pl lores FMODE0 / L6 mulu.w d2,d0 | 39923 (*) | 19708 | 437 | 14513 | 13606 | >= 14208 |
+| c2 8pl lores FMODE3 / L0 dbra (2048x) | 12328 | 15088 | 785 | 3054 | 4141 | >= 3072 |
+| c2 8pl lores FMODE3 / L1 add.l d0,d1 | 11335 | 6972 | 376 | 1397 | 1578 | >= 1408 |
+| c2 8pl lores FMODE3 / L2 move.l (a0),d0 chip | 16363 | 16968 | 5189 | 6533 | 5678 | >= 3456 |
+| c2 8pl lores FMODE3 / L4 move.l d0,(a0) chip | 16356 | 16968 | 5189 | 5218 | 5224 | >= 2432 |
+| c2 8pl lores FMODE3 / L6 mulu.w d2,d0 | 49878 | 6972 | 376 | 14709 | 13356 | >= 14208 |
+| c3 blitter nasty / L0 dbra (2048x) | 18821 | 20827 | 9154 | 11437 | 12520 | >= 3072 |
+| c3 blitter nasty / L1 add.l d0,d1 | 18001 | 14142 | 8734 | 9761 | 9948 | >= 1408 |
+| c3 blitter nasty / L2 move.l (a0),d0 chip | 22113 | 22370 | 12741 | 14886 | 13048 | >= 3456 |
+| c3 blitter nasty / L4 move.l d0,(a0) chip | 22111 | 22370 | 12741 | 12783 | 12789 | >= 2432 |
+| c3 blitter nasty / L6 mulu.w d2,d0 | 54857 | 14142 | 8734 | 23068 | 21728 | >= 14208 |
+
+(*) wrapped: the probe measures modulo one frame (71,051 CCK); the true value is 110,974.  The 68000
+column checks the method: L0-L6 match the 68000's documented cycle counts within 1 % (DBRA 10, ADD.L
+8, MOVE.L (An),Dn 12, MULU 38+2n clocks; 1 CCK = 2 clocks).  The manual column is a lower bound for
+c1-c3.  **c3 is not a test of the instruction cache**: the loop is entered by JSR, whose stack write
+waits for the whole blit (64 x 64 words, every cycle a blitter cycle) in every implementation; it
+shows that all four stop the CPU completely for a nasty blit when the CPU needs the bus.
 
 What each machine does:
 - **Ours (AExp + `cpu-tg68k`)**: TG68K runs at the 28.375 MHz clock enable and stalls for every bus
@@ -1061,13 +1095,19 @@ What each machine does:
   16-bit access, the next request waits for the next ph1.  No instruction cache, no 32-bit chip
   accesses, no throttle: register code runs at bus speed (one bus cycle per opcode word, ~2.8 CCK per
   `add.l d0,d1` from chip RAM), MULU/DIVU are much faster than a 68020 (TG68K computes them in a few
-  clocks), the blitter in nasty mode blocks *all* CPU work (opcode fetches need the bus).
+  clocks), and with the blitter in nasty mode no instruction runs at all (every opcode fetch needs
+  the bus; a real 68EC020 executing from its cache would only stop at its next bus access -- not
+  measured here, see the note under the table).
 - **MiSTer master**: the same TG68K, but cpu_wrapper merges two words into one 32-bit chip-bus cycle
   with AGA (#276), fetches code through a 64-longword instruction cache model (`09226f7`), and with the
   "stock speed" bit (0xF4 bit 5) `cpu_cycles.v` holds the CPU by a per-instruction cost from tables
   (68020 user's manual cycle counts with head/tail overlap, chip access cost 9 CPU clocks).  Without
-  that bit (MiSTer's ordinary "68020") the CPU runs unthrottled (the `--cpu 7` column above: register
-  loops 15x faster than ours).
+  that bit (MiSTer's ordinary "68020", config byte 0x07 here) the CPU runs unthrottled: register
+  loops 15x faster than ours.  With it (0x23) the register loops land within 0-4 % of the manual's
+  cache-case numbers (L0 3058 vs 3072, L1 1397 vs 1408, L6 14702 vs 14208, L7 23917 vs 23936).  Note:
+  MiSTer's own Verilator simulation does not load these tables (Quartus `ram_init_file` attribute,
+  zeros in Verilator; `mister/mif2hex.py` fixes that in the copy) -- before the fix the "stock" run
+  gave register loops 2.5x faster than the manual.
 - **FS-UAE 3.1.66** (WinUAE 3.3 core): "68020 cycle-exact" approximate model; WinUAE's own changelog
   says that model is approximate (4.3.0: "Removed all 68020 cycle-exact CPU mode internal idle cycles
   ... real 68020 best case results too slow ... worst case was still too fast"; 6.1 beta 4: "Adjusted
@@ -1088,7 +1128,7 @@ The list the user asked for:
 | instruction cache (256 bytes, 64 longwords; code loops do not touch the bus) | ours: **missing** (every fetch is a bus cycle); MiSTer: modelled |
 | CPU chip-RAM access length on a real A1200 (wait states, how Alice arbitrates the 020 against DMA, write buffering in Budgie) | **unknown** from public documents; WinUAE ("data latched by chipset buffers", 4.2.0) and MiSTer (9 clocks) use measured/approximated values |
 | interrupt latency, exception timing, bus phase of the 020 against the 7 MHz / CCK grid | **approximate** (TG68K + chip-bus FSM), not documented for Alice |
-| what a demo can notice | loops timed against the beam (raster splits by CPU, "busy wait then write" effects): ours runs register code ~4x slower and MUL/DIV ~2x faster than a 68EC020, CPU work under blitter nasty stops completely (a real 020 runs on from its cache); effects that need a frame's CPU budget (texture mappers, chunky-to-planar) will drop frames or run too fast relative to the original; music players and copper effects are chipset-timed and unaffected |
+| what a demo can notice | loops timed against the beam (raster splits by the CPU, "busy wait then write" effects, Roots 2.0's globe -- WinUAE had to slow its 68020 NOP for it): ours runs register code ~4x slower (L1 5727 vs 1408 CCK) and MUL/DIV 1.7-2.5x faster than a 68EC020, chip-RAM loops 1.6-5.7x slower (16-bit, no cache); code that needs a frame's CPU budget (texture mappers, chunky-to-planar) drops frames, or runs too fast where it multiplies; MiSTer's stock model is within 0-5 % of the manual for register code, its chip accesses cost 1.9-2.6 CCK, FS-UAE's 1.4-2.3 CCK, the real A1200's are unknown; music and copper effects are chipset-timed and unaffected |
 
 Consequence for stage 3: "cycle-accurate A1200" for the CPU means taking MiSTer's #276 / `09226f7`
 work (32-bit chip cycles, instruction cache, the cycle-table throttle) into this tree, then
@@ -1141,10 +1181,38 @@ with the TG68K 68020: the Kickstart 3.1 boot, the study's `aga8cpu` and `worst` 
 | CPU timing probe | 1536 KB | all | B | 0.1 | 0.1 | 0.04 / 0.7 | 0.000 | 0.7 |
 | CPU timing probe | 1536 KB | all | C | 0.1 | 0.1 | 0.07 / 1.5 | 0.000 | 1.5 |
 | KS 3.1 idle (frames 300-400) | 1536 KB | any | A/B/C | any | 0 | 0 | 0 | 0 |
+| aga8cpu, MiSTer stock 68EC020 | 512 KB | all | B | 1/31 | 11915.4 | 8375.33 / 8395.0 | 41.877 | 1161647.9 |
+| aga8cpu, MiSTer stock 68EC020 | 1024 KB | all | B | 1/31 | 7.7 | 5.42 / 23.4 | 0.027 | 17.0 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | none | B | 1/31 | 15.4 | 10.81 / 26.9 | 0.054 | 2.5 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | none | C | 1/31 | 15.4 | 13.94 / 35.6 | 0.070 | 4.1 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | all | B | 1/31 | 0.0 | 0.01 / 0.7 | 0.000 | 0.7 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | all | C | 1/31 | 0.0 | 0.01 / 0.9 | 0.000 | 0.9 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | none | B | 0.1 | 15.4 | 10.82 / 27.0 | 0.054 | 2.2 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | none | C | 0.1 | 15.4 | 13.94 / 35.6 | 0.070 | 4.0 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | all | B | 0.1 | 0.0 | 0.01 / 0.7 | 0.000 | 0.7 |
+| aga8cpu, MiSTer stock 68EC020 | 1536 KB | all | C | 0.1 | 0.0 | 0.01 / 0.9 | 0.000 | 0.9 |
+| worst, MiSTer stock 68EC020 | 512 KB | all | B | 1/31 | 1002.7 | 702.92 / 778.3 | 3.515 | 11960.7 |
+| worst, MiSTer stock 68EC020 | 1024 KB | all | B | 1/31 | 648.4 | 454.92 / 529.0 | 2.275 | 79.7 |
+| worst, MiSTer stock 68EC020 | 1536 KB | none | B | 1/31 | 423.0 | 297.41 / 403.4 | 1.487 | 542.6 |
+| worst, MiSTer stock 68EC020 | 1536 KB | none | C | 1/31 | 423.0 | 385.20 / 518.5 | 1.926 | 3669.7 |
+| worst, MiSTer stock 68EC020 | 1536 KB | all | B | 1/31 | 320.5 | 225.27 / 259.1 | 1.126 | 21.2 |
+| worst, MiSTer stock 68EC020 | 1536 KB | all | C | 1/31 | 320.8 | 291.32 / 331.2 | 1.457 | 40.6 |
+| worst, MiSTer stock 68EC020 | 1536 KB | none | B | 0.1 | 423.0 | 297.42 / 403.5 | 1.487 | 5.1 |
+| worst, MiSTer stock 68EC020 | 1536 KB | none | C | 0.1 | 423.0 | 385.22 / 519.3 | 1.926 | 9.4 |
+| worst, MiSTer stock 68EC020 | 1536 KB | all | B | 0.1 | 320.6 | 225.16 / 257.6 | 1.126 | 2.8 |
+| worst, MiSTer stock 68EC020 | 1536 KB | all | C | 0.1 | 320.8 | 291.20 / 331.2 | 1.456 | 6.8 |
 
-Reading: with the study's design (1.5 MB, 3-way, prefetchers) the AGA workloads with the 68020 stall
+The two "MiSTer stock 68EC020" workloads are the study's programs run on MiSTer master's full system
+(`sim/aga/mister`, access trace added to its bench) with the cycle-table 68EC020, 32-bit chip cycles
+and the instruction cache on: the closest model of a real A1200 CPU available here.
+
+Reading: with the study's design (1.5 MB, 3-way, prefetchers) the AGA workloads with our TG68K stall
 as little as the study's 68000 ones (worst 0.55 % / 3.1 us at latency B, study 0.51 % / 1.5 us;
 aga8cpu ~0); FMODE 3 fetches are 64-bit and prefetchable, they never miss once the walkers run.
+With MiSTer's 68EC020 the worst case doubles: 1.13 % stalled, max lag 21 us at latency B (2.8 us
+with h = 10 %) -- the 020 runs its loop from the instruction cache, so its random chip reads (4,620
+CPU accesses per frame instead of 18,483) come closer together and the blitter takes the freed slots;
+without prefetchers 1.5 % and 543 us (5 us with h = 10 %).  aga8cpu stays at ~0 with prefetchers.
 Without prefetchers (a likely first stage-2 cache) the boot and the worst case stay below 1 % but
 lags reach 33-150 us at h = 1/31; h = 10 % brings every case below 6 us.  A 512 KB cache fails
 for programs that touch more than 1 MB (aga8cpu: 15-20 % stalled, unbounded lag).  The TG68K as

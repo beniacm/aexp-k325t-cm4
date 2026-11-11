@@ -50,6 +50,31 @@ static bool done_seen = false; static int done_frame = -1; static int stop_after
 static std::vector<uint8_t> fb(960 * 320 * 3, 0);
 static int pcol = 0, prow = -1; static bool phs = true, pvs = true; static uint64_t ptick = 0;
 static void video_sample();
+// access trace (records as ../main.cpp: 16 bytes, run-length per access), from frame trace_from
+struct Rec { uint32_t tick, addr; uint8_t len, flags, src, phase; uint16_t hpos, vpos; };
+static FILE *g_out = nullptr; static const char *trace_fn = nullptr; static int trace_from = 1;
+static uint64_t g_tick = 0; static bool g_active = false; static Rec g_cur; static int g_phase = 0;
+extern "C" void trace_tick(int phase, int addr, int oe_n, int we_n, int src, int fm, int hpos,
+                           int vpos, int dbr, int c1c3)
+{
+	g_tick++;
+	if (phase & 2) g_phase = 0; else g_phase++;
+	if (!g_out) return;
+	bool acc = (!oe_n) || (!we_n);
+	if (g_active) {
+		bool same = acc && (uint32_t)addr == g_cur.addr && ((g_cur.flags & 1) == (we_n ? 0 : 1)) &&
+		            g_cur.src == src && g_cur.len < 255;
+		if (same) { g_cur.len++; return; }
+		fwrite(&g_cur, sizeof g_cur, 1, g_out);
+		g_active = false;
+	}
+	if (acc) {
+		g_active = true;
+		g_cur.tick = (uint32_t)g_tick; g_cur.addr = addr; g_cur.len = 1;
+		g_cur.flags = (we_n ? 0 : 1) | (fm << 4); g_cur.src = src;
+		g_cur.phase = (g_phase & 3) | (dbr ? 4 : 0); g_cur.hpos = hpos; g_cur.vpos = vpos;
+	}
+}
 static bool bustrace = false;
 static int readtrace = 0;
 static void monitor();
@@ -118,6 +143,7 @@ static void video_sample()
 				if (f) { fprintf(f, "P6 960 320 255\n"); fwrite(fb.data(), 1, fb.size(), f); fclose(f); }
 			}
 			if (done_seen && done_frame < 0) done_frame = frame_no;
+			if (trace_fn && frame_no == trace_from && !g_out) g_out = fopen(trace_fn, "wb");
 		}
 		prow = -1;
 	}
@@ -189,6 +215,8 @@ int main(int argc, char **argv)
 		else if (a == "--readtrace") readtrace = atoi(next());
 		else if (a == "--preload") { preload.push_back(next()); preload_at.push_back(strtoul(next(), 0, 0)); }
 		else if (a == "--shot") shot = next();
+		else if (a == "--out") trace_fn = next();
+		else if (a == "--trace-from") trace_from = atoi(next());
 		else if (a == "--frames") frames_max = atoi(next());
 		else if (a == "--dump") { dump_addr = strtoul(next(), 0, 0); dump_len = strtoul(next(), 0, 0); dump_fn = next(); }
 		else if (a == "--chipset") chipset = strtoul(next(), 0, 0);
@@ -241,6 +269,7 @@ int main(int argc, char **argv)
 		}
 	}
 	printf("[sim] end at %.3f ms, frame %d\n", sim_ms(), frame_no);
+	if (g_out) { if (g_active) fwrite(&g_cur, sizeof g_cur, 1, g_out); fclose(g_out); }
 	if (dump_fn) {
 		sdram_scope();
 		FILE *f = fopen(dump_fn, "wb");

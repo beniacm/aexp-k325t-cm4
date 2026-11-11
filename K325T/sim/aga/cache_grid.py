@@ -8,6 +8,9 @@ the scratch area from ext/aexp3_a1200_ddr3_study/model) over the AGA + 68020 tra
              -- now with the TG68K 68020 instead of the fx68k
   worst      the study's worst case: + 8 sprites + random blits + CPU random R/W over 2 MB, TG68K
   cputime    tools/mk_cputime.py: CPU loops on chip RAM under 8-plane FMODE 0/3 DMA and blitter nasty
+  aga8cpu_m, worst_m   the two study programs on MiSTer's full system with its stock-timed 68EC020
+             (32-bit chip cycles, instruction cache): the closest available model of a real A1200 CPU
+WL=a,b limits the workloads.
 
 Grid: cache 512/1024/1536 KB x prefetch none/dma/all x latency A/B/C (study section 3.3) at
 h = 1/31, plus h = 0.1 for 1536 KB.  At most 2 model runs at a time, nice 19.
@@ -28,7 +31,12 @@ WL = {
     "aga8cpu": ("aga8cpu_020.bin", 25),
     "worst": ("worst_020.bin", 25),
     "cputime": ("cputime_020.bin", 5),
+    # MiSTer master's full-system simulation, 68EC020 stock timing (config 0x23: cycle tables,
+    # 32-bit chip cycles, instruction cache on), the same two study programs
+    "aga8cpu_m": ("aga8cpu_ec020m.bin", 25),
+    "worst_m": ("worst_ec020m.bin", 25),
 }
+ONLY = [w for w in os.environ.get("WL", "").split(",") if w]
 LAT = {"A": ["--lat", "250", "--jit", "50"],
        "B": ["--lat", "650", "--jit", "100"],
        "C": ["--lat", "650", "--jit", "200", "--pasc", "0.45", "--asc", "700"]}
@@ -49,6 +57,8 @@ def run(job):
 
 jobs = []
 for wl in WL:
+    if ONLY and wl not in ONLY:
+        continue
     if not os.path.exists(os.path.join(TR, WL[wl][0])):
         continue
     for cache, pf, lat in itertools.product([512, 1024, 1536], ["none", "dma", "all"], "ABC"):
