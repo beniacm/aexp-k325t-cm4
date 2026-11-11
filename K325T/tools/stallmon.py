@@ -184,7 +184,8 @@ def main():
                m & 15, m >> 20 & 15))
     elif cmd == "mbox":
         # the core's result mailbox: the longwords the Amiga last wrote to $C0-$FF (lat_meter $E0-$E5)
-        b.wr(0, 0)
+        pass                                # (register 0 kept: it holds the cache shrink bit 1;
+        #  keep the stall injector off while reading these)
         b.wr(6, 7)
         out = []
         for i in range(6):
@@ -196,7 +197,8 @@ def main():
         print(" ".join("%08x" % v for v in out[:16]))
     elif cmd == "avm":
         # Avalon debug words of the top (lat_meter index $FF / $FE): the write burst avm_mig is in
-        b.wr(0, 0)
+        pass                                # (register 0 kept: it holds the cache shrink bit 1;
+        #  keep the stall injector off while reading these)
         b.wr(6, 7)
         def rd(i):
             b.wr(4, i >> 4)
