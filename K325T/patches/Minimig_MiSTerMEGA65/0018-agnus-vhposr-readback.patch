@@ -1,0 +1,15 @@
+K325T: port of MiSTer-devel/Minimig-AGA_MiSTer 06f30af (class b: changes OCS/ECS behaviour)
+"agnus: VHPOSR reads one colour clock high" (#234), applied unchanged: VHPOSR returns hpos-1
+(htotal at the wrap).  Upstream evidence: vAmigaTS VPOS suite measured on an A500 ECS (191 of 304 probe
+rows read +1 before, 0 after).
+--- a/rtl/agnus_beamcounter.v
++++ b/rtl/agnus_beamcounter.v
+@@ -111,7 +111,7 @@
+ 	if (reg_address_in[8:1]==VPOSR[8:1] || reg_address_in[8:1]==VPOSW[8:1])
+ 		data_out[15:0] = {long_frame,1'b0,ecs,ntsc,2'b00,{2{aga}},long_line,4'b0000,vpos[10:8]};
+ 	else if (reg_address_in[8:1]==VHPOSR[8:1] || reg_address_in[8:1]==VHPOSW[8:1])
+-		data_out[15:0] = {vpos[7:0],hpos[8:1]};
++		data_out[15:0] = {vpos[7:0],|hpos[8:1] ? hpos[8:1] - 8'd1 : ersy ? 8'd0 : htotal[8:1]};
+ 	else
+ 		data_out[15:0] = 0;
+ end
