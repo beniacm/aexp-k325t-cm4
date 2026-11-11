@@ -235,6 +235,16 @@ turbo floppy, NTSC, audio filters.
 **Reproducibility** (2026-11-11): a fresh clone of this branch + `git submodule update --init`
 + the QNICE tool build + `K325T/build.sh radxacm3` applied the Minimig patch ("patch applied"),
 built the same firmware ROM and a bitstream identical to the flashed one except 3 bytes of
-the .bit header (build time); same timing (WNS +0.350 ns).  Flash slot 1 holds this core
-since 2026-11-11 (slot 0 read back unchanged before/after; cold start, core switching both
+the .bit header (build time); same timing (WNS +0.350 ns).  Flash slot 1 held this core
+from 2026-11-11 (slot 0 read back unchanged before/after; cold start, core switching both
 ways, MEGA65 smoke test passed).
+
+**Reset fixes in flash** (2026-11-11 23:00): the build with both reset fixes (avm_mig aborts a
+burst on hr_rst; ascal drops its write request in reset -- see the commits; mechanism and proof
+in the `a1200-ddr3` branch's PORTING.md, stage 2 A) replaced it in slot 1: md5
+9a1a0c3ed0f734688eab2c711f07a412, WNS +0.241 ns.  Checked over JTAG first: 155 full resets without
+a freeze (the build before froze about once in 20), SysInfo default and ECS + 8 MB fast
+byte-identical to the build before, the determinism test (single-valued version) 27dbf6f3 /
+0c253188 with 0 mismatching frames in 3 boots, the five demos.  After `m65flash.py write 1` +
+verify and a cold start (plug off / on): `core slot1`, 30 full resets without a freeze, SysInfo
+as before, the determinism test again 27dbf6f3 / 0c253188.
