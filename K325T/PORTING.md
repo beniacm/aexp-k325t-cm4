@@ -1235,7 +1235,26 @@ A1200 quickstart model (68EC020 cycle-exact, AGA, 2 MB chip), the user's Kicksta
 read in place, `tools/run_fsuae.py` (SDL offscreen + `fsuae_capture.so`): H.264 video at 25 fps
 (every 2nd frame), a still every 10 s and FS-UAE's log in `ext/a1200_demos/ref/`, 150 s per demo.
 
-@@DEMO_TABLE@@
+Sources: P = `https://www.pouet.net/prod.php?which=<id>` (comment author, date); MM = MiSTer-devel/Minimig-AGA_MiSTer
+issue / PR (`https://github.com/MiSTer-devel/Minimig-AGA_MiSTer/issues/<n>`); WU = WinUAE changelog version (in
+`https://github.com/tonioni/WinUAE/blob/master/od-win32/winuaechangelog.txt`).  "In our base" = the fix is in AExp's
+Minimig (`git log` of the submodule).  Stills and sheets: `ext/a1200_demos/ref/<name>_sheet.png`.
+
+| demo (group, year, pouet id) | reported problem, where (source) | verified | downloaded | FS-UAE 3.1.66 baseline (150 s) | requirements |
+|---|---|---|---|---|---|
+| Nexus 7 (Andromeda, 1994, 402) | MiSTer/MiST/Vampire: wrong colours in "Gouraud Pulse" (TG68K BFINS; MM #11, fixed 2019, in our base); MiSTer: block of white lines in "Shade Cluster" (BPLAM outside the window, MM #182, 2025, in our base); the EXE on a fast 020 showed the main part only after ~30 min (MM #11 comment, 2019-07-16); A1200+030 hangs in the light-sphere scene (P dimouse 2008) | yes (sources quoted) | ADF (zip, the mirror named in MM #11) + EXE | runs: galaxy intro, landscape, title, Gouraud Pulse at ~140 s | stock A1200, floppy (P winden 2005) |
+| Fullmoon (Virtual Dreams & Fairlight, 1993, 410) | no emulator report found | no | ADF | loads ~50 s (cruncher), then title and 3D parts | A1200 + fast RAM (P kjb 2013, unverified) |
+| Origin (Complex, 1993, 3741) | no emulator report found | no | 2 DMS | runs: title picture, credits, 3D mech, cockpit part | stock A1200 (P krabob 2004) |
+| Motion / Origin 2 (Bomb, 1994, 5436) | crashes after the logo in WinUAE (P Optimus 2005-12-26; "cant get it working in UAE", P tFt 2007) | yes (old reports) | 2 DMS | **not reproduced**: runs past the logo into the 3D landscape | A1200, "some fastmem" for the 3D part (P grip 2012); run with 4 MB |
+| Mindflow (Stellar, 1994, 3473) | no emulator report found | no | EXE (zip) | without SetPatch it refuses ("AGA Chipset: No ... Something is wrong with your configuration!", as its readme warns); with an own 96-byte `setchiprev` (`tools/mk_setchiprev.py`: graphics.library SetChipRev(best), what SetPatch does) before it: **runs** (Stellar logo, landscape, credits, 3D corridor) | 2 MB 32-bit fast RAM + SetPatch (readme) |
+| Roots (Sanity, 1994, 3034) | WinUAE: borderblank blanked sprites (WU 2.8.0 b16, "Roots AGA") | yes | DMS | runs | stock A1200 |
+| Roots 2.0 (Sanity, 1995, 3251) | WinUAE: 68020 CE NOP timing for the globe effect ("write must be complete before NOP finishes"), flower-zoomer gaps (BPLCON4 colour change 1 lores pixel later than a colour-register write), missing bottom part (WU 2.2.0 b1); MiSTer: sprite-copper-chunky section (MM #184, 2025, in our base) | yes | DMS | runs, flower zoomer complete | AGA part stock; ECS part 020 + fast (P ryg 2008, Photon 2014) |
+| Psychedelic (Virtual Dreams & Fairlight, 1994, 3057) | "Doesn't run in WinUAE now too" (P tomba 2011); WHDLoad slave works in WinUAE (P axis 2016); FS-UAE config trouble (P rloaderro 2022); "code doesn't seem particularly stable" (P dodke 2019) | yes (comments) | LHA (HD install) | with 4 MB fast: **Software Failure 8000 0006** (CHK exception) at the start, reboot loop; without fast RAM (2 MB chip only, as the readme allows): **8000 000B** (line-F) at the start, loop -- the 2011 report is reproduced, cause not determined (no Workbench/SetPatch, HD directory with the volume named psychedelic:) | AGA, 020, ~1.8 MB free, fast recommended (readme) |
+| Twisted (Polka Brothers, 1994, 8130) | no emulator report found | no | 4 DMS | runs (disks in df0-df3) | fast RAM (P teo 2002) vs "unaccelerated A1200" (P 2014): unclear |
+| ZiF (Parallax, 1995, 1149) | slower than real hardware on MiSTer (MM #72, 2020: closed by the reporter, compared against an accelerated machine); "City part only one or two moving light sources" after a patch (P leGend 2008, platform unclear) | partly | LHA (files) | runs (title, 3D parts, pictures) | A1200 + hard disk, no fast RAM (readme) |
+| Domination (Contraz, 1996, 9005) | "WinUAE is not able to emulate sprites very well" (P, the author sp^ctz, 2003; old); MiSTer: phantom read from a write-only register enabling blitter line mode (MM #182, 2025, in our base) | yes | EXE (lha) | **no picture** in 150 s (screen colour (3,3,3); 4 MB fast, own SetChipRev); cause not determined | AGA, 6 MB RAM (readme) |
+| Crazy Sexy Cool (Essence, 1995, 3819) | MiSTer: bitplanes hid sprites outside the display window (MM #202, 2025, in our base) | yes | ADF | stops at the boot block's system check ("SYSTEM NOT OK", waits for a mouse button): the headless run has no input | A1200 (not stated) |
+| Artificial Paradise (New Generation Crew, 1994, 33775) | loading screen missing in WinUAE: `bset #9,$dff104` reads a write-only register, which on AGA returns "random bits" depending on earlier accesses (WU 2.6.0 b14, again 6.0.0 b20) | yes | 2 ADF | runs, loading screen present, parts 1-2 | A1200 (not stated) |
 
 Named in the brief but not identified: "Real" (no AGA production of that name on pouet; not
 verified).  Seen in the sources and not downloaded: Tenebra (Biosynthetic Design 1995, WinUAE
@@ -1264,6 +1283,10 @@ From the requirements column (beyond AGA + 68EC020 + 2 MB chip):
 - **multi-disk swapping**: Origin (2), Motion (2), Twisted (4), Artificial Paradise (2): the OSM
   ADF mount can swap df0; a second drive (df1, `research_df1.md`) would match how some loaders look.
 - no candidate needs a 68030 or an FPU (the ones that want 030/060 were dropped).
+- **SetPatch's SetChipRev**: Mindflow refuses to run unless graphics.library is switched to AGA
+  (Kickstart 3.x boots ECS-compatible); a boot disk made for the FPGA must run `setchiprev`
+  (`tools/mk_setchiprev.py`, own code) before such a demo -- shown in FS-UAE: refused without it, runs
+  with it.
 
 Proposed order (each step testable on the board against this bench and the FS-UAE baselines):
 1. Stage 2 merged (64-bit data RAM, 2 MB chip, stall clock).
@@ -1293,6 +1316,11 @@ Proposed order (each step testable on the board against this bench and the FS-UA
 | `tools/mk_cputime.py` | CPU / chip-bus timing probe (payload, ADF, decoders) |
 | `tools/run_fsuae.py`, `tools/fsuae_capture.c` | FS-UAE without a display: stills, video, log |
 
+| `tools/mk_setchiprev.py` | 96-byte AmigaDOS tool: graphics.library SetChipRev(best) (SetPatch's AGA switch) for boot media without Workbench |
+
 Outside the repository: `ext/a1200_demos/` (downloads, `manifest.*`, `make_manifest.py`, `run_refs.sh`,
-`ref/` recordings and logs, `tools/ref_sheet.py`); simulation outputs and traces in the session
-scratch area (not kept).
+`ref/` recordings, stills, contact sheets and FS-UAE logs, `tools/ref_sheet.py`, `tools/fsuae_capture.so`);
+`ext/aga_groundwork/` (Kickstart 3.1 boot frames, the AGA test pictures and checker results of all three
+machines, the CPU timing JSONs, the cache-model results of the TG68K traces, the demo table).  The
+simulation traces (~1 GB) and the MiSTer-trace cache results lived in the session's RAM scratch area
+and were lost in a PC crash at 22:02 on 2026-11-11; their numbers are in the tables above.
