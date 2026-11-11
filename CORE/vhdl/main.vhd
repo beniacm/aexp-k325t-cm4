@@ -69,6 +69,10 @@ entity main is
       -- K325T stage 3: AGA wide fetch, words A+1..A+3 of the 64-bit group (chip_cache.vhd rdata48_o),
       -- same timing as ram_data_i; held here from clk7_en to the next one (minimig's chip48)
       ram_data48_i            : in  std_logic_vector(47 downto 0);
+      -- K325T stage 3: a 68EC020 32-bit chip cycle (AGA): ram_long_o marks the slot, ram_data2_o is the
+      -- second word to write (word A+1); its read comes from ram_data48_i(47 downto 32)
+      ram_long_o              : out std_logic;
+      ram_data2_o             : out std_logic_vector(15 downto 0);
       ram_bhe_n_o             : out std_logic;                      -- byte enable bits 15:8, active low
       ram_ble_n_o             : out std_logic;                      -- byte enable bits 7:0, active low
       ram_we_n_o              : out std_logic;                      -- write enable, active low
@@ -203,6 +207,9 @@ architecture synthesis of main is
          cpu_dtack_n    : out std_logic;
          cpu_reset_n    : out std_logic;
          cpu_reset_in_n : in  std_logic;
+         cpu_long       : in  std_logic;
+         chip32_en      : out std_logic;
+         ram_long       : out std_logic;
          nmi_addr       : in  std_logic_vector(31 downto 0);
 
          ram_data       : out std_logic_vector(15 downto 0);
@@ -273,7 +280,8 @@ architecture synthesis of main is
          ph1            : in  std_logic;
          ph2            : in  std_logic;
 
-         cpucfg         : in  std_logic_vector(1 downto 0);
+         cpucfg         : in  std_logic_vector(4 downto 0);   -- K325T stage 3: MiSTer's 5 bits
+         ntsc           : in  std_logic;
          fastramcfg     : in  std_logic_vector(2 downto 0);
          cachecfg       : in  std_logic_vector(2 downto 0);
          bootrom        : in  std_logic;
@@ -287,6 +295,10 @@ architecture synthesis of main is
          chip_rw        : out std_logic;
          chip_dtack     : in  std_logic;
          chip_ipl       : in  std_logic_vector(2 downto 0);
+         chip32_en      : in  std_logic;
+         chip_long      : out std_logic;
+         chip_din2      : out std_logic_vector(15 downto 0);
+         chip_dout2     : in  std_logic_vector(15 downto 0);
 
          fastchip_dout  : in  std_logic_vector(15 downto 0);
          fastchip_sel   : out std_logic;
@@ -335,6 +347,15 @@ architecture synthesis of main is
    -- ticks after the clk7_en edge at which it took the 16-bit word; by then the next slot's address
    -- is on the memory port, so the 48 bits must be held: MiSTer's sdram_ctrl holds them the same way)
    signal chip48_hold      : std_logic_vector(47 downto 0) := (others => '0');
+   -- K325T stage 3: 68EC020 (MiSTer #276): stock-speed timing + instruction cache with AGA, 32-bit chip
+   -- cycles; dout2_hold = word A+1 of a 32-bit read (MiSTer's chipRD2), held like chip48
+   signal cpu_ec020        : std_logic := '0';
+   signal cpu_long         : std_logic;
+   signal cpu_chip32_en    : std_logic;
+   signal ram_long_i       : std_logic;
+   signal cpu_din2         : std_logic_vector(15 downto 0);
+   signal dout2_hold       : std_logic_vector(15 downto 0) := (others => '0');
+   signal ram_oe_n_int     : std_logic;
    signal c1               : std_logic;
    signal c3               : std_logic;
    signal cck              : std_logic;
@@ -524,6 +545,7 @@ begin
       if rising_edge(clk_main_i) then
          if cpu_reset_n = '0' then
             cpucfg <= cpu_i;
+            cpu_ec020 <= aga_i and cpu_i(1) and cpu_i(0);   -- K325T stage 3: the A1200's 68EC020
          end if;
       end if;
    end process cpucfg_proc;
@@ -537,10 +559,12 @@ begin
          ph1             => cpu_ph1,
          ph2             => cpu_ph2,
 
-         cpucfg          => cpucfg,              -- K325T: 00 = 68000 (fx68k), 11 = 68020 (TG68K)
+         -- K325T: 00 = 68000 (fx68k), 11 = 68020 (TG68K); stage 3: b2 = 68EC020 stock timing (AGA)
+         cpucfg          => "00" & cpu_ec020 & cpucfg,
+         ntsc            => '0',
          fastramcfg      => fast_z3_i & fast_size_i, -- K325T: Zorro II fast RAM (autoconfig), 000 = none;
                                                  -- 110 = Zorro III 128 MB (68020; 8 MB Z2 with the 68000)
-         cachecfg        => "000",               -- no caches
+         cachecfg        => "00" & cpu_ec020,     -- stage 3: b0 = the 68EC020 instruction cache
          bootrom         => '0',                 -- normal A500 memory map
 
          chip_addr       => cpu_addr,
@@ -552,6 +576,10 @@ begin
          chip_rw         => cpu_rw,
          chip_dtack      => cpu_dtack_n,
          chip_ipl        => cpu_ipl_n,
+         chip32_en       => cpu_chip32_en,
+         chip_long       => cpu_long,
+         chip_din2       => cpu_din2,
+         chip_dout2      => dout2_hold,
 
          fastchip_dout   => x"0000",
          fastchip_sel    => open,
@@ -810,10 +838,17 @@ begin
    -- The Minimig core itself
    ---------------------------------------------------------------------------
 
+   ram_oe_n_o  <= ram_oe_n_int;
+   ram_long_o  <= ram_long_i;
+   ram_data2_o <= cpu_din2;
+
    p_chip48 : process (clk_main_i)
    begin
       if rising_edge(clk_main_i) then
          if clk7_en = '1' then chip48_hold <= ram_data48_i; end if;
+         if clk7_en = '1' and ram_long_i = '1' and ram_oe_n_int = '0' then
+            dout2_hold <= ram_data48_i(47 downto 32);
+         end if;
       end if;
    end process p_chip48;
 
@@ -830,6 +865,9 @@ begin
          cpu_dtack_n    => cpu_dtack_n,
          cpu_reset_n    => cpu_reset_n,
          cpu_reset_in_n => cpu_reset_out_n,
+         cpu_long       => cpu_long,
+         chip32_en      => cpu_chip32_en,
+         ram_long       => ram_long_i,
          nmi_addr       => cpu_nmi_addr,
 
          ram_data       => ram_data_o,
@@ -839,7 +877,7 @@ begin
          ram_bhe_n      => ram_bhe_n_o,
          ram_ble_n      => ram_ble_n_o,
          ram_we_n       => ram_we_n_o,
-         ram_oe_n       => ram_oe_n_o,
+         ram_oe_n       => ram_oe_n_int,
          dma_dbr        => dma_dbr_o,
          dma_reg        => dma_reg_o,
 

@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
   const char* save_fn = nullptr; int save_frame = -1; const char* restore_fn = nullptr;
   unsigned chipset = 0x00, mem = 0x03, cpu = 0x00;
   std::vector<int> shot_frames; bool px28 = false;
-  bool use_cache = false; int shrink = 0, lat_min = 20, lat_span = 40;
+  bool use_cache = false, stock020 = false; int shrink = 0, lat_min = 20, lat_span = 40;
   const char* preload_fn = nullptr; uint32_t preload_addr = 0;
   const char* dump_fn = nullptr; uint32_t dump_addr = 0, dump_len = 0;
   int64_t stop_addr = -1; uint32_t stop_val = 0;
@@ -125,6 +125,7 @@ int main(int argc, char** argv) {
         shot_frames.push_back(atoi(l.substr(p, q - p).c_str())); p = q + 1; } }
     else if (a == "--px28") px28 = true;
     else if (a == "--cache") use_cache = true;
+    else if (a == "--stock") stock020 = true;
     else if (a == "--shrink") shrink = atoi(nx());
     else if (a == "--lat") { lat_min = atoi(nx()); lat_span = atoi(nx()); }
     else if (a == "--preload") { preload_fn = nx(); preload_addr = strtoul(nx(), 0, 0); }
@@ -178,7 +179,7 @@ int main(int argc, char** argv) {
     top->rst_ext = 0; cyc0 = 1000;
     fprintf(stderr, "restored %s at frame %u tick %llu\n", restore_fn, g_frame, (unsigned long long)g_tick);
   }
-  top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
+  top->stock020 = stock020; top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
   top->lat_min = lat_min; top->lat_span = lat_span; top->cache_reset = use_cache;
   // stage 3, --cache: three clocks.  Source clock 31.310345 MHz (stall_clk.vhd), MIG ui_clk 100 MHz;
   // the machine clock is the source clock gated like the BUFGCE: a source edge reaches clk only

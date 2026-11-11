@@ -1,0 +1,25 @@
+K325T stage 3: minimig_m65.v passes the 68EC020 32-bit chip-cycle signals of patch 0014 (cpu_long,
+chip32_en, ram_long) to main.vhd.
+--- a/rtl/minimig_m65.v
++++ b/rtl/minimig_m65.v
+@@ -33,6 +33,10 @@
+ 	output        cpu_dtack_n,    // m68k data acknowledge, active low
+ 	output        cpu_reset_n,    // m68k reset (to CPU), active low
+ 	input         cpu_reset_in_n, // m68k reset feedback (RESET instruction), active low
++	// K325T stage 3 (MiSTer #276): 32-bit chip cycles of the 68EC020 with AGA
++	input         cpu_long,       // cpu_wrapper chip_long
++	output        chip32_en,      // to cpu_wrapper
++	output        ram_long,       // the slot is a 32-bit CPU access (second word = cpu_wrapper chip_din2)
+ 	input  [31:0] nmi_addr,       // m68k NMI vector address (from cpu_wrapper)
+ 
+ 	// SRAM-style memory interface (served by BRAM in mega65.vhd)
+@@ -126,6 +130,9 @@
+ 	._cpu_dtack    (cpu_dtack_n  ),
+ 	._cpu_reset    (cpu_reset_n  ),
+ 	._cpu_reset_in (cpu_reset_in_n),
++	.cpu_long      (cpu_long     ),
++	.chip32_en     (chip32_en    ),
++	.ram_long      (ram_long     ),
+ 	.nmi_addr      (nmi_addr     ),
+ 	.ovr           (             ), // unconnected, as in MiSTer's Minimig.sv
+ 

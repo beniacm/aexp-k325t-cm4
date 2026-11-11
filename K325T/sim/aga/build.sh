@@ -11,8 +11,8 @@
 # races in Verilator, synthesis semantics unchanged, as in the A1200 DDR3 study): blocking
 # assignments in separate clocked blocks of agnus_copper.v, paula_floppy_fifo.v and userio.v become
 # non-blocking.  The TG68K (VHDL) is converted to Verilog with GHDL's synthesis
-# (ghdl --synth --out=verilog, the generics of cpu_wrapper's instance fixed) and wrapped with the
-# lower-case port names cpu_wrapper uses.  Verilator 5.054 (brew), nice 19, at most 4 jobs.
+# (ghdl --synth --out=verilog, the generics of cpu_wrapper's instance fixed), its ports renamed to the
+# lower-case names cpu_wrapper uses.  Verilator 5.054 (brew), nice 19, at most 4 jobs.
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
@@ -39,16 +39,28 @@ grep -q 'out<=mem\[out_ptr' "$R/paula_floppy_fifo.v" || { echo "fifo fix" >&2; e
 # TG68K -> Verilog (generics as cpu_wrapper's instance)
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -fsynopsys -gsr_read=2 -gvbr_stackframe=2 \
     -gextaddr_mode=2 -gmul_mode=2 -gdiv_mode=2 -gbitfield=2 --out=verilog \
-    "$TG/TG68K_Pack.vhd" "$TG/TG68K_ALU.vhd" "$TG/TG68KdotC_Kernel.vhd" -e TG68KdotC_Kernel \
+    "$TG/TG68K_Pack.vhd" "$TG/TG68K_ALU.vhd" "$root/K325T/cpu020/TG68K_MMU030.vhd" "$TG/TG68KdotC_Kernel.vhd" -e TG68KdotC_Kernel \
     > tg68k_raw.v 2> ghdl.log) || { cat "$OUT/ghdl.log" >&2; exit 1; }
-sed 's/^module TG68KdotC_Kernel$/module tg68k_ghdl/' "$OUT/tg68k_raw.v" > "$OUT/tg68k.v"
+# VHDL names are case-insensitive: the kernel's ports as cpu_wrapper names them (lower case), and
+# its generics as parameters (the method of MiSTer's rtl/sim/system/build.sh)
+/usr/bin/python3 - "$OUT/tg68k_raw.v" "$OUT/tg68k.v" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+i = s.index('module TG68KdotC_Kernel'); j = s.index('endmodule', i)
+m = s[i:j]; hdr = m[:m.index(');')]
+for name in set(re.findall(r'(?:input|output|inout)\s+(?:\[[^\]]*\]\s*)?(\w+)', hdr)):
+    if name != name.lower():
+        m = re.sub(r'\b' + name + r'\b', name.lower(), m)
+m = m.replace('module TG68KdotC_Kernel', 'module TG68KdotC_Kernel\n  #(parameter sr_read = 2, vbr_stackframe = 2, extaddr_mode = 2, mul_mode = 2, div_mode = 2, bitfield = 2)', 1)
+open(sys.argv[2], 'w').write(s[:i] + m + s[j:])
+PY
 # stage 3: the stage-2 chip_cache (with the AGA 64-bit read) -> Verilog, for --cache
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/M2M/vhdl/tdp_ram.vhd" \
     "$root/K325T/chip_cache.vhd" -e chip_cache > chip_cache.v 2> ghdl_cache.log) || { cat "$OUT/ghdl_cache.log" >&2; exit 1; }
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $here/tg68k_wrap.v $OUT/chip_cache.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j 4 -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \
@@ -59,4 +71,6 @@ nice -n 19 $V --savable --cc --exe --build -j 4 -O3 --top-module tb_top -Wno-fat
 # fx68k loads its microcode with a relative path (../../Minimig_MiSTerMEGA65/...): run from $OUT/run/a
 mkdir -p "$OUT/run/a" "$OUT/Minimig_MiSTerMEGA65/rtl/fx68k"
 cp "$R"/fx68k/*.mem "$OUT/Minimig_MiSTerMEGA65/rtl/fx68k/"
+# the 68EC020 cycle tables (cpu_cycles.v: ../../../K325T/cpu020/*.mem from the run directory)
+mkdir -p "$OUT/../K325T/cpu020" && cp "$root"/K325T/cpu020/*.mem "$OUT/../K325T/cpu020/"
 ls -la "$OUT/obj_dir/tb"

@@ -1,0 +1,69 @@
+K325T stage 3: port of MiSTer-devel/Minimig-AGA_MiSTer c55ecd9 (#276), minimig.v and
+minimig_m68k_bridge.v parts, applied unchanged: cpu_long in, chip32_en / ram_long out (a 32-bit CPU
+chip-RAM cycle of the 68EC020 with AGA).  cpu_long = 0 (fx68k, OCS/ECS): no change.
+--- a/rtl/minimig.v
++++ b/rtl/minimig.v
+@@ -157,6 +157,9 @@
+ 	input 	     _cpu_uds,    // m68k upper data strobe
+ 	input 	     _cpu_lds,    // m68k lower data strobe
+ 	input 	     cpu_r_w,     // m68k read / write
++	input 	     cpu_long,
++	output 	     chip32_en,
++	output 	     ram_long,
+ 	output 	     _cpu_dtack,  // m68k data acknowledge
+ 	output 	     _cpu_reset,  // m68k reset
+ 	input 	     _cpu_reset_in,//m68k reset in
+@@ -653,6 +656,10 @@
+ 	.portb_out({_motor,_sel3,_sel2,_sel1,_sel0,side,direc,_step})
+ );
+ 
++wire cpu_long_en;
++assign chip32_en = cpucfg[1] & chipset_config[4] & ~ovr & ~cpuhlt;
++assign ram_long  = cpu_long_en & ~dbr & |bank[3:0];
++
+ //instantiate cpu bridge
+ minimig_m68k_bridge CPU1 
+ (
+@@ -674,6 +681,8 @@
+ 	._lds(_cpu_lds),
+ 	._uds(_cpu_uds),
+ 	.r_w(cpu_r_w),
++	.cpu_long(cpu_long),
++	.long_en(cpu_long_en),
+ 	._dtack(_cpu_dtack),
+ 	.rd(cpu_rd),
+ 	.rd_cyc(rd_cyc),
+--- a/rtl/minimig_m68k_bridge.v
++++ b/rtl/minimig_m68k_bridge.v
+@@ -47,6 +47,8 @@
+ 	input	        _lds,          // m68k lower data strobe d0-d7
+ 	input	        _uds,          // m68k upper data strobe d8-d15
+ 	input	        r_w,           // m68k read / write
++	input         cpu_long,
++	output        long_en,
+ 	output        _dtack,        // m68k data acknowledge to cpu
+ 	output        rd,            // bus read 
+ 	output        hwr,           // bus high write
+@@ -126,12 +128,13 @@
+ end
+ 
+ //latched CPU bus control signals
+-reg lr_w,l_as,l_dtack; // synchronised inputs
++reg lr_w,l_as,l_dtack,l_long; // synchronised inputs
+ always @ (posedge clk) begin
+ 	if (clk7_en) begin
+ 		lr_w <= !halt ? r_w : !host_we;
+ 		l_as <= !halt ? _as : !host_cs;
+ 		l_dtack <= _dtack;
++		l_long <= !halt & cpu_long;
+ 	end
+ end
+ 
+@@ -160,6 +163,7 @@
+ assign rd = enable & lr_w;
+ assign hwr = enable & ~lr_w & ~l_uds;
+ assign lwr = enable & ~lr_w & ~l_lds;
++assign long_en = enable & l_long;
+ assign rd_cyc = ~l_as & lr_w;
+ 
+ //blitter slow down signalling, asserted whenever CPU is missing bus access to chip ram, slow ram and custom registers 

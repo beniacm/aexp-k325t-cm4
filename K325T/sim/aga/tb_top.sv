@@ -10,6 +10,7 @@ module tb_top (
   // stage 3: chip RAM through the stage-2 chip_cache RTL (GHDL translation) with a DDR3 line-port
   // model, instead of the ideal memory
   input  wire        use_cache,
+  input  wire        stock020,        // stage 3: 68EC020 stock-speed timing (cpucfg b2) + instruction cache
   input  wire        src_clk,         // ungated source clock (the cache's port A, tags, misses)
   input  wire        ui_clk,          // MIG ui_clk (fill engine, line-port model)
   input  wire        cache_reset,     // the M2M full reset: latches mode and shrink, flushes
@@ -99,13 +100,19 @@ module tb_top (
   wire [31:0] nmi_addr;
 
   wire [1:0] mm_cpucfg;
+  wire chip32_en, cpu_long, ram_long;
+  wire [15:0] cpu_din2;
+  reg  [15:0] dout2_hold = 0;   // word A+1 of a 32-bit CPU read, held from its slot's clk7_en edge
   wire [1:0] cpustate;
   cpu_wrapper i_cpu (
     .reset(cpu_reset_n), .reset_out(cpu_reset_out_n), .clk(clk), .ph1(cpu_ph1), .ph2(cpu_ph2),
-    .cpucfg(mm_cpucfg), .fastramcfg(3'b000), .cachecfg(3'b000), .bootrom(1'b0),
+    // stage 3: MiSTer's cpucfg (b2 = 68EC020 stock timing), cachecfg b0 = its instruction cache
+    .cpucfg({2'b00, stock020 & (mm_cpucfg == 2'b11), mm_cpucfg}), .ntsc(1'b0),
+    .fastramcfg(3'b000), .cachecfg({2'b00, stock020}), .bootrom(1'b0),
     .chip_addr(cpu_addr), .chip_dout(cpu_dout), .chip_din(cpu_din), .chip_as(cpu_as_n),
     .chip_uds(cpu_uds_n), .chip_lds(cpu_lds_n), .chip_rw(cpu_rw), .chip_dtack(cpu_dtack_n),
     .chip_ipl(cpu_ipl_n),
+    .chip32_en(chip32_en), .chip_long(cpu_long), .chip_din2(cpu_din2), .chip_dout2(dout2_hold),
     .fastchip_dout(16'h0), .fastchip_sel(), .fastchip_lds(), .fastchip_uds(), .fastchip_rnw(),
     .fastchip_lw(), .fastchip_selack(1'b0), .fastchip_ready(1'b0),
     .ramsel(), .ramaddr(), .ramdin(), .ramdout(16'h0), .ramready(1'b0), .ramlds(), .ramuds(),
@@ -145,6 +152,7 @@ module tb_top (
     .clk_i(src_clk), .reset_i(cache_reset), .cache_on_i(cache_on), .shrink_i(shrink), .chip1m_i(1'b0),
     .chip_sel_i(use_cache & is_chip), .slow_sel_i(1'b0), .addr_i(ram_addr[20:1]), .wdata_i(ram_wdata),
     .we_n_i(ram_we_n), .oe_n_i(ram_oe_n), .bhe_n_i(ram_bhe_n), .ble_n_i(ram_ble_n),
+    .long_i(ram_long), .wdata2_i(cpu_din2),
     .rdata_o(cc_rdata), .rdata48_o(cc_rdata48), .miss_o(miss), .fills_o(fills), .wbacks_o(wbacks),
     .mode_o(cc_mode), .ui_clk_i(ui_clk), .lp_req_o(cc_req), .lp_we_o(cc_we), .lp_addr_o(cc_addr),
     .lp_wdata_o(cc_wdata), .lp_busy_i(lp_busy), .lp_rvalid_i(lp_rvalid), .lp_rdata_i(lp_rdata),
@@ -208,10 +216,13 @@ module tb_top (
                  chipmem[{cw[19:2], cw[1:0] + 2'd3}]};
     // with the cache: the same holding register, loaded from the cache's 64-bit read
     if (clk7_en) chip48_q <= use_cache ? cc_rdata48 : chip48_n;
+    // stage 3: the second word of a 68EC020 32-bit read (MiSTer's chipRD2), held like chip48
+    if (clk7_en && ram_long && !ram_oe_n) dout2_hold <= use_cache ? cc_rdata48[47:32] : chip48_n[47:32];
     if (!ram_we_n) begin
       if (is_chip) begin
         if (!ram_bhe_n) chipmem[cw][15:8] <= ram_wdata[15:8];
         if (!ram_ble_n) chipmem[cw][7:0]  <= ram_wdata[7:0];
+        if (ram_long) chipmem[{cw[19:1], 1'b1}] <= cpu_din2;   // stage 3: 68EC020 32-bit write
       end else if (is_slow) begin
         if (!ram_bhe_n) slowmem[rw18][15:8] <= ram_wdata[15:8];
         if (!ram_ble_n) slowmem[rw18][7:0]  <= ram_wdata[7:0];
@@ -229,6 +240,7 @@ module tb_top (
     .cpu_address(cpu_addr), .cpu_data(cpu_dout), .cpudata_in(cpu_din), ._cpu_ipl(cpu_ipl_n),
     ._cpu_as(cpu_as_n), ._cpu_uds(cpu_uds_n), ._cpu_lds(cpu_lds_n), .cpu_r_w(cpu_rw),
     ._cpu_dtack(cpu_dtack_n), ._cpu_reset(cpu_reset_n), ._cpu_reset_in(cpu_reset_out_n),
+    .cpu_long(cpu_long), .chip32_en(chip32_en), .ram_long(ram_long),
     .nmi_addr(nmi_addr), .ovr(),
     .ram_data(ram_wdata), .ramdata_in(ramdata_mux), .ram_address({ram_addr23, ram_addr}),
     ._ram_bhe(ram_bhe_n), ._ram_ble(ram_ble_n), ._ram_we(ram_we_n), ._ram_oe(ram_oe_n),

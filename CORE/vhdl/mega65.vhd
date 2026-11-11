@@ -383,6 +383,9 @@ signal main_cache_on          : std_logic;   -- the cache's latched mode
 signal main_cache_miss        : std_logic;
 signal main_cache_rdata       : std_logic_vector(15 downto 0);
 signal main_cache_rdata48     : std_logic_vector(47 downto 0);   -- AGA chip48 (stage 3)
+signal main_ram_long          : std_logic;                       -- 68EC020 32-bit chip cycle (stage 3)
+signal main_ram_data2         : std_logic_vector(15 downto 0);
+signal main_cc_long           : std_logic;
 signal main_cache_fills       : unsigned(31 downto 0);
 signal main_cache_wbacks      : unsigned(31 downto 0);
 signal main_cc_chip_sel       : std_logic;
@@ -775,6 +778,8 @@ begin
          ram_data_o           => main_ram_wrdata,
          ram_data_i           => main_ram_rddata,
          ram_data48_i         => main_cache_rdata48,
+         ram_long_o           => main_ram_long,
+         ram_data2_o          => main_ram_data2,
          ram_bhe_n_o          => main_ram_bhe_n,
          ram_ble_n_o          => main_ram_ble_n,
          ram_we_n_o           => main_ram_we_n,
@@ -1043,6 +1048,7 @@ begin
    main_cc_oe_n     <= '1' when amiga_chip_scrub = '1' else main_ram_oe_n;
    main_cc_bhe_n    <= '0' when amiga_chip_scrub = '1' else main_ram_bhe_n;
    main_cc_ble_n    <= '0' when amiga_chip_scrub = '1' else main_ram_ble_n;
+   main_cc_long     <= main_ram_long and not amiga_chip_scrub;   -- stage 3: 68EC020 32-bit chip cycle
 
    -- result mailbox (see the port): snoops chip RAM writes to $C0-$FF (main_cc_addr = byte address
    -- bits 20..1; a first version compared bits 6..5 and caught $60-$7F, the autovectors)
@@ -1111,6 +1117,8 @@ begin
          oe_n_i       => main_cc_oe_n,
          bhe_n_i      => main_cc_bhe_n,
          ble_n_i      => main_cc_ble_n,
+         long_i       => main_cc_long,
+         wdata2_i     => main_ram_data2,
          rdata_o      => main_cache_rdata,
          rdata48_o    => main_cache_rdata48,
          miss_o       => main_cache_miss,

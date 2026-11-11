@@ -2,7 +2,9 @@
  * recordings of A1200 demos for the stage-3 groundwork).  Own code.
  *
  * FS-UAE runs with SDL_VIDEODRIVER=offscreen (OpenGL through EGL, no window); this library wraps
- * SDL_GL_SwapWindow and reads every rendered frame back (glReadPixels of the back buffer before
+ * SDL_GL_SwapWindow and reads every rendered frame back.  The same library works for the Unix port of
+ * WinUAE 6.1 (SDL3, OpenGL presenter, run on Xvfb): SDL3's SDL_GetWindowSizeInPixels replaces SDL2's
+ * SDL_GL_GetDrawableSize (glReadPixels of the back buffer before
  * the swap):
  *   CAP_VIDEO=FILE    every CAP_SKIP-th frame (default 1) piped into ffmpeg (H.264, CRF 14)
  *   CAP_PPM=PREFIX    every CAP_PPM_EVERY-th frame also as PREFIX_<frame>.ppm (raw, for checks)
@@ -48,7 +50,8 @@ void SDL_GL_SwapWindow(void *win)
     static pixelstore_fn ps = NULL;
     if (!real) {
         real = (swap_fn)dlsym(RTLD_NEXT, "SDL_GL_SwapWindow");
-        getsize = (getsize_fn)dlsym(RTLD_NEXT, "SDL_GL_GetDrawableSize");
+        getsize = (getsize_fn)dlsym(RTLD_NEXT, "SDL_GL_GetDrawableSize");        /* SDL2 (FS-UAE) */
+        if (!getsize) getsize = (getsize_fn)dlsym(RTLD_NEXT, "SDL_GetWindowSizeInPixels"); /* SDL3 (WinUAE) */
         getproc_fn gp = (getproc_fn)dlsym(RTLD_NEXT, "SDL_GL_GetProcAddress");
         rp = (readpixels_fn)gp("glReadPixels");
         rb = (readbuffer_fn)gp("glReadBuffer");
