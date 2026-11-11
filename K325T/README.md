@@ -22,17 +22,21 @@ Board harness (Rockchip daemons, scripts, write-up): `mega65-k325t-cm4` (beniacm
 | `qmtech_k325t_cm4.xdc`, `qmtech_k325t_cm4_radxacm3_bus.xdc` | pins + timing; the CM-bus section per module |
 | `build.sh`, `build.tcl`, `gen_sources.py` | Vivado batch build (source list taken from `CORE/CORE-R6.xpr`) |
 | `amiga_fastram.vhd` (+ `sim/tb_amiga_fastram.vhd`) | Zorro II fast RAM in DDR3: 16 KB LUT-RAM cache, posted writes, toggle-handshake CDC (phase 2) |
+| `sim/cpu020/` (`run.sh`, `tb_cpu020.sv`, `prog.s`) | cpu_wrapper with fx68k and TG68K + amiga_fastram in Vivado xsim: Zorro II/III, 68020 instructions, timings (68020) |
 | `patches/` | changes to submodule files, applied by `build.sh` (phase 2) |
-| `tools/mk_sysinfo_adf.py` | boot-block SysInfo: Kickstart version, CPU, Agnus/Denise ids, memory list, raster-line timings, fast RAM test (phase 2) |
+| `tools/mk_sysinfo_adf.py` | boot-block SysInfo: Kickstart version, CPU, Agnus/Denise ids, memory list, raster-line timings, fast RAM test (phase 2); `--x020`: + 15 68020 instruction tests (loader in the boot block) |
 | `tools/aexp_demo_test.py` | mounts demo ADFs one after the other, records the HDMI output (clip + frames) |
 | `tools/mk_writetest_adf.py` | boot-block floppy that writes a sector (write-back test, no Workbench needed) |
 | `tools/mk_inputtest_adf.py` | boot-block floppy showing JOY0DAT/JOY1DAT/CIA-A/POTGOR as bit stripes (mouse, joystick, buttons) |
 | `tools/mk_kbdtest_adf.py` | boot-block floppy reading Kickstart's keyboard.device (KBD_READMATRIX) |
 
 Submodule files changed (phase 2): only as patches, `patches/<submodule>/*.patch`, which
-`build.sh` applies to the submodule's working tree before every build (an applied patch is
-skipped, one that does not apply stops the build); the submodule pointers stay at upstream's
-commits.  Now: `patches/Minimig_MiSTerMEGA65/0001-cpu_wrapper-zorro2-fast-ram.patch`.
+`build.sh` applies in name order to the submodule's working tree before every build (the files
+they touch are rebuilt from the submodule's HEAD plus all patches; a file that already holds that
+result is left alone, one with other local edits or a patch that does not apply stops the build);
+the submodule pointers stay at upstream's commits.  Now:
+`patches/Minimig_MiSTerMEGA65/0001-cpu_wrapper-zorro2-fast-ram.patch`,
+`0002-cpu_wrapper-tg68k-68020.patch` (68020).
 
 Upstream files changed (generic-gated, defaults = upstream): `M2M/vhdl/framework.vhd`,
 `M2M/vhdl/av_pipeline/av_pipeline.vhd`, `M2M/vhdl/av_pipeline/digital_pipeline.vhd` (the C64
@@ -62,7 +66,11 @@ SysInfo test (`tools/mk_sysinfo_adf.py`) give identical results.
 | **memory**: 512K chip + 512K slow (default) / 512K chip only / 1M chip | menu "RAM: ..." | "1M Chip" uses the slow-RAM block RAM as the upper 512 KB of chip RAM (no slow RAM then) and forces ECS (an 8372A is needed for 1 MB) |
 | **fast RAM** none (default) / 2 / 4 / 8 MB | menu "RAM: ..." | Zorro II autoconfig board at `$200000` (as MiSTer's 68000 fast RAM), memory in DDR3 (`amiga_fastram.vhd`: 16 KB LUT-RAM cache, write-through); an expansion card, not part of an A500: its timing is the cache's (hits without wait states, misses wait for DDR3), the chip bus is not touched |
 
-A change in the "RAM" submenu cold-boots the emulated Amiga only (like the V1 Slow RAM toggle).
+| **CPU** 68000 (default) / 68020 | menu "RAM: ..." > 68000 CPU / 68020 CPU | 68020 = MiSTer's TG68K (68020 integer, no MMU/FPU) on the same chip bus; fast enough only with fast RAM (code from chip RAM / Kickstart runs at bus speed); `PORTING.md` "68020 (TG68K)" |
+| **fast RAM 128 MB Zorro III** | menu "RAM: ..." > 128 MB Z3 (68020) | 68020 only (with the 68000 it is the 8 MB Zorro II board, as on MiSTer); in the upper half of the DDR3 |
+
+A change in the "RAM" submenu cold-boots the emulated Amiga only (like the V1 Slow RAM toggle).  The 68020 build's settings
+file is **`/amiga/aexp020.cfg`** (93 bytes; `aexpk325.cfg` belongs to the phase-2 core).
 Settings: see "Kickstart and floppies".
 
 ## Build
@@ -77,7 +85,7 @@ Then
 K325T/build.sh radxacm3   # Radxa CM3 module   -> K325T/bin/aexp_k325t_cm4_radxacm3.bit (~25 min)
 K325T/build.sh            # Luckfox Core3566   -> K325T/bin/aexp_k325t_cm4.bit (prepared, not built yet)
 ```
-Vivado 2025.2.1 (`VIVADODIR` overrides `~/Xilinx/2025.2.1/Vivado`), 8 jobs.  The two variants
+Vivado 2025.2.1 (`VIVADODIR` overrides `~/Xilinx/2025.2.1/Vivado`), 4 jobs (`VIVADO_JOBS` overrides).  The two variants
 differ only in the "CM bus" section of the pin file.  Do not load one module's bitstream with
 the other module fitted.  Radxa build of 2026-11-11: timing met (WNS +0.114 ns, WHS +0.054 ns),
 32,641 LUTs, 380.5 / 445 RAMB36, 5,996,117 bytes.

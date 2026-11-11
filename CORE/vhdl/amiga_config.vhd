@@ -161,6 +161,7 @@ entity amiga_config is
       chip2m_i         : in  std_logic := '0';               -- K325T stage 2: 2 MB chip RAM (CC=11, cache only)
       ecs_i            : in  std_logic := '0';               -- K325T: ECS chipset (0xF3 bit 3)
       fast_size_i      : in  std_logic_vector(1 downto 0) := "00"; -- K325T: Zorro II fast RAM (0xF5 FF)
+      cpu_i            : in  std_logic_vector(1 downto 0) := "00"; -- K325T: CPU type (0xF4 TT; 11 = 68020)
 
       -- Minimig host/userio port (minimig.v:214-218)
       io_uio_o         : out std_logic;                     -- minimig IO_UIO  (userio IO_ENA)
@@ -231,6 +232,7 @@ architecture synthesis of amiga_config is
    -- slow RAM) is not taken from the constant but from slow_ram_q (OSM toggle, issue #20)
    constant C_IDX_MEMCFG : natural := 3;
    constant C_IDX_CHIPCFG : natural := 1;
+   constant C_IDX_CPUCFG  : natural := 2;
 
    signal state : t_state := ST_RESET;
    signal idx   : natural range 0 to C_SEQ'high := 0;                         -- current transfer
@@ -242,6 +244,7 @@ architecture synthesis of amiga_config is
    signal chip2m_q   : std_logic := '0';
    signal ecs_q      : std_logic := '0';
    signal fast_q     : std_logic_vector(1 downto 0) := "00";
+   signal cpu_q      : std_logic_vector(1 downto 0) := "00";
 
 begin
 
@@ -267,6 +270,7 @@ begin
                chip2m_q         <= chip2m_i;
                ecs_q            <= ecs_i;
                fast_q           <= fast_size_i;
+               cpu_q            <= cpu_i;
                if reset_i = '0' then
                   state <= ST_START_WAIT;
                end if;
@@ -318,6 +322,11 @@ begin
                end if;
                if idx = C_IDX_CHIPCFG then
                   io_din_o(3) <= ecs_q;                       -- E: ECS chipset (K325T)
+               end if;
+               if idx = C_IDX_CPUCFG then
+                  io_din_o(1 downto 0) <= cpu_q;              -- TT: CPU type (K325T; minimig uses it
+                                                              -- for the IDE timing only, cpu_wrapper
+                                                              -- gets cpucfg from main.vhd)
                end if;
                if cnt /= 0 then
                   cnt <= cnt - 1;

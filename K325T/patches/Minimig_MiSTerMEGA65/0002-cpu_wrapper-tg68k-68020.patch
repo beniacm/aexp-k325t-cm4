@@ -1,0 +1,198 @@
+diff --git a/rtl/cpu_wrapper.v b/rtl/cpu_wrapper.v
+--- a/rtl/cpu_wrapper.v
++++ b/rtl/cpu_wrapper.v
+@@ -46,6 +46,13 @@
+ //  * Original code is kept as comments; all changes carry a               //
+ //    "MiSTer2MEGA65" provenance comment.                                  //
+ //                                                                          //
++// K325T (QMTech XC7K325T port), 2026-11-11: the TG68K (68010/68020) is    //
++// instantiated again as in MiSTer, selected at run time by cpucfg (00 =   //
++// fx68k, unchanged; 01/11 = TG68K on the chip bus FSM below). cpucfg may  //
++// only change while the CPU is held in reset. The SDRAM cpu-port outputs  //
++// (ramaddr/ramlds/ramuds/ramdin) are MiSTer's again; the parent serves    //
++// them from DDR3 (fast RAM only: ramsel = autoconfigured Zorro RAM).      //
++//                                                                          //
+ //--------------------------------------------------------------------------//
+ //--------------------------------------------------------------------------//
+ 
+@@ -116,6 +123,9 @@
+ // (chip_as = ramsel | as_o below). sel_chipram/sel_kickram/sel_rtg stay 0 with a 68000;
+ // sel_dd stays excluded (always acked on the chip bus, see above). With fastramcfg=000
+ // (the A500 default) z2ram_ena never sets, so ramsel stays 0: unchanged A500 behaviour.
++// K325T, TG68K: the same select (Zorro II, and Zorro III once autoconfigured: with
++// cpucfg[1] fastramcfg[2] gives a Z3 board); turbo chip/kick (cachecfg) is not offered, so
++// sel_chipram/sel_kickram stay 0, and $DD/$02 accesses keep going to the chip bus.
+ //assign ramsel       = 1'b0;   (assigned at the end of the module, after the declarations)
+ assign ramshared    = 1'b0;
+ 
+@@ -142,12 +152,14 @@
+ 
+ // MiSTer2MEGA65 (AExp Amiga 500 port), June 2026: SDRAM cpu-port outputs tied
+ // inactive (ports kept only for compile compatibility - leave open in parent).
+-//assign ramlds = sel_rtg ? uds_in : lds_in;
+-//assign ramuds = sel_rtg ? lds_in : uds_in;
+-//assign ramdin = sel_rtg ? {cpu_dout[7:0],cpu_dout[15:8]} : cpu_dout;
+-assign ramlds = 1'b0;
+-assign ramuds = 1'b0;
+-assign ramdin = 16'h0000;
++//assign ramlds = 1'b0;   (AExp)
++//assign ramuds = 1'b0;
++//assign ramdin = 16'h0000;
++// K325T: MiSTer's original again (active-low byte strobes and write data of the
++// selected CPU; sel_rtg never reaches ramsel here, so no byte swap happens)
++assign ramlds = sel_rtg ? uds_in : lds_in;
++assign ramuds = sel_rtg ? lds_in : uds_in;
++assign ramdin = sel_rtg ? {cpu_dout[7:0],cpu_dout[15:8]} : cpu_dout;
+ assign ramdat = sel_rtg ? {ramdout[7:0], ramdout[15:8]}  : ramdout;
+ 
+ //       Main  DDx  RTG  8M  128M  256M
+@@ -165,14 +177,17 @@
+ // All Zorro RAM goes to DDR3
+ // MiSTer2MEGA65 (AExp Amiga 500 port), June 2026: SDRAM cpu-port address
+ // mapping tied to 0 - the SDRAM/DDR3 cpu port is not ported (see ramsel).
+-//assign ramaddr[28]    = sel_zram & ~sel_z3ram0;
+-//assign ramaddr[27]    = sel_zram & (~sel_z3ram1 | cpu_addr[27]);
+-//assign ramaddr[26:23] = (sel_z3ram0 | sel_z3ram1) ? cpu_addr[26:23]: (sel_rtg ? 4'b1110 : {4{sel_dd}});
+-//assign ramaddr[22:19] = {4{sel_dd}} | cpu_addr[22:19];
+-//assign ramaddr[18]    =    sel_dd   | (sel_kicklower & bootrom) | cpu_addr[18];
+-//assign ramaddr[17:16] = {2{sel_dd}} | cpu_addr[17:16];
+-//assign ramaddr[15:1]  = cpu_addr[15:1];
+-assign ramaddr[28:1]  = 28'd0;
++//assign ramaddr[28:1]  = 28'd0;   (AExp)
++// K325T: MiSTer's original mapping again (Z2 -> $18000000 + addr[22:1], Z3 128 MB chunk
++// -> $08000000 + addr[26:1], Z3 256 MB chunk -> $10000000 + addr[27:1]); the parent
++// places these windows in DDR3
++assign ramaddr[28]    = sel_zram & ~sel_z3ram0;
++assign ramaddr[27]    = sel_zram & (~sel_z3ram1 | cpu_addr[27]);
++assign ramaddr[26:23] = (sel_z3ram0 | sel_z3ram1) ? cpu_addr[26:23]: (sel_rtg ? 4'b1110 : {4{sel_dd}});
++assign ramaddr[22:19] = {4{sel_dd}} | cpu_addr[22:19];
++assign ramaddr[18]    =    sel_dd   | (sel_kicklower & bootrom) | cpu_addr[18];
++assign ramaddr[17:16] = {2{sel_dd}} | cpu_addr[17:16];
++assign ramaddr[15:1]  = cpu_addr[15:1];
+ 
+ assign fastchip_lds = lds_in;
+ assign fastchip_uds = uds_in;
+@@ -238,48 +253,33 @@
+ // constants so the cpucfg muxes above still elaborate unchanged:
+ //   cpustate_p = 2'b01 ("no memaccess") so cpu_req would stay low,
+ //   nwr/nuds/nlds = 1 (active low, deasserted), nresetout = 1 (not in reset).
+-wire [15:0] cpu_dout_p  = 16'h0000;
+-wire [31:0] cpu_addr_p  = 32'h00000000;
+-wire  [1:0] cpustate_p  = 2'b01;
+-wire  [3:0] cacr_p      = 4'b0000;
+-wire [31:0] vbr_p       = 32'h00000000;
+-wire        wr_p        = 1'b1;
+-wire        uds_p       = 1'b1;
+-wire        lds_p       = 1'b1;
+-wire        reset_out_p = 1'b1;
+-wire        longword    = 1'b0;
+-
+-//TG68KdotC_Kernel
+-//#(
+-//	.sr_read(2),        // 0=>user,   1=>privileged,    2=>switchable with CPU(0)
+-//	.vbr_stackframe(2), // 0=>no,     1=>yes/extended,  2=>switchable with CPU(0)
+-//	.extaddr_mode(2),   // 0=>no,     1=>yes,           2=>switchable with CPU(1)
+-//	.mul_mode(2),       // 0=>16Bit,  1=>32Bit,         2=>switchable with CPU(1),  3=>no MUL,
+-//	.div_mode(2),       // 0=>16Bit,  1=>32Bit,         2=>switchable with CPU(1),  3=>no DIV,
+-//	.bitfield(2)        // 0=>no,     1=>yes,           2=>switchable with CPU(1)
+-//)
+-//cpu_inst_p
+-//(
+-//  .clk(clk),
+-//  .nreset(reset),
+-//  .clkena_in(~cpu_req | chipready | ramready | fastchip_ready),
+-//  .data_in(cpu_din),
+-//  .ipl(cpu_ipl),
+-//  .ipl_autovector(1),
+-//  .regin_out(),
+-//  .addr_out(cpu_addr_p),
+-//  .data_write(cpu_dout_p),
+-//  .nwr(wr_p),
+-//  .nuds(uds_p),
+-//  .nlds(lds_p),
+-//  .nresetout(reset_out_p),
+-//  .longword(longword),
+-//
+-//  .cpu(cpucfg),
+-//  .busstate(cpustate_p),		// 0: fetch code, 1: no memaccess, 2: read data, 3: write data
+-//  .cacr_out(cacr_p),
+-//  .vbr_out(vbr_p)
+-//);
++//wire [15:0] cpu_dout_p  = 16'h0000;   (AExp: TG68K outputs tied, instance commented out)
++//wire [31:0] cpu_addr_p  = 32'h00000000;
++//wire  [1:0] cpustate_p  = 2'b01;
++//wire  [3:0] cacr_p      = 4'b0000;
++//wire [31:0] vbr_p       = 32'h00000000;
++//wire        wr_p        = 1'b1;
++//wire        uds_p       = 1'b1;
++//wire        lds_p       = 1'b1;
++//wire        reset_out_p = 1'b1;
++//wire        longword    = 1'b0;
++// K325T: MiSTer's TG68K instance, unchanged.  Its bus cycles go through the chip bus FSM
++// below (chip RAM, Kickstart, custom chips, CIAs) or, for autoconfigured fast RAM, through
++// ramsel/ramready: the parent must answer a fast RAM access with ramready high for exactly
++// one clock (clkena_in), not with a 68000-style /DTACK level.
++wire [15:0] cpu_dout_p;
++wire [31:0] cpu_addr_p;
++wire  [1:0] cpustate_p;
++wire  [3:0] cacr_p;
++wire [31:0] vbr_p;
++wire        wr_p;
++wire        uds_p;
++wire        lds_p;
++wire        reset_out_p;
++wire        longword;
++
++// (the TG68K instance follows the chip bus FSM: Vivado does not accept the forward
++// references to cpu_req, chipready and cpu_ipl that Quartus takes)
+ 
+ wire [15:0] cpu_dout_o;
+ wire [23:1] cpu_addr_o;
+@@ -374,6 +374,7 @@
+ // chipdout_i, ipl_i) are only consumed by the cpucfg!=0 (TG68K) branch of
+ // the mux above; the fx68k path drives the chip bus directly. With cpucfg
+ // tied to 2'b00 in the parent, Vivado constant-propagates this FSM away.
++// K325T: in use again with the TG68K (cpucfg != 0).
+ // This is the only negedge-clk logic in the core (constrain accordingly).
+ // Vivado fix (see .research/c64_mister-diff.md B1): local reg declarations
+ // require a NAMED block in plain Verilog mode.
+@@ -426,6 +427,39 @@
+ 	end
+ end
+ 
++// K325T: MiSTer's TG68K instance (moved here from above the fx68k, see there)
++TG68KdotC_Kernel
++#(
++	.sr_read(2),        // 0=>user,   1=>privileged,    2=>switchable with CPU(0)
++	.vbr_stackframe(2), // 0=>no,     1=>yes/extended,  2=>switchable with CPU(0)
++	.extaddr_mode(2),   // 0=>no,     1=>yes,           2=>switchable with CPU(1)
++	.mul_mode(2),       // 0=>16Bit,  1=>32Bit,         2=>switchable with CPU(1),  3=>no MUL,
++	.div_mode(2),       // 0=>16Bit,  1=>32Bit,         2=>switchable with CPU(1),  3=>no DIV,
++	.bitfield(2)        // 0=>no,     1=>yes,           2=>switchable with CPU(1)
++)
++cpu_inst_p
++(
++  .clk(clk),
++  .nreset(reset),
++  .clkena_in(~cpu_req | chipready | ramready | fastchip_ready),
++  .data_in(cpu_din),
++  .ipl(cpu_ipl),
++  .ipl_autovector(1'b1),   // K325T: was (1); a 32-bit constant on a VHDL std_logic port
++  .regin_out(),
++  .addr_out(cpu_addr_p),
++  .data_write(cpu_dout_p),
++  .nwr(wr_p),
++  .nuds(uds_p),
++  .nlds(lds_p),
++  .nresetout(reset_out_p),
++  .longword(longword),
++
++  .cpu(cpucfg),
++  .busstate(cpustate_p),		// 0: fetch code, 1: no memaccess, 2: read data, 3: write data
++  .cacr_out(cacr_p),
++  .vbr_out(vbr_p)
++);
++
+ ///////////////////// AUTOCONFIG ////////////////////////////
+ 
+ reg       ac_toccata;

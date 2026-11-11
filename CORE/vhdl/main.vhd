@@ -122,8 +122,16 @@ entity main is
       -- K325T phase 2: Zorro II fast RAM size "00" none, "01" 2 MB, "10" 4 MB, "11" 8 MB
       -- (cpu_wrapper autoconfig) and its memory port (amiga_fastram in mega65.vhd)
       fast_size_i             : in  std_logic_vector(1 downto 0) := "00";
+      -- K325T: CPU "00" 68000 (fx68k, default), "11" 68020 (TG68K); Zorro III fast RAM
+      -- (128 MB, 68020 only; with the 68000 it falls back to 8 MB Zorro II as on MiSTer)
+      cpu_i                   : in  std_logic_vector(1 downto 0) := "00";
+      fast_z3_i               : in  std_logic := '0';
+      -- fast RAM port: MiSTer's cpu-port address (cpu_wrapper ramaddr: Z2 $18000000 +
+      -- addr[22:1], Z3 128 MB $08000000 + addr[26:1]); fast_pulse_o = the TG68K runs, the
+      -- port must answer with a one-clock ready pulse per access
       fast_sel_o              : out std_logic;
-      fast_addr_o             : out std_logic_vector(23 downto 1);
+      fast_pulse_o            : out std_logic;
+      fast_addr_o             : out std_logic_vector(28 downto 1);
       fast_we_o               : out std_logic;
       fast_uds_n_o            : out std_logic;
       fast_lds_n_o            : out std_logic;
@@ -336,6 +344,11 @@ architecture synthesis of main is
    signal cpu_reset_n      : std_logic;                       -- minimig -> CPU reset
    signal cpu_reset_out_n  : std_logic;                       -- fx68k RESET instruction feedback
    signal cpu_nmi_addr     : std_logic_vector(31 downto 0);
+   -- K325T: CPU selection, taken over only while minimig holds the CPU in reset
+   signal cpucfg           : std_logic_vector(1 downto 0) := "00";
+   signal cpu_state        : std_logic_vector(1 downto 0);
+   signal fast_uds_n       : std_logic;
+   signal fast_lds_n       : std_logic;
 
    -- fx68k phase enables, see .research/phase-a/cpu_wrapper.md:
    -- one clk28 wide each, 7.09 MHz rate, 180 degrees apart, aligned to c1/c3
@@ -493,7 +506,18 @@ begin
 
    ---------------------------------------------------------------------------
    -- CPU: fx68k via cpu_wrapper (68000, no caches, no fast RAM)
+   -- K325T: or the TG68K (68020), switched only while the CPU is in reset (a change in
+   -- the menu cold-boots the Amiga, see amiga_cold_boot in mega65.vhd)
    ---------------------------------------------------------------------------
+
+   cpucfg_proc : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         if cpu_reset_n = '0' then
+            cpucfg <= cpu_i;
+         end if;
+      end if;
+   end process cpucfg_proc;
 
    i_cpu_wrapper : cpu_wrapper
       port map (
@@ -504,9 +528,9 @@ begin
          ph1             => cpu_ph1,
          ph2             => cpu_ph2,
 
-         cpucfg          => "00",                -- 68000; MUST be constant so the
-                                                 -- removed-TG68K muxes constant-fold
-         fastramcfg      => '0' & fast_size_i,   -- K325T: Zorro II fast RAM (autoconfig), 000 = none
+         cpucfg          => cpucfg,              -- K325T: 00 = 68000 (fx68k), 11 = 68020 (TG68K)
+         fastramcfg      => fast_z3_i & fast_size_i, -- K325T: Zorro II fast RAM (autoconfig), 000 = none;
+                                                 -- 110 = Zorro III 128 MB (68020; 8 MB Z2 with the 68000)
          cachecfg        => "000",               -- no caches
          bootrom         => '0',                 -- normal A500 memory map
 
@@ -529,30 +553,32 @@ begin
          fastchip_selack => '0',
          fastchip_ready  => '0',
 
-         ramsel          => fast_sel_o,          -- K325T: fast RAM cycle (Zorro II window)
-         ramaddr         => open,
-         ramdin          => open,
+         ramsel          => fast_sel_o,          -- K325T: fast RAM cycle (Zorro II/III window)
+         ramaddr         => fast_addr_o,
+         ramdin          => fast_wdata_o,
          ramdout         => fast_rdata_i,
          ramready        => fast_ready_i,
-         ramlds          => open,
-         ramuds          => open,
+         ramlds          => fast_lds_n,
+         ramuds          => fast_uds_n,
          ramshared       => open,
 
          toccata_ena     => open,
          toccata_base    => open,
 
-         cpustate        => open,
+         cpustate        => cpu_state,
          cacr            => open,
          nmi_addr        => cpu_nmi_addr
       ); -- i_cpu_wrapper
 
    -- K325T phase 2: the fast RAM port takes the CPU's raw bus (the chip bus sees no
    -- address strobe during fast RAM cycles: chip_as = ramsel | AS in cpu_wrapper.v)
-   fast_addr_o  <= cpu_addr;
-   fast_we_o    <= not cpu_rw;
-   fast_uds_n_o <= cpu_uds_n;
-   fast_lds_n_o <= cpu_lds_n;
-   fast_wdata_o <= cpu_din;
+   -- K325T: through cpu_wrapper's cpu-port outputs, which carry the selected CPU's bus
+   -- (for the fx68k the same signals as before: AS/RW/UDS/LDS/data out; cpustate "11" =
+   -- a write cycle)
+   fast_we_o    <= '1' when cpu_state = "11" else '0';
+   fast_uds_n_o <= fast_uds_n;
+   fast_lds_n_o <= fast_lds_n;
+   fast_pulse_o <= cpucfg(1) or cpucfg(0);
 
    ---------------------------------------------------------------------------
    -- Host configuration FSM: replays MiSTer's HPS startup configuration
@@ -569,6 +595,7 @@ begin
          chip2m_i         => chip2m_i,
          ecs_i            => ecs_i,
          fast_size_i      => fast_size_i,
+         cpu_i            => cpu_i,
          io_uio_o         => io_uio,
          io_strobe_o      => cfg_strobe,
          io_din_o         => cfg_din,

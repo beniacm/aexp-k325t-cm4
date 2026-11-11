@@ -306,10 +306,14 @@ signal main_mem_chip1m        : std_logic;  -- 1 MB chip RAM (forces ECS)
 signal main_chip_ecs          : std_logic;  -- ECS chipset (Agnus 8372A + Denise 8373)
 signal main_kick_512          : std_logic;  -- 512 KB Kickstart loaded (from the QNICE side)
 signal main_fast_size         : std_logic_vector(1 downto 0);  -- fast RAM: 00 none, 01 2 MB, 10 4 MB, 11 8 MB
+signal main_fast_z3           : std_logic;  -- K325T: Zorro III 128 MB (68020; size bits "10")
+signal main_cpu               : std_logic_vector(1 downto 0);  -- K325T: "00" 68000, "11" 68020
 
 -- K325T phase 2: Zorro II fast RAM port (main.vhd -> amiga_fastram) and its DDR3 master
 signal main_fast_sel          : std_logic;
-signal main_fast_addr         : std_logic_vector(23 downto 1);
+signal main_fast_pulse        : std_logic;
+signal main_fast_addr         : std_logic_vector(28 downto 1);  -- cpu_wrapper's ramaddr (MiSTer layout)
+signal main_fast_ddr          : std_logic_vector(26 downto 0);  -- DDR3 word address
 signal main_fast_we           : std_logic;
 signal main_fast_uds_n        : std_logic;
 signal main_fast_lds_n        : std_logic;
@@ -562,6 +566,8 @@ constant C_MENU_FAST_NONE     : natural := 79;   -- no fast RAM (default)
 constant C_MENU_FAST_2M       : natural := 80;   -- 2 MB Zorro II fast RAM (DDR3)
 constant C_MENU_FAST_4M       : natural := 81;   -- 4 MB
 constant C_MENU_FAST_8M       : natural := 82;   -- 8 MB
+constant C_MENU_FAST_Z3       : natural := 83;   -- K325T: 128 MB Zorro III (68020; 8 MB Zorro II with the 68000)
+constant C_MENU_CPU_68020     : natural := 86;   -- K325T: CPU radio 85 68000 (default) / 86 68020
 
 begin
 
@@ -702,12 +708,18 @@ begin
    main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m or main_mem_chip2m;
    main_fast_size  <= "11" when main_osm_control_i(C_MENU_FAST_8M) = '1' else
                       "10" when main_osm_control_i(C_MENU_FAST_4M) = '1' else
+                      "10" when main_osm_control_i(C_MENU_FAST_Z3) = '1' else
                       "01" when main_osm_control_i(C_MENU_FAST_2M) = '1' else "00";
+   -- Zorro III: cpu_wrapper's fastramcfg "110" (MiSTer: 128 MB Z3 board with a 68020, 8 MB Z2
+   -- with the 68000)
+   main_fast_z3    <= main_osm_control_i(C_MENU_FAST_Z3);
+   main_cpu        <= "11" when main_osm_control_i(C_MENU_CPU_68020) = '1' else "00";
 
    i_amiga_cold_boot : entity work.amiga_cold_boot
       port map (
          clk_i             => main_clk,
-         topology_i        => main_fast_size & main_chip_ecs & (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
+         topology_i        => main_cpu(1) & main_fast_z3 & main_fast_size & main_chip_ecs &
+                              (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
          cold_req_i        => main_reset_m2m_i,
          amiga_reset_o     => amiga_cold_reset,
          chip_scrub_o      => amiga_chip_scrub,
@@ -805,7 +817,10 @@ begin
          chip2m_i             => main_mem_chip2m,
          ecs_i                => main_chip_ecs,
          fast_size_i          => main_fast_size,
+         cpu_i                => main_cpu,
+         fast_z3_i            => main_fast_z3,
          fast_sel_o           => main_fast_sel,
+         fast_pulse_o         => main_fast_pulse,
          fast_addr_o          => main_fast_addr,
          fast_we_o            => main_fast_we,
          fast_uds_n_o         => main_fast_uds_n,
@@ -1341,16 +1356,21 @@ begin
    -- K325T phase 2: Zorro II fast RAM in DDR3 (K325T/amiga_fastram.vhd): 16 KB LUT-RAM cache
    -- in the core clock, line fills / posted writes as the third Avalon master on hr_core_*.
    -- DDR3 word address $800000 (16 MB) = Amiga $200000; 8 MB at most (Zorro II, 68000).
+   -- K325T, 68020: Zorro III 128 MB in the upper half of the DDR3 (word $4000000 = 128 MB).
+   -- cpu_wrapper's ramaddr: Z2 = $18000000 | addr[22:1] (the 8 MB window wraps around inside
+   -- 16..24 MB: a different, still one-to-one placement than phase 2's), Z3 128 MB chunk =
+   -- $08000000 | addr[26:1].
    ---------------------------------------------------------------------------------------------
 
+   main_fast_ddr <= "0001" & main_fast_addr(23 downto 1) when main_fast_addr(28) = '1' else
+                    '1' & main_fast_addr(26 downto 1);
+
    i_amiga_fastram : entity work.amiga_fastram
-      generic map (
-         G_BASE_WORD => 16#800000#
-      )
       port map (
          clk_i               => main_clk,
          sel_i               => main_fast_sel,
-         addr_i              => main_fast_addr,
+         pulse_i             => main_fast_pulse,
+         addr_i              => main_fast_ddr,
          we_i                => main_fast_we,
          uds_n_i             => main_fast_uds_n,
          lds_n_i             => main_fast_lds_n,
@@ -1377,7 +1397,7 @@ begin
       )
       port map (
          src_clk_i     => main_clk,
-         src_data_i(0) => main_fast_size(1) or main_fast_size(0),
+         src_data_i(0) => main_fast_size(1) or main_fast_size(0),   -- (Z3 has size bits "10")
          dst_clk_i     => hr_clk_i,
          dst_data_o(0) => hr_fast_on
       ); -- i_cdc_fast_on

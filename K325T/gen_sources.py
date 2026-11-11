@@ -21,6 +21,13 @@ for p, body in re.findall(r'<File Path="([^"]+)">(.*?)</File>', x[a:b], re.S):
     ft = {'VHDL2008': 'VHDL 2008', 'SVerilog': 'SystemVerilog'}.get(m.group(1) if m else '',
          {'vhd': 'VHDL', 'vhdl': 'VHDL', 'v': 'Verilog', 'sv': 'SystemVerilog'}[ext])
     out.append('add_files -norecurse {%s}; set_property FILE_TYPE {%s} [get_files {%s}]' % (path, ft, path))
+# K325T: the TG68K (68020) that cpu_wrapper.v instantiates again (AExp's R6 project leaves it
+# out); plain VHDL, package first
+tg = os.path.join(root, 'CORE/Minimig_MiSTerMEGA65/rtl/tg68k')
+for f in ['TG68K_Pack.vhd', 'TG68K_ALU.vhd', 'TG68KdotC_Kernel.vhd']:
+    f = os.path.join(tg, f)
+    assert os.path.exists(f), f
+    out.append('add_files -norecurse {%s}; set_property FILE_TYPE {VHDL} [get_files {%s}]' % (f, f))
 mc = os.path.normpath(os.path.join(root, '../mega65-core/src/vhdl'))
 for f in [os.path.join(here, 'top_qmtech_k325t_cm4.vhd'), os.path.join(here, 'avm_mig.vhd'),
           os.path.join(here, 'm65kbd_emu.vhd'), os.path.join(here, 'amiga_mouse.vhd'),

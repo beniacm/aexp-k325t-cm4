@@ -20,22 +20,36 @@ case "$variant" in
     *)        echo "usage: $0 [radxacm3]" >&2; exit 2 ;;
 esac
 # Changes to files of git submodules (sy2002's Minimig fork, ...) are not committed there: they
-# are patches in K325T/patches/<submodule directory name>/*.patch, applied to the submodule's
-# working tree here (idempotent: an already applied patch is skipped; one that applies neither
-# way stops the build).  The submodule pointers stay at upstream's commits.
+# are patches in K325T/patches/<submodule directory name>/*.patch, applied in name order to the
+# submodule's working tree here.  The patches stack (a later one may change lines of an earlier
+# one), so the files they touch are rebuilt from the submodule's HEAD + all patches every build;
+# if a file already holds exactly that result nothing changes, and a file with other local edits
+# stops the build (it is left as it was).  The submodule pointers stay at upstream's commits.
 for pdir in "$here"/patches/*/; do
     [ -d "$pdir" ] || continue
     sub=$(find "$root" -maxdepth 3 -type d -name "$(basename "$pdir")" -not -path "*/K325T/*" | head -1)
     [ -n "$sub" ] || { echo "ERROR: submodule for $pdir not found" >&2; exit 1; }
+    tmp=$(mktemp -d)
+    files=$(cat "$pdir"*.patch | sed -n 's|^+++ b/||p' | sort -u)
+    for f in $files; do
+        mkdir -p "$tmp/cur/$(dirname "$f")" "$tmp/new/$(dirname "$f")"
+        cp "$sub/$f" "$tmp/cur/$f"
+        git -C "$sub" show "HEAD:$f" > "$tmp/new/$f"
+    done
     for p in "$pdir"*.patch; do
-        if git -C "$sub" apply --reverse --check "$p" 2>/dev/null; then
-            echo "patch already applied: ${p#$here/}"
-        elif git -C "$sub" apply --check "$p"; then
-            git -C "$sub" apply "$p" && echo "patch applied: ${p#$here/}"
+        (cd "$tmp/new" && git apply "$p") || { echo "ERROR: ${p#$here/} does not apply" >&2; rm -rf "$tmp"; exit 1; }
+    done
+    for f in $files; do
+        if cmp -s "$tmp/cur/$f" "$tmp/new/$f"; then
+            echo "patches already applied: $(basename "$sub")/$f"
+        elif git -C "$sub" diff --quiet -- "$f"; then
+            cp "$tmp/new/$f" "$sub/$f" && echo "patches applied: $(basename "$sub")/$f"
         else
-            echo "ERROR: ${p#$here/} does not apply to $sub" >&2; exit 1
+            echo "ERROR: $sub/$f has local changes that are not the patches' result" >&2
+            rm -rf "$tmp"; exit 1
         fi
     done
+    rm -rf "$tmp"
 done
 python3 "$here/gen_top.py" "$root/M2M/vhdl/top_mega65-r6.vhd" "$here/top_qmtech_k325t_cm4.vhd" \
         "$here/top_qmtech_k325t_cm4.tpl.vhd"

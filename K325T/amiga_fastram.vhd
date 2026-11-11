@@ -21,20 +21,23 @@
 -- (m_req_*) stable and flips m_req_tgl, the memory side flips hr_ack_tgl when done.
 -- A memory-side reset (M2M reset) aborts and repeats the request, never acknowledges it.
 -- The constraints for these paths are in qmtech_k325t_cm4.xdc (amiga_fastram).
+--
+-- K325T, 68020: the address is the DDR3 word address (the parent maps the Zorro II/III
+-- windows, up to 256 MB); with pulse_i = '1' (the TG68K runs) ready_o is high for exactly
+-- one clock per access (the TG68K's clock enable) and an access starts on sel_i alone; with
+-- pulse_i = '0' (fx68k) it is the 68000's /DTACK as before (held until sel_i drops).
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity amiga_fastram is
-   generic (
-      G_BASE_WORD : natural := 16#800000#   -- DDR3 word address of $200000 (16 MB)
-   );
    port (
       -- core clock domain (28 MHz, cpu_wrapper)
       clk_i              : in  std_logic;
       sel_i              : in  std_logic;                      -- ramsel: fast RAM bus cycle
-      addr_i             : in  std_logic_vector(23 downto 1);  -- CPU word address
+      pulse_i            : in  std_logic := '0';               -- 1 = TG68K handshake (see above)
+      addr_i             : in  std_logic_vector(26 downto 0);  -- DDR3 word address
       we_i               : in  std_logic;                      -- 1 = write
       uds_n_i            : in  std_logic;                      -- upper byte (15:8), active low
       lds_n_i            : in  std_logic;                      -- lower byte (7:0), active low
@@ -67,8 +70,8 @@ architecture synthesis of amiga_fastram is
    attribute ram_style of dram_u : signal is "distributed";
    attribute ram_style of dram_l : signal is "distributed";
 
-   -- tags: valid & addr(23:14), written in clk_i
-   type t_tags is array (0 to 1023) of std_logic_vector(10 downto 0);
+   -- tags: valid & addr(26:14), written in clk_i
+   type t_tags is array (0 to 1023) of std_logic_vector(14 downto 0);
    signal tags : t_tags := (others => (others => '0'));
    attribute ram_style of tags : signal is "distributed";
 
@@ -78,19 +81,20 @@ architecture synthesis of amiga_fastram is
    signal m_req_tgl    : std_logic := '0';
    signal m_req_fill   : std_logic := '0';                         -- 1 = line fill, 0 = write
    signal m_req_hit    : std_logic := '0';                         -- write: update the cache line
-   signal m_req_addr   : std_logic_vector(23 downto 1) := (others => '0');
+   signal m_req_addr   : std_logic_vector(26 downto 0) := (others => '0');
    signal m_req_data   : std_logic_vector(15 downto 0) := (others => '0');
    signal m_req_be     : std_logic_vector(1 downto 0) := "00";
    signal m_ack_d      : std_logic := '0';
    signal m_ack_dd     : std_logic := '0';
    signal m_rd_addr    : std_logic_vector(12 downto 0) := (others => '0');
+   signal m_start      : std_logic;
    signal m_rdata      : std_logic_vector(15 downto 0) := (others => '0');
    signal m_ready      : std_logic := '0';
    attribute async_reg : string;
    attribute async_reg of m_ack_d  : signal is "true";
    attribute async_reg of m_ack_dd : signal is "true";
 
-   signal tag_q        : std_logic_vector(10 downto 0);
+   signal tag_q        : std_logic_vector(14 downto 0);
    signal hit          : std_logic;
    signal busy         : std_logic;
 
@@ -115,9 +119,12 @@ begin
    ---------------------------------------------------------------------------
    -- core clock domain
    ---------------------------------------------------------------------------
-   tag_q <= tags(to_integer(unsigned(addr_i(13 downto 4))));
-   hit   <= '1' when tag_q = '1' & addr_i(23 downto 14) else '0';
+   tag_q <= tags(to_integer(unsigned(addr_i(12 downto 3))));
+   hit   <= '1' when tag_q = '1' & addr_i(26 downto 13) else '0';
    busy  <= m_req_tgl xor m_ack_dd;               -- the previous request is not done yet
+
+   -- fx68k: start on a data strobe (see M_IDLE); TG68K: its bus request is complete with sel_i
+   m_start <= sel_i and (pulse_i or not uds_n_i or not lds_n_i);
 
    rdata_o <= m_rdata;
    ready_o <= m_ready;
@@ -134,11 +141,11 @@ begin
          case m_state is
             when M_IDLE =>
                m_ready   <= '0';
-               m_rd_addr <= addr_i(13 downto 1);
+               m_rd_addr <= addr_i(12 downto 0);
                -- start on a data strobe, not on the address strobe: in a 68000 write cycle
                -- /AS falls in S2 but the data bus is driven in S3 and /UDS,/LDS fall in S4
                -- (in a read cycle /AS and /DS fall together)
-               if sel_i = '1' and (uds_n_i = '0' or lds_n_i = '0') and busy = '0' then
+               if m_start = '1' and busy = '0' then
                   if we_i = '1' then
                      -- posted write: DDR3 and (on a hit) the cache line, in the memory domain
                      m_req_fill <= '0';
@@ -158,11 +165,16 @@ begin
                      m_req_tgl  <= not m_req_tgl;
                      m_state    <= M_FILL;
                   end if;
+               elsif m_start = '1' and pulse_i = '1' and we_i = '0' and hit = '1' and
+                     m_req_fill = '0' and m_req_addr(12 downto 0) /= addr_i(12 downto 0) then
+                  -- TG68K: a read hit need not wait for a posted write to another word (the
+                  -- memory side writes only that word of the data array; tags do not change)
+                  m_state <= M_READ;
                end if;
 
             when M_FILL =>
                if busy = '0' then                  -- the line is in the data array
-                  tags(to_integer(unsigned(m_req_addr(13 downto 4)))) <= '1' & m_req_addr(23 downto 14);
+                  tags(to_integer(unsigned(m_req_addr(12 downto 3)))) <= '1' & m_req_addr(26 downto 13);
                   m_state <= M_READ;
                end if;
 
@@ -172,7 +184,8 @@ begin
                m_ready <= '1';
 
             when M_SERVED =>
-               if sel_i = '0' then
+               -- fx68k: /DTACK until the strobes go; TG68K: one clock (it moves on with it)
+               if sel_i = '0' or pulse_i = '1' then
                   m_ready <= '0';
                   m_state <= M_IDLE;
                end if;
@@ -189,7 +202,7 @@ begin
    hr_we_l  <= '1' when (hr_state = H_FILL_DATA and avm_readdatavalid_i = '1') or
                         (hr_state = H_WRITE_CMD and avm_waitrequest_i = '0' and m_req_hit = '1' and m_req_be(0) = '1')
                else '0';
-   hr_waddr <= hr_line & std_logic_vector(hr_beat) when hr_state = H_FILL_DATA else m_req_addr(13 downto 1);
+   hr_waddr <= hr_line & std_logic_vector(hr_beat) when hr_state = H_FILL_DATA else m_req_addr(12 downto 0);
    hr_wdata <= avm_readdata_i when hr_state = H_FILL_DATA else m_req_data;
 
    dram_proc : process (hr_clk_i)
@@ -210,7 +223,7 @@ begin
       if rising_edge(hr_clk_i) then
          hr_req_d  <= m_req_tgl;
          hr_req_dd <= hr_req_d;
-         word := to_unsigned(G_BASE_WORD, 32) + (unsigned(m_req_addr) - 16#100000#);
+         word := resize(unsigned(m_req_addr), 32);
 
          case hr_state is
             when H_QUIET =>                       -- after a reset: let stray beats of an
@@ -225,7 +238,7 @@ begin
                avm_write_o <= '0';
                avm_read_o  <= '0';
                if hr_req_dd /= hr_ack_tgl then   -- a request; m_req_* are stable now
-                  hr_line <= m_req_addr(13 downto 4);
+                  hr_line <= m_req_addr(12 downto 3);
                   hr_beat <= (others => '0');
                   if m_req_fill = '1' then
                      avm_read_o       <= '1';

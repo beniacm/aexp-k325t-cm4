@@ -831,3 +831,113 @@ sample-and-hold; a faster rate would need 4-8 tiles, not free).
   prefetchers (the Radxa: 163.8 / 3.4).
 - Line latency: the same distribution as before and as on the Radxa (read median 280-320 ns).
 Not checkable there: HDMI, the audio FIFO's sound, the demos.
+
+# 68020 (TG68K) back in the core (2026-11-11, branch `cpu-tg68k`)
+
+Increment 5 of the phase-2 table: MiSTer's TG68K is instantiated again in `cpu_wrapper.v` and
+selected at run time in the "Amiga Hardware" submenu (CPU radio: **68000** = fx68k, default,
+unchanged / **68020** = TG68K).  The change is generic (nothing machine-specific beyond the
+68020), so other lines can take it as it is.
+
+## What changed
+
+- `cpu_wrapper.v` (patch `patches/Minimig_MiSTerMEGA65/0002-cpu_wrapper-tg68k-68020.patch` on
+  top of 0001): MiSTer's `TG68KdotC_Kernel` instance (same generics) and MiSTer's cpu-port
+  outputs (`ramaddr`, `ramlds`/`ramuds`, `ramdin`) are back; the instance moved below the chip
+  bus FSM (Vivado rejects Quartus's forward references), `ipl_autovector` is `1'b1` (a 32-bit
+  constant on a VHDL `std_logic` port fails elaboration).  `ramsel` stays "autoconfigured Zorro
+  RAM only" (no turbo chip/kick: `cachecfg` = 000; `$DD`/`$02` accesses keep going to the chip
+  bus, which always acknowledges).  With `cpucfg` = 00 the muxes select the fx68k signals
+  exactly as before.
+- `main.vhd`: `cpucfg` is taken over from the menu only while minimig holds the CPU in reset;
+  the fast RAM port now takes the selected CPU's bus from cpu_wrapper's cpu-port outputs
+  (`cpustate` = 11 is a write; for the fx68k these are the same /AS, R/W, /UDS, /LDS and data
+  as before).  `amiga_config.vhd` sends the CPU type in userio command 0xF4 (minimig uses it
+  for the IDE timing only).
+- `amiga_fastram.vhd`: the address is now the DDR3 word address (27 bits, the parent maps the
+  windows: Zorro II 8 MB at 16 MB as before -- a different but one-to-one placement inside it
+  --, Zorro III 128 MB in the upper half of the DDR3); tags 14 bits.  `pulse_i` selects the
+  TG68K handshake: an access starts on `sel_i` alone, `ready_o` is high for exactly one clock,
+  and a read hit may be answered while a posted write to another word is still on its way to
+  DDR3.  For the fx68k (`pulse_i` = 0) the behaviour is unchanged (the testbench's 68000 run
+  gives the same hit/miss counts as before).
+- Menu: "128 MB Z3 (68020)" in the fast RAM radio (MiSTer's 128 MB Zorro III board; with the
+  68000 it becomes the 8 MB Zorro II board, as on MiSTer), CPU radio 68000 / 68020; any change
+  cold-boots the Amiga (`amiga_cold_boot` topology vector, 7 bits).  OPTM_SIZE 93, so the
+  settings file is `/amiga/aexp020.cfg` (93 bytes; phase 2's `aexpk325.cfg` stays untouched);
+  the menu heap still fits (1465 of 1536 words).
+- `build.tcl`: Vivado jobs from `VIVADO_JOBS` (default 4).  `build.sh`: the submodule patches
+  now stack (files rebuilt from HEAD + all patches; see README).
+
+## The CPU boundary of cpu_wrapper (what any CPU behind it must do)
+
+Everything runs in the 28.375 MHz core clock `clk`.  A CPU other than the fx68k is connected
+like the TG68K:
+
+- **Bus request**: the CPU drives `addr` (32 bit), `busstate` (00 fetch, 10 read, 11 write,
+  01 no access), `nWr`, `nUDS`/`nLDS` (byte lanes for a 16-bit data bus; a longword is two
+  word accesses), `data_write` -- all stable from the start of the access until it is
+  acknowledged.  `cpu_req` = `busstate` /= 01.
+- **Acknowledge**: one clock enable, `clkena_in = ~cpu_req | chipready | ramready |
+  fastchip_ready`: the CPU stands still while it requests and nobody acknowledges; read data
+  (`data_in`) is valid in the clock where the enable is high, and the CPU presents its next
+  request in the clock after it.  Each responder must answer with a **one-clock** pulse.
+- **Chip bus** (chip RAM, Kickstart in block RAM, custom chips, CIAs): the falling-edge FSM in
+  cpu_wrapper turns a request that neither `ramsel` nor `fastchip_selack` claims into a 68000
+  bus cycle synchronised to the 7.09 MHz phases (`ph1`/`ph2`): /AS at a ph1 edge, data and
+  /DTACK sampled two phases later, `chipready` for one clock afterwards.  The decision uses
+  `chipreq`, registered one clock after the request appears, so a claim (`ramsel`,
+  `fastchip_selack`) must be combinational from the address in that first clock.
+  Interrupts: `ipl` from the chip bus, registered at ph2; `ipl_autovector` = 1.
+- **Fast RAM / cpu port** (`ramsel`, `ramaddr`, `ramuds`/`ramlds`, `ramdin`, `ramdout`,
+  `ramready`; write = `cpustate` 11): `ramsel` is combinational from the address (Zorro
+  windows after autoconfig); the parent answers with `ramready` (one clock, TG68K) and
+  `ramdout`.  Here `amiga_fastram` serves it from DDR3 through a 16 KB cache: a hit takes 3
+  clocks from the request (IDLE, READ, SERVED), a miss a line fill (8 words, ~20-40 memory
+  clocks), writes are posted (1 clock + waiting for the previous write's completion).
+- **Fast chip port** (`fastchip_sel` for every request below 16 MB, `fastchip_selack`
+  combinational, `fastchip_ready`, `fastchip_dout`): free for I/O devices of a machine
+  variant (MiSTer used it for its 32-bit chip RAM).
+- Control registers the wrapper reads from the CPU: `vbr` (NMI vector address for HRTmon),
+  `cacr` (turbo chip/kick only with data cache bit), `nresetout` (RESET instruction).
+
+## Measured (simulation; board figures below)
+
+`sim/cpu020/run.sh` (Vivado xsim, mixed VHDL/Verilog): cpu_wrapper with both CPUs, the real
+`amiga_fastram` and a behavioural chip bus (/DTACK one 7 MHz cycle after /AS) and DDR3 model,
+running `prog.s` (autoconfig of the Zorro II or III board, a 1024-longword pattern test, byte
+and word writes, a routine copied to fast RAM and run there; with the 68020: MULU.L/DIVU.L/
+MULS.L 64-bit, BFEXTU, EXTB.L, scaled index, MOVEC VBR + TRAP through a table in fast RAM):
+`TB_CPU020_PASS` for fx68k + Z2, TG68K + Z2 and TG68K + Z3.  2048 DBRA iterations: fx68k
+82,216 clocks from ROM and from fast RAM (= 20,480 68000 cycles, exact); TG68K 98,576 clocks
+from ROM (the chip bus FSM: one 7 MHz bus cycle per word, slower than the 68000's
+prefetch) and **18,648 from fast RAM (4.4x the 68000)**.
+`sim/tb_amiga_fastram.vhd`: PASS with the fx68k handshake (unchanged hit/miss statistics) and
+with `-gG_PULSE=true` (back-to-back requests, ready exactly one clock).
+
+## Measured on the board (Radxa CM3 carrier, JTAG, 2026-11-11)
+
+Build: timing met (WNS +0.181 ns, WHS +0.052 ns), 48.8 k LUTs (+4.6 k for the TG68K and its
+bus), 436 RAMB36 (unchanged), 74 DSP48.
+
+- **68000 unchanged**: SysInfo (`sysinfo.adf`, byte-identical to phase 2's disk) in the default
+  A500 configuration (KS 1.3, 512K+512K, OCS) and with ECS + 8 MB Zorro II fast RAM: decoded
+  rows identical to the captures of the flashed phase-2 core (`aexp2_si_flash_default`,
+  `aexp2_si_flash_ecs_fast8`), and 0 pixels differ by more than 64 grey levels.  DBRA loop 45
+  lines, longword reads 65 (chip) / 71 (fast) lines, fast RAM test 0 errors.
+- **68020**: Kickstart 3.1 (40.063) boots to its insert-disk screen; SysInfo: exec 40.10,
+  AttnFlags `$0003` (68010 + 68020), 8 MB Zorro II board at `$200020-$A00000` found, fast RAM
+  pattern test 0 errors.  2048 DBRA: 10 raster lines with the code in fast RAM (68000: 45,
+  4.5x), 54 lines with the code in chip RAM (the TG68K's word fetches through the 7 MHz chip bus
+  are ~20 % slower than the 68000's prefetch); 2048 longword reads from fast RAM with the loop
+  in fast RAM: 17 lines (68000: 71).
+- **68020 instructions** (`mk_sysinfo_adf.py --x020`): MULU.L/DIVU.L/MULS.L 64-bit, BFEXTU,
+  BFFFO, BFINS, EXTB.L, scaled index, memory indirect, CAS.L, CMP2.L, PACK, LINK.L/UNLK, CHK.L
+  pass (14 of 15; the 15th, MOVEC CACR, was run in user mode and took the privilege trap --
+  the disk now reports it as not run).  All 15 pass in simulation (`sim/cpu020`).
+- **Demo regression** (68020 build, 68000 default configuration, KS 1.3, `tools/aexp_demo_test.py`):
+  State of the Art, Enigma, Arte, Eon (disk 2 at its prompt) and Batman Rises (disk 2) run through;
+  sampled frames identical to phase-2 runs at some sample points (SOTA 3-4/14, Enigma 6/14, Arte
+  14/17, Eon 13/32, Batman 8/44), as between two phase-2 runs (the menu-driven start jitters).
+- Not verified on the board: the 128 MB Zorro III board (SysInfo's pattern test over all 128 MB
+  had not finished after 75 s; whether it is slow or hangs is open).

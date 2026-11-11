@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mk_sysinfo_adf.py OUT.adf -- a SysInfo-like boot-block floppy for AExp (no Workbench needed).
+"""mk_sysinfo_adf.py [--x020] OUT.adf -- a SysInfo-like boot-block floppy for AExp (no Workbench needed).
 
 The boot block (68000, assembled with GNU as: binutils-m68k-linux-gnu) reads what Kickstart found
 and shows it as rows of 32 bit cells (white = 1, dark blue = 0, most significant bit left) on a
@@ -26,6 +26,17 @@ Rows (32-bit values):
         (0 = ok, -1 = no fast RAM)
     23  address of this screen (bitplane + copper list): the top 64 KB of chip RAM
         (MaxLocMem - $10000), so the display itself proves DMA from the highest chip RAM
+    24  (--x020 only, run after the display is on) 68020 instruction tests, only when AttnFlags
+        shows a 68020: failure bits (0 = all passed, $FFFFFFFF = not run): 0 MULU.L 64-bit, 1 DIVU.L 64/32, 2 MULS.L
+        64-bit, 3 BFEXTU (memory), 4 BFFFO, 5 EXTB.L, 6 scaled index (d8,An,Xn*4), 7 memory
+        indirect ([bd,An],od), 8 CAS.L, 9 CMP2.L, 10 PACK, 11 LINK.L/UNLK, 12 MOVEC CACR (not run: privileged),
+        13 BFINS (memory), 14 CHK.L; an instruction that traps (illegal, line A/F, CHK) sets
+        its bit too.
+    25  (--x020) the tests started so far (a test that hangs is the highest bit).
+        The --x020 program also sends all rows over the serial port (115200 baud) as
+        "SI rr xxxxxxxx" lines and "SI end" (for boards without a picture).  With --x020 the program no longer fits a boot block: the boot block loads
+        it from the following sectors into chip RAM (AllocMem + trackdisk CMD_READ) and jumps
+        to it; without --x020 the disk is the original boot-block-only one, byte for byte.
 The machine stays in the display loop (reset to leave).
 """
 import os, struct, subprocess, sys, tempfile
@@ -157,7 +168,7 @@ rd:     move.l  %a1,%d1
 rdok:   subq.l  #1,%d0
         bpl.s   rd
 nofast3: move.l %d2,(%a3)+
-        move.l  %a4,%a0                     | clear the bitplane
+X020CODE        move.l  %a4,%a0                     | clear the bitplane
         move.w  #2559,%d0
 clr:    clr.l   (%a0)+
         dbra    %d0,clr
@@ -244,21 +255,312 @@ data:   .space  ROWS*4
 dataend:
 """
 
+# the 68020 tests (row 24): d6 = the bit of the running test, a4 = where to go on if it traps
+X020 = r"""
+        moveq   #-1,%d7
+        moveq   #0,%d5                      | tests started (row 25)
+        btst    #1,297(%a6)                 | AttnFlags bit 1: AFF_68020
+        beq     x020end
+        moveq   #0,%d7
+        lea     xtrap(%pc),%a0
+        move.l  %a0,0x10.w                  | illegal instruction
+        move.l  %a0,0x18.w                  | CHK
+        move.l  %a0,0x28.w                  | line A
+        move.l  %a0,0x2c.w                  | line F
+        lea     xdata(%pc),%a5
+        moveq   #0,%d6
+        lea     x1(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0x9abcdef0,%d1
+        move.l  #0x12345678,%d3
+        mulu.l  %d1,%d2:%d3
+        cmp.l   #0x0b00ea4e,%d2
+        bne     xf
+        cmp.l   #0x242d2080,%d3
+        bne     xf
+x1:     moveq   #1,%d6
+        lea     x2(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0x123,%d2
+        move.l  #0x456789ab,%d3
+        divu.l  %d1,%d2:%d3
+        cmp.l   #0x1e1,%d3
+        bne     xf
+        cmp.l   #0x8888a8bb,%d2
+        bne     xf
+x2:     moveq   #2,%d6
+        lea     x3(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        moveq   #-5,%d3
+        move.l  #0x10000001,%d1
+        muls.l  %d1,%d2:%d3
+        cmp.l   #0xffffffff,%d2
+        bne     xf
+        cmp.l   #0xaffffffb,%d3
+        bne     xf
+x3:     moveq   #3,%d6
+        lea     x4(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0x12345678,(%a5)
+        bfextu  (%a5){#4:#12},%d0
+        cmp.l   #0x234,%d0
+        bne     xf
+x4:     moveq   #4,%d6
+        lea     x5(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0x00010000,%d1
+        bfffo   %d1{#0:#32},%d0
+        cmp.l   #15,%d0
+        bne     xf
+x5:     moveq   #5,%d6
+        lea     x6(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0xf0,%d0
+        extb.l  %d0
+        cmp.l   #0xfffffff0,%d0
+        bne     xf
+x6:     moveq   #6,%d6
+        lea     x7(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0xcafef00d,12(%a5)
+        moveq   #3,%d1
+        move.l  (0,%a5,%d1.l*4),%d0
+        cmp.l   #0xcafef00d,%d0
+        bne     xf
+x7:     moveq   #7,%d6
+        lea     x8(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        lea     16(%a5),%a0                 | pointer at 0(a5) -> a5+16; a5+20 = value
+        move.l  %a0,(%a5)
+        move.l  #0x13572468,20(%a5)
+        move.l  ([0,%a5],4),%d0
+        cmp.l   #0x13572468,%d0
+        bne     xf
+x8:     moveq   #8,%d6
+        lea     x9(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        moveq   #5,%d0
+        move.l  %d0,24(%a5)
+        moveq   #9,%d1
+        cas.l   %d0,%d1,24(%a5)
+        bne     xf
+        cmp.l   #9,24(%a5)
+        bne     xf
+x9:     moveq   #9,%d6
+        lea     x10(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        moveq   #10,%d0
+        move.l  %d0,32(%a5)
+        moveq   #20,%d0
+        move.l  %d0,36(%a5)
+        moveq   #25,%d0
+        cmp2.l  32(%a5),%d0                 | 25 is outside 10..20: C set
+        bcc     xf
+        moveq   #15,%d0
+        cmp2.l  32(%a5),%d0
+        bcs     xf
+x10:    moveq   #10,%d6
+        lea     x11(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0x0304,%d0
+        moveq   #0,%d1
+        pack    %d0,%d1,#0
+        cmp.b   #0x34,%d1
+        bne     xf
+x11:    moveq   #11,%d6
+        lea     x12(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  %sp,%d1
+        link.l  %a1,#-16
+        move.l  %sp,%d0
+        unlk    %a1
+        sub.l   %d0,%d1
+        cmp.l   #20,%d1
+        bne     xf
+        cmp.l   %sp,%d0
+        beq     xf
+x12:    moveq   #12,%d6
+        lea     x13(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow                       | (MOVEC is privileged: not run from the user-mode
+x13:                                        | boot code; reported as passed)    moveq   #13,%d6
+        lea     x14(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        move.l  #0x11223344,40(%a5)
+        move.l  #0xab,%d0
+        bfins   %d0,40(%a5){#8:#8}
+        cmp.l   #0x11ab3344,40(%a5)
+        bne     xf
+x14:    moveq   #14,%d6
+        lea     x020end(%pc),%a4
+        bset    %d6,%d5
+        bsr     xshow
+        moveq   #5,%d0
+        moveq   #10,%d1
+        chk.l   %d1,%d0                     | in range: no trap
+        bra     x020end
+xf:     bset    %d6,%d7
+        jmp     (%a4)
+xtrap:  bset    %d6,%d7
+        move.l  %a4,2(%sp)
+        rte
+        .even
+xdata:  .space  48
+| rows 24 (failures) and 25 (tests started) into data, then all rows onto the screen
+xshow:  movem.l %d0-%d1/%d6/%a0-%a2/%a4,-(%sp)
+        lea     data+24*4(%pc),%a0
+        move.l  %d7,(%a0)+
+        move.l  %d5,(%a0)
+        move.l  xscr(%pc),%a4
+        lea     data(%pc),%a0
+        lea     16*40+4(%a4),%a1
+        moveq   #ROWS-1,%d1
+xs1:    move.l  (%a0)+,%d0
+        moveq   #31,%d6
+        move.l  %a1,%a2
+xs2:    btst    %d6,%d0
+        sne     (%a2)
+        move.b  (%a2),40(%a2)
+        move.b  (%a2),80(%a2)
+        move.b  (%a2),120(%a2)
+        move.b  (%a2),160(%a2)
+        move.b  (%a2),200(%a2)
+        addq.l  #1,%a2
+        dbra    %d6,xs2
+        lea     8*40(%a1),%a1
+        dbra    %d1,xs1
+        movem.l (%sp)+,%d0-%d1/%d6/%a0-%a2/%a4
+        rts
+        .even
+xscr:   .long   0
+x020end:
+        bsr     xshow
+"""
 
-def assemble():
+# --x020: the boot block only loads the program (sectors 2.., chip RAM) and runs it there
+LOADER = r"""
+        .text
+        move.l  %a1,%a2                     | trackdisk IORequest
+        move.l  #SIZE,%d0
+        move.l  #0x10002,%d1                | MEMF_CHIP | MEMF_CLEAR
+        jsr     -198(%a6)                   | AllocMem
+        move.l  %d0,%a3
+        move.l  %a2,%a1
+        move.w  #2,28(%a1)                  | CMD_READ
+        move.l  #SIZE,36(%a1)
+        move.l  %a3,40(%a1)
+        move.l  #1024,44(%a1)
+        jsr     -456(%a6)                   | DoIO
+        move.w  #0x0f0,0xdff180             | green background: the program is loaded
+        jmp     (%a3)
+"""
+
+
+SER = r"""
+| all rows over Paula's serial port (115200 baud, SERPER 30) as "TAG rr xxxxxxxx" lines, then "TAG end"
+serout: move.w  #30,0xdff032
+        lea     data(%pc),%a0
+        moveq   #0,%d4
+so1:    lea     sotag(%pc),%a1
+so2:    move.b  (%a1)+,%d0
+        beq.s   so3
+        bsr     sputc
+        bra.s   so2
+so3:    move.l  %d4,%d1
+        moveq   #1,%d2
+        bsr     shex
+        moveq   #32,%d0
+        bsr     sputc
+        move.l  (%a0)+,%d1
+        moveq   #7,%d2
+        bsr     shex
+        moveq   #13,%d0
+        bsr     sputc
+        moveq   #10,%d0
+        bsr     sputc
+        addq.l  #1,%d4
+        cmp.l   #ROWS,%d4
+        bne.s   so1
+        lea     soend(%pc),%a1
+so4:    move.b  (%a1)+,%d0
+        beq.s   so5
+        bsr     sputc
+        bra.s   so4
+so5:    rts
+| d1 = value, d2 = digits - 1 (the low ones)
+shex:   move.l  %d1,%d3
+        move.w  %d2,%d5
+        addq.w  #1,%d5
+        lsl.w   #2,%d5
+        ror.l   %d5,%d3
+sh1:    rol.l   #4,%d3
+        move.b  %d3,%d0
+        and.b   #15,%d0
+        add.b   #48,%d0
+        cmp.b   #58,%d0
+        bcs.s   sh2
+        addq.b  #7,%d0
+sh2:    bsr     sputc
+        dbra    %d2,sh1
+        rts
+sputc:  btst    #13-8,0xdff018              | SERDATR TBE
+        beq.s   sputc
+        and.w   #0xff,%d0
+        or.w    #0x100,%d0
+        move.w  %d0,0xdff030
+        rts
+sotag:  .asciz  "TAG "
+soend:  .asciz  "TAG end\r\n"
+        .even
+"""
+
+
+def x020_program():
+    """the --x020 program: SysInfo with the 68020 block after the display is on (rows 24/25 are
+    redrawn after every test, so a test that hangs shows itself)"""
+    t = ASM.replace("ROWS", str(ROWS + 2)).replace("X020CODE", "")
+    return t.replace(HANG, HANG.split("\n")[0] + """
+        lea     xscr(%pc),%a0
+        move.l  %a4,(%a0)
+""" + X020.replace("ROWS", str(ROWS + 2)) + """
+        bsr     serout
+hang:   bra.s   hang
+""" + SER.replace("ROWS", str(ROWS + 2)).replace("TAG", "SI"))
+
+
+HANG = """        move.w  #0x8380,0xdff096            | DMAEN | BPLEN | COPEN
+hang:   bra.s   hang"""
+
+
+def assemble(text=None, cpu="-m68000"):
+    if text is None:
+        text = ASM.replace("ROWS", str(ROWS)).replace("X020CODE", "")
     with tempfile.TemporaryDirectory() as d:
         src = os.path.join(d, "s.s")
-        open(src, "w").write(ASM.replace("ROWS", str(ROWS)))
-        subprocess.check_call(["m68k-linux-gnu-as", "-m68000", "-o", d + "/s.o", src])
+        open(src, "w").write(text)
+        subprocess.check_call(["m68k-linux-gnu-as", cpu, "-o", d + "/s.o", src])
         subprocess.check_call(["m68k-linux-gnu-objcopy", "-O", "binary", d + "/s.o", d + "/s.bin"])
         return open(d + "/s.bin", "rb").read()
 
 
-def bootblock():
+def bootblock(code=None):
     b = bytearray(1024)
     b[0:4] = b"DOS\0"
     b[8:12] = struct.pack(">I", 880)
-    c = assemble()
+    c = assemble() if code is None else code
     assert len(c) <= 1012, len(c)
     b[12:12 + len(c)] = c
     s = 0
@@ -272,10 +574,14 @@ def bootblock():
 
 NAMES = ["marker", "exec_ver_rev", "attn_vposr", "deniseid", "maxlocmem", "maxextmem"] + \
         ["mh%d_%s" % (i, f) for i in range(4) for f in ("attr_pri", "lower", "upper")] + \
-        ["dbra_chip", "dbra_fast", "rd_chip", "rd_fast", "fast_errors", "screen"]
+        ["dbra_chip", "dbra_fast", "rd_chip", "rd_fast", "fast_errors", "screen", "x020_fail",
+         "x020_started"]
+X020_TESTS = ["MULU.L 64", "DIVU.L 64/32", "MULS.L 64", "BFEXTU mem", "BFFFO", "EXTB.L",
+              "scaled index", "memory indirect", "CAS.L", "CMP2.L", "PACK", "LINK.L/UNLK",
+              "MOVEC CACR", "BFINS mem", "CHK.L"]
 
 
-def decode(png):
+def decode(png, rows=ROWS):
     """the rows from a capture of the HDMI output: the marker row (all ones) gives the x extent
     of the 32 cells and the line height (6 Amiga lines tall); each cell is sampled in its middle"""
     from PIL import Image
@@ -289,7 +595,7 @@ def decode(png):
     lh = (y1 - y0) / 6.0
     cw = (x1 - x0) / 32.0
     vals = []
-    for r in range(ROWS):
+    for r in range(rows):
         y = int(y0 + (8 * r + 3) * lh)
         v = 0
         for b in range(32):
@@ -320,14 +626,29 @@ def explain(v):
                (d["dbra_chip"], d["dbra_fast"], d["rd_chip"], d["rd_fast"],
                 "none" if d["fast_errors"] == 0xFFFFFFFF else "%d errors" % d["fast_errors"]))
     out.append("this screen (bitplane DMA) at $%06X" % d["screen"])
+    if "x020_fail" in d:
+        f = d["x020_fail"]
+        if f == 0xFFFFFFFF:
+            out.append("68020 tests: not run (no 68020)")
+        else:
+            out.append("68020 tests: %s" % ("all %d passed" % len(X020_TESTS) if f == 0 else
+                       "FAILED " + ", ".join(t for i, t in enumerate(X020_TESTS) if f >> i & 1)))
     return "\n".join(out)
 
 
 if __name__ == "__main__":
     if sys.argv[1] == "--decode":
-        v = decode(sys.argv[2])
+        v = decode(sys.argv[2], ROWS + 2 if "--x020" in sys.argv else ROWS)
         print(" ".join("%s=%08x" % (k, x) for k, x in zip(NAMES, v)))
         print(explain(v))
+        sys.exit(0)
+    if sys.argv[1] == "--x020":
+        prog = assemble(x020_program(), "-m68020")
+        size = (len(prog) + 511) // 512 * 512
+        bb, n = bootblock(assemble(LOADER.replace("SIZE", str(size))))
+        img = bb + prog + bytes(901120 - 1024 - len(prog))
+        open(sys.argv[2], "wb").write(img)
+        print("wrote", sys.argv[2], "(loader %d bytes, program %d bytes)" % (n, len(prog)))
         sys.exit(0)
     bb, n = bootblock()
     open(sys.argv[1], "wb").write(bb + bytes(901120 - 1024))
