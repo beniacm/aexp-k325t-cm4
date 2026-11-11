@@ -1,0 +1,15 @@
+CORE-K325T*
+.Xil/
+bin/
+build.log
+timing.txt
+utilization.txt
+sources.tcl
+top_qmtech_k325t_cm4.vhd
+build_*.log
+build_console.log
+qmtech_k325t_cm4_radxacm3.xdc
+timing_*.txt
+utilization_*.txt
+make_rom*.log
+demo_runs/

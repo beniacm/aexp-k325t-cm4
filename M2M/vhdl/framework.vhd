@@ -21,7 +21,16 @@ use xpm.vcomponents.all;
 
 entity framework is
 generic (
-   G_BOARD : string                                         -- Which platform are we running on.
+   G_BOARD : string;                                        -- Which platform are we running on.
+   -- true: no HyperRAM controller; the memory bus (Avalon-MM, 16 bit, word addresses) and its
+   -- clock/reset come from outside (ext_*), e.g. a DDR3 bridge on boards without HyperRAM
+   G_EXT_HR : boolean := false;
+   -- HDMI TMDS pair polarity (bit i = data channel i, bit 3 = clock), see digital_pipeline
+   G_TMDS_INVERT : std_logic_vector(3 downto 0) := "0000";
+   -- true: the board has none of the I2C buses (no RTC etc.); the RTC/I2C controller then
+   -- sees idle (high) SCL/SDA lines, i.e. every transfer ends with a NACK instead of a
+   -- clock line that floats low and stalls it
+   G_NO_I2C : boolean := false
 );
 port (
    clk_i                   : in    std_logic;                  -- 100 MHz clock
@@ -101,6 +110,19 @@ port (
    hr_reset_o              : out   std_logic;                 -- Active low RESET line to HyperRAM
    hr_clk_p_o              : out   std_logic;
    hr_cs0_o                : out   std_logic;
+
+   -- External memory (G_EXT_HR = true): replaces the HyperRAM controller
+   ext_hr_clk_i            : in    std_logic := '0';  -- memory clock (~100 MHz), becomes hr_clk
+   ext_hr_rst_i            : in    std_logic := '0';  -- memory not ready (async, active high)
+   ext_avm_write_o         : out   std_logic;
+   ext_avm_read_o          : out   std_logic;
+   ext_avm_address_o       : out   std_logic_vector(31 downto 0);
+   ext_avm_writedata_o     : out   std_logic_vector(15 downto 0);
+   ext_avm_byteenable_o    : out   std_logic_vector(1 downto 0);
+   ext_avm_burstcount_o    : out   std_logic_vector(7 downto 0);
+   ext_avm_readdata_i      : in    std_logic_vector(15 downto 0) := (others => '0');
+   ext_avm_readdatavalid_i : in    std_logic := '0';
+   ext_avm_waitrequest_i   : in    std_logic := '1';
 
    -- Connect to CORE
    qnice_clk_o             : out   std_logic;
@@ -278,6 +300,9 @@ signal sys_pps                : std_logic;               -- One pulse per second
 
 signal qnice_rst              : std_logic;
 signal hr_rst                 : std_logic;
+signal i2c_scl_in, i2c_sda_in  : std_logic_vector(7 downto 0);   -- RTC/I2C controller inputs
+signal hr_clk_pll             : std_logic;               -- clk_m2m's HyperRAM clock / reset
+signal hr_rst_pll             : std_logic;
 signal audio_rst              : std_logic;
 signal hdmi_rst               : std_logic;
 
@@ -456,10 +481,10 @@ begin
          core_rstn_i       => reset_core_n,       -- reset only the core (means the HyperRAM needs to be reset, too)
          qnice_clk_o       => qnice_clk,
          qnice_rst_o       => qnice_rst,
-         hr_clk_o          => hr_clk,
+         hr_clk_o          => hr_clk_pll,
          hr_clk_del_o      => hr_clk_del,
          hr_delay_refclk_o => hr_delay_refclk,
-         hr_rst_o          => hr_rst,
+         hr_rst_o          => hr_rst_pll,
          audio_clk_o       => audio_clk,
          audio_rst_o       => audio_rst,
          sys_pps_o         => sys_pps
@@ -488,6 +513,28 @@ begin
          clko    => hdmi_clk,
          clko_x5 => tmds_clk
       ); -- i_video_out_clock
+
+   gen_hr_clk_int : if not G_EXT_HR generate
+      hr_clk <= hr_clk_pll;
+      hr_rst <= hr_rst_pll;
+   end generate gen_hr_clk_int;
+
+   -- External memory: its clock replaces hr_clk; hr_rst is held while the memory is not ready
+   -- or the framework/core reset (hr_rst_pll, other clock domain) is active.
+   gen_hr_clk_ext : if G_EXT_HR generate
+      signal ext_rst_sync : std_logic_vector(2 downto 0) := (others => '1');
+      attribute ASYNC_REG : string;
+      attribute ASYNC_REG of ext_rst_sync : signal is "TRUE";
+   begin
+      hr_clk <= ext_hr_clk_i;
+      process (ext_hr_clk_i)
+      begin
+         if rising_edge(ext_hr_clk_i) then
+            ext_rst_sync <= ext_rst_sync(1 downto 0) & (ext_hr_rst_i or hr_rst_pll);
+         end if;
+      end process;
+      hr_rst <= ext_rst_sync(2);
+   end generate gen_hr_clk_ext;
 
    hr_clk_o    <= hr_clk;
    hr_rst_o    <= hr_rst;
@@ -887,7 +934,8 @@ begin
          G_VGA_DY                => VGA_DY,
          G_FONT_FILE             => FONT_FILE,
          G_FONT_DX               => FONT_DX,
-         G_FONT_DY               => FONT_DY
+         G_FONT_DY               => FONT_DY,
+         G_TMDS_INVERT           => G_TMDS_INVERT
       )
       port map (
          -- Input from Core
@@ -1002,6 +1050,13 @@ begin
    -- HyperRAM controller
    ---------------------------------------------------------------------------------------------------------------
 
+   gen_hyperram : if not G_EXT_HR generate
+      ext_avm_write_o      <= '0';
+      ext_avm_read_o       <= '0';
+      ext_avm_address_o    <= (others => '0');
+      ext_avm_writedata_o  <= (others => '0');
+      ext_avm_byteenable_o <= (others => '0');
+      ext_avm_burstcount_o <= (others => '0');
    i_hyperram : entity work.hyperram
       generic map (
          G_ERRATA_ISSI_D_FIX => true
@@ -1040,11 +1095,36 @@ begin
    end generate hr_d_gen;
    hr_rwds_in <= hr_rwds_io;
    hr_dq_in   <= hr_d_io;
+   end generate gen_hyperram;
+
+   gen_ext_mem : if G_EXT_HR generate
+      ext_avm_write_o      <= hr_write;
+      ext_avm_read_o       <= hr_read;
+      ext_avm_address_o    <= hr_address;
+      ext_avm_writedata_o  <= hr_writedata;
+      ext_avm_byteenable_o <= hr_byteenable;
+      ext_avm_burstcount_o <= hr_burstcount;
+      hr_readdata          <= ext_avm_readdata_i;
+      hr_readdatavalid     <= ext_avm_readdatavalid_i;
+      hr_waitrequest       <= ext_avm_waitrequest_i;
+      hr_count_long        <= (others => '0');
+      hr_count_short       <= (others => '0');
+      hr_reset_o           <= '0';
+      hr_cs0_o             <= '1';
+      hr_clk_p_o           <= '0';
+      hr_rwds_io           <= 'Z';
+      hr_d_io              <= (others => 'Z');
+   end generate gen_ext_mem;
 
 
    ---------------------------------------------------------------------------------------------------------------
    -- I2C controller
    ---------------------------------------------------------------------------------------------------------------
+
+   i2c_scl_in <= (others => '1') when G_NO_I2C else
+                 "11" & audio_scl_io & vga_scl_io & hdmi_scl_io & i2c_scl_io & grove_scl_io & fpga_scl_io;
+   i2c_sda_in <= (others => '1') when G_NO_I2C else
+                 "11" & audio_sda_io & vga_sda_io & hdmi_sda_io & i2c_sda_io & grove_sda_io & fpga_sda_io;
 
    i_rtc_wrapper : entity work.rtc_wrapper
    generic map (
@@ -1067,8 +1147,8 @@ begin
       i2c_addr_i    => qnice_ramrom_addr_o,
       i2c_wr_data_i => qnice_ramrom_data_out_o,
       i2c_rd_data_o => qnice_i2c_rd_data,
-      scl_in_i      => "11" & audio_scl_io & vga_scl_io & hdmi_scl_io & i2c_scl_io & grove_scl_io & fpga_scl_io,
-      sda_in_i      => "11" & audio_sda_io & vga_sda_io & hdmi_sda_io & i2c_sda_io & grove_sda_io & fpga_sda_io,
+      scl_in_i      => i2c_scl_in,
+      sda_in_i      => i2c_sda_in,
       scl_out_o     => scl_out,
       sda_out_o     => sda_out
    ); -- i_rtc_wrapper

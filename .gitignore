@@ -29,3 +29,10 @@ __pycache__
 /site/
 /_site/
 build_*.out
+CORE/CORE-K325T.xpr
+CORE/CORE-K325T.gen
+CORE/CORE-K325T.srcs
+CORE/CORE-K325T.cache
+CORE/CORE-K325T.hw
+CORE/CORE-K325T.ip_user_files
+CORE/CORE-K325T.runs

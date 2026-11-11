@@ -26,7 +26,10 @@ entity digital_pipeline is
       G_VGA_DY               : natural;
       G_FONT_FILE            : string;
       G_FONT_DX              : natural;
-      G_FONT_DY              : natural
+      G_FONT_DY              : natural;
+      -- TMDS pair polarity: bit i = data channel i, bit 3 = clock; '1' inverts the
+      -- 10-bit word (for boards whose P/N balls are swapped relative to the connector)
+      G_TMDS_INVERT          : std_logic_vector(3 downto 0) := "0000"
    );
    port (
       -- Input from Core (video and audio)
@@ -107,6 +110,8 @@ entity digital_pipeline is
 end entity digital_pipeline;
 
 architecture synthesis of digital_pipeline is
+
+signal tmds_clk_word : std_logic_vector(9 downto 0);   -- HDMI clock pattern (polarity applied)
 
    -- HDMI PCM sampling rate hardcoded to 48 kHz (should be the most compatible mode)
    -- If this should ever be switchable, don't forget that the signal "select_44100" in
@@ -614,24 +619,28 @@ begin
 
    -- serialiser: in this design we use TMDS SelectIO outputs
    GEN_HDMI_DATA: for i in 0 to 2 generate
+      signal tmds_pol : std_logic_vector(9 downto 0);
    begin
+      tmds_pol <= hdmi_tmds(i) xor (9 downto 0 => G_TMDS_INVERT(i));
       I_HDMI_DATA: entity work.serialiser_10to1_selectio
       port map (
          rst     => hdmi_rst_i,
          clk     => hdmi_clk_i,
          clk_x5  => tmds_clk_i,
-         d       => hdmi_tmds(i),
+         d       => tmds_pol,
          out_p   => tmds_data_p_o(i),
          out_n   => tmds_data_n_o(i)
       ); -- I_HDMI_DATA: entity work.serialiser_10to1_selectio
    end generate GEN_HDMI_DATA;
+
+   tmds_clk_word <= "0000011111" xor (9 downto 0 => G_TMDS_INVERT(3));
 
    GEN_HDMI_CLK: entity work.serialiser_10to1_selectio
    port map (
          rst     => hdmi_rst_i,
          clk     => hdmi_clk_i,
          clk_x5  => tmds_clk_i,
-         d       => "0000011111",
+         d       => tmds_clk_word,
          out_p   => tmds_clk_p_o,
          out_n   => tmds_clk_n_o
       ); -- GEN_HDMI_CLK
