@@ -8,11 +8,22 @@ the ADFs in /amiga on the module's card image, the harness's m65d on the module 
 MS2130 HDMI capture dongle on this PC.  Per demo: reset the core (the whole M2M system: the disk
 is ejected, Kickstart reloaded), mount disk 1 from the on-screen menu (Help, Space = file browser,
 cursor to the file, Return, Help closes the menu), record SECONDS of video (H.264, 1280x720) and
-extract frames every --every seconds; two-disk demos get disk 2 mounted at --swap seconds.
+extract frames every --every seconds; multi-disk demos get disk N mounted at the N-1th swap time
+(seconds after the first mount; df0 swapping through the menu, the drive is ejected first).
 Output: <out>/<demo>.mp4, <demo>_tNNN.png, results.csv (frame md5s, colour counts: a frozen or
 black picture shows as identical md5s / few colours).
 
     tools/aexp_demo_test.py [--host 192.168.1.215] [--out DIR] [--only sota,arte] [--secs 120]
+    tools/aexp_demo_test.py --set a1200 [--only nexus7,origin] [--swaps 120,240]
+
+--set a1200: the A1200 demo set (stage 3).  Needs the AGA bitstream, Kickstart 3.1 (40.068, the
+user's own A1200 ROM) as /amiga/kick.rom on the card instead of 1.3, and the AGA configuration of
+the stall controller before every full reset (--setup, run over ssh on the module; default
+"python3 $STALLMON cache on 0 aga", STALLMON = path of K325T/tools/stallmon.py on the module,
+default /root/m65/stallmon.py).  File-based releases need a bootable ADF made with
+tools/mk_bootadf.py (Mindflow, Domination, the Nexus 7 executable); DMS images need converting
+to ADF first.  Swap times of the A1200 set are first guesses (the FS-UAE baselines ran with all
+disks in df0-df3): check them against the first recording and pass --swaps.
 
 The demo list (DEMOS below) holds the file names in /amiga and, for two-disk demos, the second
 disk and when to insert it.  The browser lists /amiga sorted by name; the script reads the card's
@@ -27,14 +38,33 @@ import subprocess
 import sys
 import time
 
-# name: (disk 1, disk 2 or None, seconds after boot to insert disk 2, total seconds)
+# name: ([disk 1, disk 2, ...], [seconds after the first mount to insert disk 2, disk 3, ...],
+#        total seconds)
 DEMOS = {
-    "sota":   ("sota.adf", None, None, 150),       # Spaceballs, State of the Art (1992; the amigascne
+    "sota":   (["sota.adf"], [], 150),             # Spaceballs, State of the Art (1992; the amigascne
                                                    # image: the scene.org party-archive DMS hangs)
-    "enigma": ("enigma.adf", None, None, 150),     # Phenomena, Enigma (1991)
-    "arte":   ("arte.adf", None, None, 180),       # Sanity, Arte (1993)
-    "eon":    ("eon1.adf", "eon2.adf", 170, 330),  # The Black Lotus, Eon (2019, party version); disk-2 icon ~165 s
-    "batman": ("batman1.adf", "batman2.adf", 290, 450),  # Batman Group, Batman Rises (2022); "INSERT DISK 2" ~270 s (waits)
+    "enigma": (["enigma.adf"], [], 150),           # Phenomena, Enigma (1991)
+    "arte":   (["arte.adf"], [], 180),             # Sanity, Arte (1993)
+    "eon":    (["eon1.adf", "eon2.adf"], [170], 330),  # The Black Lotus, Eon (2019, party version); disk-2 icon ~165 s
+    "batman": (["batman1.adf", "batman2.adf"], [290], 450),  # Batman Group, Batman Rises (2022); "INSERT DISK 2" ~270 s (waits)
+}
+
+# the A1200 set (ext/a1200_demos/manifest.md); card names in /amiga, ADFs only (DMS converted,
+# executables on mk_bootadf.py disks).  The browser cursor only moves down: later disks of a demo
+# must sort after the earlier ones (they do with these names).
+DEMOS_A1200 = {
+    "nexus7":   (["n7.adf"], [], 180),                         # Andromeda, Nexus 7 (1994), the trackloader ADF
+    "fullmoon": (["fullmoon.adf"], [], 180),                   # Virtual Dreams & Fairlight (1993); loads ~50 s
+    "origin":   (["origin1.adf", "origin2.adf"], [120], 300),  # Complex (1993), 2 DMS
+    "motion":   (["motion1.adf", "motion2.adf"], [120], 300),  # Bomb (1994), 2 DMS, wants fast RAM
+    "mindflow": (["mindflow.adf"], [], 150),                   # Stellar (1994), mk_bootadf disk (setchiprev)
+    "roots":    (["roots.adf"], [], 180),                      # Sanity (1994), DMS
+    "roots2":   (["roots2.adf"], [], 240),                     # Sanity (1995), DMS, ECS part wants fast RAM
+    "twisted":  (["twisted1.adf", "twisted2.adf", "twisted3.adf", "twisted4.adf"], [90, 180, 270], 360),
+    "domination": (["domination.adf"], [], 180),               # Contraz (1996), mk_bootadf disk, 4 MB fast
+    "csc":      (["csc.adf"], [], 150),                        # Essence, Crazy Sexy Cool (1995): waits for a
+                                                               # mouse click after its system check
+    "artparadise": (["artpar1.adf", "artpar2.adf"], [120], 300),  # New Generation Crew (1994)
 }
 
 
@@ -166,6 +196,11 @@ def main():
     ap.add_argument("--every", type=int, default=10, help="seconds between saved frames")
     ap.add_argument("--swap", type=int, default=-1,
                     help="seconds after boot to insert disk 2 (overrides the table; 0 = never)")
+    ap.add_argument("--swaps", default="", help="comma list: seconds to insert disk 2, 3, ... (overrides)")
+    ap.add_argument("--set", default="a500", choices=["a500", "a1200"], help="demo set / machine")
+    ap.add_argument("--setup", default=None,
+                    help="command run on the module (ssh) before every full reset; a1200 default: "
+                         "the stall controller's AGA configuration")
     ap.add_argument("--reset-only", action="store_true", help="just the full reset (eject, menu closed)")
     ap.add_argument("--mount", default="", help="full reset, mount this ADF from /amiga, exit")
     a = ap.parse_args()
@@ -188,28 +223,39 @@ def main():
     listing = browser_list(a.host)
     print("browser order:", " ".join(listing))
     dev = capture_device()
-    sel = [d for d in DEMOS if not a.only or d in a.only.split(",")]
+    table = DEMOS_A1200 if a.set == "a1200" else DEMOS
+    setup = a.setup
+    if setup is None and a.set == "a1200":
+        setup = "python3 %s cache on 0 aga" % os.environ.get("STALLMON", "/root/m65/stallmon.py")
+    sel = [d for d in table if not a.only or d in a.only.split(",")]
     with open(os.path.join(a.out, "results.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["demo", "t", "frame", "md5", "colours"])
         for name in sel:
-            d1, d2, swap, secs = DEMOS[name]
+            disks, swaps, secs = table[name]
+            disks, swaps = list(disks), list(swaps)
             secs = a.secs or secs
-            if a.swap >= 0:
-                d2, swap = (d2 if a.swap else None), a.swap
-            if d1 not in listing:
-                print("%s: %s not on the card, skipped" % (name, d1))
+            if a.swaps:
+                swaps = [int(x) for x in a.swaps.split(",")]
+            elif a.swap >= 0:
+                swaps = [a.swap] if a.swap else []
+            disks = disks[:len(swaps) + 1]
+            missing = [d for d in disks if d not in listing]
+            if missing:
+                print("%s: %s not on the card, skipped" % (name, " ".join(missing)))
                 continue
-            print("== %s (%s%s), %d s" % (name, d1, ", " + d2 if d2 else "", secs), flush=True)
+            print("== %s (%s), %d s" % (name, ", ".join(disks), secs), flush=True)
+            if setup:
+                subprocess.run(["ssh", "root@" + a.host, setup], timeout=30)
             full_reset(a.host)
             clip = os.path.join(a.out, name + ".mp4")
             rec = record(dev, clip, secs + 5)
             t0 = time.time()
-            mount(a.host, d1, listing)
-            if d2:
-                time.sleep(max(0, swap - (time.time() - t0)))
-                print("   disk 2 at %.0f s" % (time.time() - t0), flush=True)
-                mount(a.host, d2, listing, eject_first=True)
+            mount(a.host, disks[0], listing)
+            for n, (dn, at) in enumerate(zip(disks[1:], swaps), 2):
+                time.sleep(max(0, at - (time.time() - t0)))
+                print("   disk %d at %.0f s" % (n, time.time() - t0), flush=True)
+                mount(a.host, dn, listing, eject_first=True)
             rec.wait()
             for row in frames(clip, os.path.join(a.out, name), a.every, secs):
                 w.writerow((name,) + row)
