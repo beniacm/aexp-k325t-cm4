@@ -32,8 +32,8 @@ DEMOS = {
     "sota":   ("sota.adf", None, None, 150),       # Spaceballs, State of the Art (1992)
     "enigma": ("enigma.adf", None, None, 150),     # Phenomena, Enigma (1991)
     "arte":   ("arte.adf", None, None, 180),       # Sanity, Arte (1993)
-    "eon":    ("eon1.adf", "eon2.adf", 100, 240),  # The Black Lotus, Eon (2019, party version)
-    "batman": ("batman1.adf", "batman2.adf", 120, 240),  # Batman Group, Batman Rises (2022)
+    "eon":    ("eon1.adf", "eon2.adf", 170, 330),  # The Black Lotus, Eon (2019, party version); disk-2 icon ~165 s
+    "batman": ("batman1.adf", "batman2.adf", 290, 450),  # Batman Group, Batman Rises (2022); "INSERT DISK 2" ~270 s (waits)
 }
 
 
