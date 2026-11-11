@@ -516,3 +516,161 @@ abandon their transaction cleanly -- which ascal did not, see the second mechani
 never completed"); the fixed one runs 400 resets and 1,213 transactions (and, with `G_ARB`, 2,370
 line-port lines through `mig_arb.vhd` at the same time) without a hang, a wrong word or a MIG
 protocol error.
+
+## B. A MIG port of its own, and the source clock at 31.31 MHz
+
+`mig_arb.vhd` sits between the MIG's native UI and its two clients: the **line port** (64-byte
+lines = 4 BL8 commands of 128 bits; reads return the 4 beats in order, writes take 512 bits at
+once) and `avm_mig` (the framework's Avalon bus: ascal, the fast RAM, the floppy, QNICE).  The
+line port goes first; the only exception is a write `avm_mig` has started (its data is in the MIG's
+write FIFO and the command must follow).  In the top a small mux shares the line port between the
+chip cache (first) and `lat_meter.vhd`, a latency meter (stall controller page 7, `stallmon.py lat
+SECS r|w|rw`): random 64-byte reads / writes in a 1 MB area at 64 MB with a random gap of 0-1023
+ui clocks; latency from the request to the last read word (writes: to the MIG taking the 4th
+command); 40 ns histogram bins.
+
+Measured (build I; ascal at 720p50 reading and writing its frame buffer all the time; 20 s per
+direction, ~3.7 million lines each):
+
+| board, load | read min / median / 99.9 % / max | write min / median / 99.9 % / max |
+|---|---|---|
+| Radxa rig, ascal only | 290 / 280-320 / 560-600 / 700 ns | 110 / 80-120 / 240-280 / 480 ns |
+| Radxa rig, + fast RAM copy loop (8 MB Zorro II, `mk_fastload_adf.py`: 128 KB copied back and forth, the fast RAM's 16 KB cache misses all the time) | 290 / 280-320 / 560-600 / 770 ns | 110 / 80-120 / 280-320 / 510 ns |
+| Luckfox rig (build L), ascal only | 290 / 280-320 / 560-600 / 700 ns | 110 / 80-120 / 240-280 / 470 ns |
+
+The two boards (two DDR3 chips) agree to the histogram bin: the numbers are the controller's, not
+the board's.  The study's latency set A (dedicated port) was 250 ns + 0-50 ns; the median read
+matches, the tail does not: 0.1 % of the reads take 560-770 ns (refresh, page misses, a write in
+flight on the other client).  What the Amiga waits for is longer still, because the fill engine is
+simpler than the study's: the measured stall per line fill is 0.80-0.82 us for clean lines and
+~1.0 us when lines are written back (the write-back goes before the read, not into a buffer),
+against the study's ~0.35 us.  For the stall budget: the same miss rate costs ~2.3x the stalled
+time the study assumed.  In the A500 configurations that does not matter (C: no misses in steady
+state); for the A1200 stage it is the first thing to improve (critical word first, install while
+the beats arrive, a write-back buffer).
+
+**Source clock 31.31 MHz** (MMCM VCO 1135 MHz / 36.25 = 31.310345 MHz, h = 10.3 %, machine/source
+= 29/32): timing met in every build of this stage (`main_clk` 31.938 ns, intra-clock WNS +2.36 ns;
+whole design WNS +0.072 to +0.111 ns, the critical paths are in the MIG's ui_clk domain).
+Long-term rates over 120 s windows (`stallmon.py rate 120`, build I):
+
+| | frame rate | machine clock | machine/source |
+|---|---|---|---|
+| flicker-free on | 49.998854 Hz (-23 ppm vs 50 Hz; a window ends at an arbitrary dither phase) | 28,419,757 Hz | 0.907679 |
+| forced native (`stallmon set mode=2`) | 49.920128 Hz (0.00 ppm vs native) | 28,375,000.000 Hz | 0.906250000 = 29/32 exactly |
+
+## C. Chip RAM behind a cache with stall
+
+`chip_cache.vhd` replaces the four chip / slow RAM lanes of `mega65.vhd` with the same 256 block-RAM
+tiles (512 K x 16), organised as a **2-way, 8192-set cache of 64-byte lines = 1 MB**, with LUT-RAM
+tags (valid, dirty, line) read asynchronously, so that a miss is known in the same source clock
+tick and reaches the stall controller's CE combinationally (`miss_i`: `ce_o = ce and not miss_i`,
+the tick refunded to the DDS: machine time does not move).  Port A (Amiga, source clock) reads and
+writes on a hit; port B (ui_clk) installs fills and reads victims for write-back; a toggle
+handshake carries the request.  Backing store: DDR3 from 64 MB (`G_DDR_BASE`), chip at 0, slow
+RAM above it.
+
+Modes, chosen at a full reset (stall controller register 7: b1 cache on, b2 2 MB chip, b3 and
+register 0 b3 = shrink; `stallmon.py cache on|off [SHRINK] [chip2m]`):
+- **identity (default)**: the tiles are addressed exactly as phase 2's chip and slow RAM; no tag
+  lookup, `miss` is constant 0, nothing goes to DDR3.  **This is the cycle-equivalent A500 mode:
+  chip and slow RAM ARE block RAM, read in one cycle as on phase 2** -- exact because it is phase
+  2's memory path, shown bit for bit below.
+- **cache**: chip and slow RAM in DDR3, the tiles are the cache.  Exact by a different argument: a
+  miss stops the Amiga's clock before the access edge, the machine sees the data in the same
+  machine cycle as from block RAM; only real time stretches.
+- **shrink** 0-3 masks the set index: 8192 / 1024 / 128 / 16 sets = 1 MB / 128 KB / 16 KB / 2 KB.
+- **2 MB chip** (cache mode only): the 2 MB Agnus configuration (ECS forced, `amiga_config.vhd`
+  chip2m), slow RAM off; 2 MB of DDR3 compete for the 1 MB cache.
+
+Deviations from the study, deliberate for this stage: 2-way instead of 3-way and 1 MB instead of
+1.5 MB (the 256 Amiga tiles were what was free); **no prefetchers yet** (in the A500 configurations
+everything fits, nothing to prefetch; they come with the A1200 chip RAM); Kickstart stays in block
+RAM; write misses stall (write-allocate with fill) instead of a write-back buffer; replacement is
+"the other way" (pseudo-random), not LRU.
+
+Simulation (`sim/tb_chip_cache.vhd` with `sim/mig_model.vhd` and the real `stall_ctrl.vhd`): 100,000
+random chip / slow accesses against a reference memory, identity mode and cache mode at each shrink
+level: 0 wrong reads, the same 409,020 machine ticks in every run (stalls invisible), fills /
+write-backs 7,084 / 323 (1 MB) up to 7,702 / 6,989 (2 KB).
+
+**Chip RAM test on the board** (build H; `mk_chiptest_adf.py`: pattern = address xor constant over
+all chip RAM from $1000 to MaxLocMem, all written before any is read, inverted every pass):
+
+| configuration | passes | errors | fills / write-backs per 20 ms, stalled time |
+|---|---|---|---|
+| identity, 512 K + 512 K | 7 in 20 s | 0 | - |
+| cache 1 MB | 7 in 20 s | 0 | 0 after the boot (everything resident) |
+| cache 128 KB | 7 in 20 s | 0 | 115.5 / 55.8, 0.60 % |
+| cache 16 KB | 7 in 20 s | 0 | 198 / 63, 0.96 % |
+| cache 2 KB | 7 in 20 s | 0 | 346 / 71 |
+| 2 MB chip (Kickstart 3.1, ECS), cache 1 MB | 3 in 40 s | 0 | 92 / 39, 0.47 % |
+| 2 MB chip, cache 16 KB | 3 in 40 s | 0 | 197 / 3.4, 0.81 % |
+
+The same number of passes = the same machine time.  SysInfo with 2 MB (Kickstart 3.1): "MaxLocMem
+$200000 (2048 KB chip)", one MemHeader $000420-$200000, Agnus ECS, and its own screen displayed by
+bitplane DMA from $1F0000 (the top of the 2 MB).  A demo that needs more than 1 MB of chip RAM was
+not available on the card (the five test demos need 512 K + 512 K).
+
+**Machine-time determinism.**  The determinism test now starts in a fixed state.  The E clock (CPU
+/ 10) runs free from reset and a PAL frame is 71,051 colour clocks = 1 mod 5, so the E phase
+against the beam differs from frame to frame, and the boot block used to start in a frame that
+depended on how long the (real-time) disk load took: that gave the two checksum families of stage
+1.  The test (`mk_stalltest_adf.py`, row 12) now waits for the frame whose E phase is 0 (a CIA
+access at line $10, then the beam position mod 5) and switches the audio DMA on at the copper
+interrupt; rows 10 / 11 record the beam at the start and end of the 50-frame E-clock window.
+Every boot since then:
+
+| bitstream / setting | boots | checksums even / odd | mismatching frames | entry | E-clocks in 50 frames |
+|---|---|---|---|---|---|
+| phase 2 (`qmtech-k325t-cm4`, 11bf756) | 2 (+1 frozen at the mount reset: the bug of A) | 27dbf6f3 / 0c253188 | 0 | $407E | 710,511-710,512 |
+| phase 2 with both reset fixes (aaf096b) | 3 | same | 0 | $407E | same |
+| build I, identity | 3 | same | 0 | $407E | same |
+| build I, cache 1 MB | 3 | same | 0 | $407E | same |
+| build I, cache 128 KB | 3 | same | 0 | $407E | same |
+| build I, cache 16 KB (the machine at ~51 % of real time) | 3 | same | 0 | $407E | same |
+| build I, cache 2 KB | 2 (+1 lost: the menu missed the Return key) | same | 0 | $407E | same |
+| build I, 2 MB chip, cache 1 MB | 2 (+1 lost: menu) | same | 0 | $407E | same |
+| build I, 2 MB chip, cache 16 KB | 3 | same | 0 | $407E | same |
+
+One value everywhere.  The E-clock count is the window's length in colour clocks / 5 + 7.6-7.8 (the
+few instructions between the beam reads and the timer start / stop).  The earlier 702,081-706,051
+readings (stage 1, also on the phase-2 bitstream, and the first runs of stage 2) belong to the old
+start and are not a machine effect: the E clock is a free-running /40 divider of the gated clock
+(`amiga_clk.v`), nothing outside the machine clock feeds the CIAs.  The explanation that fits the
+numbers (not separately proven): the old test started the copper with COPJMP1 at the takeover
+moment; when that was after line $40, the copper's WAIT $40 was already past, its interrupt came
+right after the INTREQ clear, the "sync" STOP woke at once and the 50-frame window started mid-frame
+(short by a takeover-dependent 0.31-0.59 frame).  "Other entry positions" (0 / 127-129 / 256 by
+boot) is a running count of a deterministic per-frame pattern read at slightly different frame
+numbers (1,308-1,321), not a variation of the machine.
+
+**Five demos with the chip RAM in DDR3** (build J, cache 1 MB, Kickstart 1.3, 512K + 512K,
+flicker-free on; `aexp_demo_test.py`): SOTA, Enigma, Arte, Eon (2 disks) and Batman Rises (2 disks)
+ran through; every sampled frame (every 10 s) differs from the one before (14, 14, 17, 32 and 41 of
+44 distinct; Batman's equal ones are its waiting and black screens).  Stall statistics in 30 s
+windows over the whole run: 40 windows with 0 stalls; the others hold a boot (16,383-16,385 fills
+= every line once, 0.80 us each) or the 262 us flush at a full reset.  A 120 s HDMI clip of the
+determinism test in cache mode (`frame_counter_clip.py`): 6000 frames, 6000 decoded, the counter
+advanced by exactly 1 from each frame to the next, 0 mismatching frames.  (An earlier run on build
+H lost Enigma to the reset freeze of A; not counted.)
+
+**Audio FIFO: not built.**  In the A500 configurations the full cache holds all of chip and slow
+RAM: after the boot's first touch of every line (16,384 fills = 13 ms of stall, during Kickstart's
+memory clear, before any sound) there are no misses at all.  Stall clusters beyond stage 1's
+inaudible level exist only with the artificial small caches (16 KB / 2 KB: the machine falls
+behind real time; test settings).  The FIFO belongs to stage 3, where 2 MB chip RAM and a faster
+CPU make misses normal.
+
+## D. Resources, timing, and what stage 3 needs
+
+Build J (all of the above with the debug captures): timing met, WNS +0.072 ns, WHS +0.027 ns.
+436 / 445 block RAM tiles (no new block RAM: the cache data RAM is the former chip / slow RAM),
+57.3 k LUTs (phase 2: 44.2 k), of which 16.6 k LUT RAM (most of the growth: the cache tags,
+2 x 8192 x 18 bits), 34.1 k registers.
+
+Stage 3 (AGA + 68020) needs from this stage: the cache with stall (done, exact, 2 MB chip shown);
+a faster fill path (critical word first, install while the beats arrive, write-back buffer:
+0.8-1.0 us per miss today); the prefetchers from the Agnus / Alice registers (not built); the
+audio FIFO; and block RAM for AGA (palette, wider fetch) -- 9 tiles are left, so the Kickstart
+(64 tiles today, 128 for 512 KB) should move into DDR3 behind the cache.

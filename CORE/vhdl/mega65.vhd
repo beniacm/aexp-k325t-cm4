@@ -1008,13 +1008,14 @@ begin
    main_cc_bhe_n    <= '0' when amiga_chip_scrub = '1' else main_ram_bhe_n;
    main_cc_ble_n    <= '0' when amiga_chip_scrub = '1' else main_ram_ble_n;
 
-   -- result mailbox (see the port): snoops chip RAM writes to word addresses $60-$7F
+   -- result mailbox (see the port): snoops chip RAM writes to $C0-$FF (main_cc_addr = byte address
+   -- bits 20..1; a first version compared bits 6..5 and caught $60-$7F, the autovectors)
    p_mbox : process (main_clk)
       variable i : natural range 0 to 31;
    begin
       if rising_edge(main_clk) then
          if main_cc_we_n = '0' and main_cc_chip_sel = '1' and amiga_chip_scrub = '0' and
-            main_cc_addr(20 downto 7) = "00000000000000" and main_cc_addr(6 downto 5) = "11" then
+            main_cc_addr(20 downto 8) = "0000000000000" and main_cc_addr(7 downto 6) = "11" then
             i := to_integer(unsigned(main_cc_addr(5 downto 1)));
             if main_cc_bhe_n = '0' then main_mbox(16 * i + 15 downto 16 * i + 8) <= main_cc_wdata(15 downto 8); end if;
             if main_cc_ble_n = '0' then main_mbox(16 * i + 7 downto 16 * i) <= main_cc_wdata(7 downto 0); end if;

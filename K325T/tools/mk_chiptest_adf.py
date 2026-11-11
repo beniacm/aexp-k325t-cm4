@@ -14,6 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mk_stalltest_adf as ST
 
 ROWS = 6
+# where the rows are copied for the result mailbox: $C0 (default); $60 (CHIPTEST_MBOX=0x60, the
+# interrupt autovectors -- harmless here, interrupts are off) for the first K325T mailbox builds,
+# which snooped $60-$7F by mistake
+MBOX = os.environ.get("CHIPTEST_MBOX", "0xc0")
 ASM = r"""
         .text
 start:  lea     super(%pc),%a0
@@ -109,7 +113,7 @@ rdone:  add.l   %d7,r_err-vars(%a4)
         addq.l  #1,r_pass-vars(%a4)
         not.l   %d3
         lea     vars(%pc),%a0               | the rows also to $C0 (result mailbox: stallmon.py mbox)
-        lea     0xc0.w,%a1
+        lea     MBOX.w,%a1
         moveq   #ROWS-1,%d0
 mb:     move.l  (%a0)+,(%a1)+
         dbra    %d0,mb
@@ -149,7 +153,7 @@ NAMES = ["marker", "passes", "errors", "first_error", "maxlocmem", "last_pass_er
 
 def bootblock():
     with tempfile.TemporaryDirectory() as d:
-        open(d + "/s.s", "w").write(ASM.replace("ROWS", str(ROWS)))
+        open(d + "/s.s", "w").write(ASM.replace("ROWS", str(ROWS)).replace("MBOX", MBOX))
         subprocess.check_call(["m68k-linux-gnu-as", "-m68000", "-o", d + "/s.o", d + "/s.s"])
         subprocess.check_call(["m68k-linux-gnu-objcopy", "-O", "binary", d + "/s.o", d + "/s.bin"])
         c = open(d + "/s.bin", "rb").read()
