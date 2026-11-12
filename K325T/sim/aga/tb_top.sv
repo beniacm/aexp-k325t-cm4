@@ -244,18 +244,36 @@ module tb_top (
     end
   end
   // shadow check: at the clk7_en edge that ends a chip read slot the cache's data must equal the
-  // shadow memory (every chip write is also applied to chipmem below)
-  always @(posedge clk) if (use_cache && clk7_en && !ram_oe_n && is_chip) begin
+  // shadow memory (every chip write is also applied to chipmem below).  Not while the Amiga is held
+  // in reset (--reset-at): the bus then shows read strobes without a slot (seen: chip word 0 reading
+  // a ROM word; nothing consumes it)
+  always @(posedge clk) if (use_cache && clk7_en && !ram_oe_n && is_chip && !rst_ext) begin
     chk_n <= chk_n + 1;
-    if (cc_rdata != chipmem[cw]) chk_bad <= chk_bad + 1;
+    if (cc_rdata != chipmem[cw]) begin
+      chk_bad <= chk_bad + 1;
+      if (chk_bad < 16) $display("cache check: chip word %05x cache %04x shadow %04x", cw, cc_rdata, chipmem[cw]);
+    end
     if (cc_rdata48 != {chipmem[{cw[19:2], cw[1:0] + 2'd1}], chipmem[{cw[19:2], cw[1:0] + 2'd2}],
                        chipmem[{cw[19:2], cw[1:0] + 2'd3}]}) chk48_bad <= chk48_bad + 1;
-  end else if (use_cache && clk7_en && !ram_oe_n && is_kick) begin
+  end else if (use_cache && clk7_en && !ram_oe_n && is_kick && !rst_ext) begin
     // stage 2b: the Kickstart through the cache, checked against the bench's ROM model
     chk_n <= chk_n + 1;
-    if (cc_rdata != kickmem[rw18]) chk_bad <= chk_bad + 1;
+    if (cc_rdata != kickmem[rw18]) begin
+      chk_bad <= chk_bad + 1;
+      if (chk_bad < 16) $display("cache check: ROM word %05x cache %04x rom %04x", rw18, cc_rdata, kickmem[rw18]);
+    end
     // stage 3: word A+1 of a 32-bit ROM read (the overlay reset vectors)
     if (ram_long && cc_rdata48[47:32] != kickmem[{rw18[17:2], rw18[1:0] + 2'd1}]) chk48_bad <= chk48_bad + 1;
+  end
+  // +wdbg: every chip write to the first 4 words, every reset edge (debug of a cache/shadow mismatch)
+  reg wdbg = 0; initial wdbg = $test$plusargs("wdbg");
+  reg rst_q = 0;
+  always @(posedge clk) if (wdbg) begin
+    rst_q <= rst_ext;
+    if (rst_ext != rst_q) $display("wdbg %0t rst_ext %0d", $time, rst_ext);
+    if (!ram_we_n && is_chip && cw < 4)
+      $display("wdbg %0t write word %0d data %04x bhe %0d ble %0d long %0d din2 %04x miss %0d cpu_reset_n %0d dbr? oe %0d",
+               $time, cw, ram_wdata, ram_bhe_n, ram_ble_n, ram_long, cpu_din2, miss, cpu_reset_n, ram_oe_n);
   end
   reg sel_cache_q = 0;
   always @(posedge clk) sel_cache_q <= use_cache & (is_chip | is_kick);

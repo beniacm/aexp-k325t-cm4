@@ -8,7 +8,8 @@
 #   case A (default): start with a stale held word (+dout2init=1234): Kickstart 3.1 must still boot:
 #           ExecBase (the long at $4) set and in chip RAM after FRAMES_A frames.
 #   case B (--full):  a real reset after 32-bit activity (--reset-at 60), then the Kickstart must
-#           reach its insert-disk screen again (more than 2 colours in the frame RESET+190).
+#           reach its insert-disk screen again (more than 2 colours at frame 310 = reset + 250; without
+#           the reset the screen appears between frames 200 and 250).
 # TB = a full bench build (obj_dir/tb with the cache, not FAST_A500), KICK = Kickstart 3.1 40.068
 # (A1200; the user's own ROM, never in the repository).  68EC020 = --cpu 3 --chipset 0x10 (AGA)
 # --stock, chip RAM through the cache (--cache --mem 3).  Prints PASS/FAIL per case; exit 1 on FAIL.
@@ -31,10 +32,10 @@ esac
 echo "case A (stale word A+1 = \$1234 at power-up): ExecBase \$$eb after $FRAMES_A frames: $r"
 [ $r = PASS ] || rc=1
 if [ "$FULL" = "--full" ]; then
-  nice -n 19 "$TB" $M --frames 251 --reset-at 60 --shot "$OUT/b" --shot-frames 250 > "$OUT/b.log" 2>&1
-  n=$(/usr/bin/python3 -c "from PIL import Image; print(len(Image.open('$OUT/b_0250.ppm').getcolors(1<<20)))" 2>/dev/null)
+  nice -n 19 "$TB" $M --frames 311 --reset-at 60 --shot "$OUT/b" --shot-frames 310 > "$OUT/b.log" 2>&1
+  n=$(/usr/bin/python3 -c "from PIL import Image; print(len(Image.open('$OUT/b_0310.ppm').getcolors(1<<20)))" 2>/dev/null)
   [ "${n:-0}" -gt 2 ] && r=PASS || r=FAIL
-  echo "case B (reset at frame 60, after 32-bit activity): frame 250 has ${n:-?} colours: $r"
+  echo "case B (reset at frame 60, after 32-bit activity): frame 310 has ${n:-?} colours: $r"
   [ $r = PASS ] || rc=1
 fi
 exit $rc
