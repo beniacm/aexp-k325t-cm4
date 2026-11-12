@@ -140,3 +140,6 @@ set_false_path -to [get_cells -hierarchical -filter {NAME =~ i_iprog/addr_s_reg*
 ## the core's result mailbox (main_clk, changes only when the Amiga writes $C0-$FF) read by lat_meter
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/main_mbox_reg*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
+## the cache's prefetch counters (source clock) read by lat_meter (quasi-static, read twice)
+set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/pf_iss_reg* || NAME =~ CORE/i_chip_cache/pf_use_reg* || NAME =~ CORE/i_chip_cache/pf_wst_reg*}] \
+               -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
