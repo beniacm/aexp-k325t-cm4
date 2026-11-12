@@ -10,6 +10,9 @@
  *   CAP_PPM=PREFIX    every CAP_PPM_EVERY-th frame also as PREFIX_<frame>.ppm (raw, for checks)
  *   CAP_FRAMES=N      after N frames: SIGINT to the process (FS-UAE quits cleanly)
  *   CAP_FPS=F         frame rate written into the video (default 50 / CAP_SKIP)
+ *   CAP_CLICK=N[,N..] scripted input: a left mouse button press at swap N, released 6 swaps later
+ *                     (RN: the right button)
+ *                     (SDL_PushEvent into the emulator's own event queue; SDL2 and SDL3 layouts)
  * Build: gcc -O2 -shared -fPIC -o fsuae_capture.so fsuae_capture.c -ldl
  */
 #define _GNU_SOURCE
@@ -38,8 +41,54 @@ static int vw = 0, vh = 0;
 static unsigned char *buf = NULL;
 static int v0w = 0, v0h = 0;
 static long nvid = 0, nskip = 0;
+static int sdl2 = 0;       /* SDL2 (FS-UAE) or SDL3 (WinUAE): the event layouts differ */
 static int finished = 0;   /* after CAP_FRAMES: no more capture (FS-UAE still swaps while it quits;
                               a new ffmpeg would truncate the video) */
+
+/* scripted mouse button (CAP_CLICK) */
+typedef int (*push_fn)(void *);
+typedef unsigned (*winid_fn)(void *);
+static void push_button(void *win, int down, int button)
+{
+    static push_fn push = NULL;
+    static winid_fn winid = NULL;
+    if (!push) {
+        push = (push_fn)dlsym(RTLD_NEXT, "SDL_PushEvent");
+        winid = (winid_fn)dlsym(RTLD_NEXT, "SDL_GetWindowID");
+    }
+    unsigned char ev[128];
+    memset(ev, 0, sizeof ev);
+    unsigned type = down ? 0x401 : 0x402;    /* SDL_MOUSEBUTTONDOWN/UP = SDL_EVENT_MOUSE_BUTTON_DOWN/UP */
+    unsigned id = winid ? winid(win) : 0;
+    memcpy(ev, &type, 4);
+    if (sdl2) {   /* type, timestamp, windowID, which, button, state, clicks, pad, x, y */
+        memcpy(ev + 8, &id, 4);
+        ev[16] = button; ev[17] = down ? 1 : 0; ev[18] = 1;
+        int xy[2] = {100, 100}; memcpy(ev + 20, xy, 8);
+    } else {      /* type, reserved, Uint64 timestamp, windowID, which, button, down, clicks, pad, x, y */
+        memcpy(ev + 16, &id, 4);
+        ev[24] = button; ev[25] = down ? 1 : 0; ev[26] = 1;
+        float xy[2] = {100.0f, 100.0f}; memcpy(ev + 28, xy, 8);
+    }
+    if (push) {
+        int r = push(ev);
+        fprintf(stderr, "[capture] swap %ld: mouse button %d %s (push %d)\n", frame, button, down ? "down" : "up", r);
+    }
+}
+
+static void click(void *win)
+{
+    const char *c = getenv("CAP_CLICK");
+    if (!c) return;
+    while (*c) {
+        int button = 1;                       /* SDL_BUTTON_LEFT; SDL_BUTTON_RIGHT = 3 */
+        if (*c == 'R') { button = 3; c++; }
+        long n = strtol(c, (char **)&c, 10);
+        if (frame == n) push_button(win, 1, button);
+        if (frame == n + 6) push_button(win, 0, button);
+        if (*c == ',') c++; else break;
+    }
+}
 
 void SDL_GL_SwapWindow(void *win)
 {
@@ -51,6 +100,7 @@ void SDL_GL_SwapWindow(void *win)
     if (!real) {
         real = (swap_fn)dlsym(RTLD_NEXT, "SDL_GL_SwapWindow");
         getsize = (getsize_fn)dlsym(RTLD_NEXT, "SDL_GL_GetDrawableSize");        /* SDL2 (FS-UAE) */
+        sdl2 = getsize != NULL;
         if (!getsize) getsize = (getsize_fn)dlsym(RTLD_NEXT, "SDL_GetWindowSizeInPixels"); /* SDL3 (WinUAE) */
         getproc_fn gp = (getproc_fn)dlsym(RTLD_NEXT, "SDL_GL_GetProcAddress");
         rp = (readpixels_fn)gp("glReadPixels");
@@ -104,6 +154,7 @@ void SDL_GL_SwapWindow(void *win)
         }
     }
     real(win);
+    click(win);
     frame++;
     if (maxf && frame == maxf) {
         if (vid) { pclose(vid); vid = NULL; }

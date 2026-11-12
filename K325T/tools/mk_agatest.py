@@ -19,7 +19,7 @@ Usage:
                                         OUTDIR/bootrom.bin (bench boot ROM that jumps to ORG)
   mk_agatest.py bootrom OUT ORG [--icache]  a bench boot ROM that jumps to ORG (e.g. the DDR3 study's
                                         workload programs at 0x1E0000)
-  mk_agatest.py check TEST FRAME [--xscale N]   compare a frame (PPM from the bench: 2 columns
+  mk_agatest.py check TEST FRAME [--xscale N] [--yscale N] [--settle N]   compare a frame (PPM from the bench: 2 columns
                                         per lores pixel; PNG from FS-UAE: give --xscale)
 """
 import json, os, struct, subprocess, sys, tempfile
@@ -489,8 +489,9 @@ def load_frame(fn):
     return im
 
 
-def check(name, fn, xscale=2, yscale=1, outdir=None):
-    """xscale = frame columns per LORES pixel (bench: 2), yscale = rows per line"""
+def check(name, fn, xscale=2, yscale=1, outdir=None, settle=0):
+    """xscale = frame columns per LORES pixel (bench: 2), yscale = rows per line; settle = rows /
+    columns a scaled (filtered) emulator picture needs before an edge is solid (WinUAE: 2)"""
     exp = json.load(open(os.path.join(outdir, name + ".json"))) if outdir else None
     im = load_frame(fn)
     Wd, Hd = im.size
@@ -505,7 +506,8 @@ def check(name, fn, xscale=2, yscale=1, outdir=None):
         org = None
         for y in range(Hd):
             for x in range(int(bwc), int(Wd - bwc)):
-                if px[x, y] == c10 and px[int(x + bwc / 2), y] == c10 and px[x - 1, y] != c10:
+                if px[x, y] == c10 and px[int(x + bwc / 2), y] == c10 and px[x - 1, y] != c10 and \
+                        (not settle or (y + settle < Hd and px[x + settle, y + settle] == c10)):
                     # HAM8: the block's settled colour starts at its 4th pixel
                     org = (x - bwc - (3 * xscale if "ham_seq" in exp else 0), y); break
             if org: break
@@ -592,9 +594,10 @@ if __name__ == "__main__":
         ys = 1
         if "--yscale" in sys.argv:
             ys = float(sys.argv[sys.argv.index("--yscale") + 1])
+        st = int(sys.argv[sys.argv.index("--settle") + 1]) if "--settle" in sys.argv else 0
         d = os.path.dirname(os.path.abspath(sys.argv[3]))
         if "--dir" in sys.argv:
             d = sys.argv[sys.argv.index("--dir") + 1]
-        print(json.dumps(check(sys.argv[2], sys.argv[3], xs, ys, d), default=str))
+        print(json.dumps(check(sys.argv[2], sys.argv[3], xs, ys, d, st), default=str))
     else:
         print(__doc__)

@@ -5,13 +5,14 @@ FS-UAE (distribution package, 3.1.66) with SDL_VIDEODRIVER=offscreen and fsuae_c
 (LD_PRELOAD, built from fsuae_capture.c) reading back every frame:
 
   run_fsuae.py NAME OUTDIR --frames N [--floppy ADF ...] [--hd DIR_OR_HDF [--hd-label NAME]]
-               [--video] [--ppm-every K] [--window WxH] [--opt key=value ...]
+               [--video] [--ppm-every K] [--window WxH] [--click [R]N,...] [--opt key=value ...]
 
 A1200 quickstart model (68EC020 14 MHz cycle-exact, AGA, 2 MB chip, as FS-UAE's "A1200"),
 the user's Kickstart 3.1 A1200 ROM read in place (~/Downloads/kick40068.A1200), window
 1440x1152 with nearest-neighbour scaling (3.828125 px per lores pixel, zoom = full), no sound
 output.  Results in OUTDIR: NAME.mkv (with --video, 25 fps = every 2nd frame), NAME_<frame>.ppm
-every K frames, NAME.fs-uae (config), NAME.log (FS-UAE's log).  One emulator at a time, nice 19.
+every K frames (--click: scripted mouse button presses at those swaps, R = right button),
+NAME.fs-uae (config), NAME.log (FS-UAE's log).  One emulator at a time, nice 19.
 """
 import argparse, os, shutil, subprocess, sys, tempfile
 
@@ -31,6 +32,7 @@ def main():
     ap.add_argument("--opt", nargs="*", default=[])
     ap.add_argument("--window", default="1440x1152")
     ap.add_argument("--hd-label")
+    ap.add_argument("--click", default="")
     a = ap.parse_args()
     if not os.path.exists(CAP):
         subprocess.check_call(["gcc", "-O2", "-shared", "-fPIC", "-o", CAP,
@@ -56,6 +58,8 @@ def main():
                CAP_FRAMES=str(a.frames))
     if a.video:
         env.update(CAP_VIDEO=os.path.join(a.outdir, a.name + ".mkv"), CAP_SKIP="2")
+    if a.click:
+        env.update(CAP_CLICK=a.click)
     if a.ppm_every:
         env.update(CAP_PPM=os.path.join(a.outdir, a.name), CAP_PPM_EVERY=str(a.ppm_every))
     with open(os.path.join(a.outdir, a.name + ".stdout"), "w") as so:
