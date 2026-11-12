@@ -7,6 +7,11 @@
 // (chip RAM at the end), --stop ADDR VALUE (stop at the first frame end where the chip-RAM long
 // at ADDR holds VALUE), --cputrace FILE FROM TO (CPU requests in frames FROM..TO), --preload FILE
 // ADDR (into chip RAM before the start; with mk_agatest.py's boot ROM no Kickstart is needed).
+// Floppy: --adf FILE (df0, served by the core's adf_track_engine), --adf2 FRAME FILE (eject at FRAME,
+// insert FILE 25 frames later: multi-disk demos), --floppy-turbo (0xF7 bit 0, MiSTer's fast floppy).
+// --shot-last: always write the picture of the last frame (also when --stop ends the run).
+// Plusargs of tb_top.sv: +flpdbg (floppy-channel frames and image reads), +dskdbg (every disk DMA
+// write to chip RAM, address and data: decode them as MFM to check what Paula received).
 #include "Vtb_top.h"
 #include "Vtb_top___024root.h"
 #include "Vtb_top_tb_top.h"
@@ -40,6 +45,25 @@ static int g_debug_ticks = 0; // print per-tick state for this many ticks after 
 static uint64_t g_debug_from = ~0ull;
 static int g_last_vpos = -1;
 static uint32_t g_frame = 0;
+
+// df0 image (words as in the board's HyperRAM), read by tb_top's Avalon slave for adf_track_engine
+static std::vector<uint16_t> g_adf;
+static uint64_t g_adf_reads = 0;
+extern "C" int adf_rd(int a) {
+  if (g_adf_reads++ == 0) fprintf(stderr, "df0: first image read at frame %u (word %d)\n", g_frame, a);
+  return (a >= 0 && (size_t)a < g_adf.size()) ? g_adf[a] : 0;
+}
+static int load_adf(const char* fn) {
+  FILE* f = fopen(fn, "rb");
+  if (!f) { perror(fn); exit(1); }
+  std::vector<uint8_t> b(2 << 20); size_t n = fread(b.data(), 1, b.size(), f); fclose(f);
+  if (n % 5632 || n / 5632 < 160 || n / 5632 > 166) { fprintf(stderr, "%s: not an ADF (%zu bytes)\n", fn, n); exit(1); }
+  g_adf.assign(n / 2, 0);
+  // HyperRAM layout of the board (adf_mount_wrapper): the first byte of each pair in bits 7:0
+  for (size_t i = 0; i < n; i += 2) g_adf[i / 2] = (uint16_t)(b[i] | (b[i + 1] << 8));
+  fprintf(stderr, "df0: %s, %zu tracks\n", fn, n / 5632);
+  return (int)(n / 5632);
+}
 
 extern "C" void trace_tick(int phase, int addr, int oe_n, int we_n, int src, int fm, int hpos,
                            int vpos, int dbr, int c1c3) {
@@ -101,6 +125,8 @@ int main(int argc, char** argv) {
   const char* dump_fn = nullptr; uint32_t dump_addr = 0, dump_len = 0;
   int64_t stop_addr = -1; uint32_t stop_val = 0;
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
+  const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
+  bool shot_last = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto nx = [&]() { return argv[++i]; };
@@ -132,6 +158,10 @@ int main(int argc, char** argv) {
     else if (a == "--dump") { dump_addr = strtoul(nx(), 0, 0); dump_len = strtoul(nx(), 0, 0); dump_fn = nx(); }
     else if (a == "--stop") { stop_addr = strtoll(nx(), 0, 0); stop_val = strtoul(nx(), 0, 0); }
     else if (a == "--cputrace") { cput_fn = nx(); cput_from = atoi(nx()); cput_to = atoi(nx()); }
+    else if (a == "--adf") adf_fn = nx();
+    else if (a == "--adf2") { adf2_frame = atoi(nx()); adf2_fn = nx(); }
+    else if (a == "--floppy-turbo") fturbo = true;
+    else if (a == "--shot-last") shot_last = true;
     else if (a == "--debug") { g_debug_ticks = atoi(nx()); g_debug_from = strtoull(nx(), 0, 0); }
   }
   Vtb_top* top = new Vtb_top;
@@ -151,7 +181,9 @@ int main(int argc, char** argv) {
     }
     fprintf(stderr, "preloaded %s: %zu bytes at %06x\n", preload_fn, n, preload_addr);
   }
-  top->cfg_chipset = chipset; top->cfg_cpu = cpu; top->cfg_mem = mem;
+  top->cfg_chipset = chipset; top->cfg_cpu = cpu; top->cfg_mem = mem; top->cfg_floppy = fturbo ? 1 : 0;
+  top->disk_mounted = 0; top->disk_tracks = 0;
+  if (adf_fn) { top->disk_tracks = load_adf(adf_fn); top->disk_mounted = 1; }
   top->rst_ext = 1; top->bd_we = 0;
   std::vector<uint8_t> prog;
   if (inj) {
@@ -252,6 +284,8 @@ int main(int argc, char** argv) {
           fprintf(stderr, "trace starts at frame %u tick %llu\n", g_frame,
                   (unsigned long long)g_tick);
         }
+        if (adf2_fn && (int)g_frame == adf2_frame) { top->disk_mounted = 0; fprintf(stderr, "df0 ejected (frame %u)\n", g_frame); }
+        if (adf2_fn && (int)g_frame == adf2_frame + 25) { top->disk_tracks = load_adf(adf2_fn); top->disk_mounted = 1; }
         bool want = shot && shot_every && g_frame % shot_every == 0;
         for (int f : shot_frames) if (shot && (int)g_frame == f) want = true;
         if (want) {
@@ -279,9 +313,24 @@ int main(int argc, char** argv) {
         if (stop_addr >= 0) {
           uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];
           uint32_t v = ((uint32_t)cm[stop_addr >> 1] << 16) | cm[(stop_addr >> 1) + 1];
-          if (v == stop_val) { fprintf(stderr, "stop word seen at frame %u\n", g_frame); break; }
+          if (v == stop_val) {
+            fprintf(stderr, "stop word seen at frame %u\n", g_frame);
+            if (shot_last && shot && !want) {
+              char fn[512]; snprintf(fn, sizeof fn, "%s_%04u.ppm", shot, g_frame);
+              FILE* f = fopen(fn, "wb");
+              fprintf(f, "P6 %d %d 255\n", W, H); fwrite(fb.data(), 1, fb.size(), f); fclose(f);
+            }
+            break;
+          }
         }
-        if ((int)g_frame >= frames) break;
+        if ((int)g_frame >= frames) {
+          if (shot_last && shot && !want) {
+            char fn[512]; snprintf(fn, sizeof fn, "%s_%04u.ppm", shot, g_frame);
+            FILE* f = fopen(fn, "wb");
+            fprintf(f, "P6 %d %d 255\n", W, H); fwrite(fb.data(), 1, fb.size(), f); fclose(f);
+          }
+          break;
+        }
       }
       g_last_vpos = vpos;
     }

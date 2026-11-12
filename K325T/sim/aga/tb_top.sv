@@ -27,6 +27,10 @@ module tb_top (
   input  wire [15:0] cfg_cpu,       // 0xF4 payload
   input  wire [15:0] cfg_mem,       // 0xF5 payload  (CC=11: 2 MB chip)
   output wire        cfg_done,
+  input  wire [15:0] cfg_floppy,    // 0xF7 payload  (bit 0: floppy turbo)
+  // df0: the core's adf_track_engine, image words served by the C++ driver (DPI adf_rd)
+  input  wire        disk_mounted,
+  input  wire [7:0]  disk_tracks,
   // backdoor memory port (C++ writes test programs while the CPU runs)
   input  wire        bd_we,
   input  wire [20:0] bd_addr,       // chip word address
@@ -73,7 +77,7 @@ module tb_top (
   endfunction
   function [15:0] seq_pl(input [3:0] i);
     case (i) 0: seq_pl=16'h0007; 1: seq_pl=cfg_chipset; 2: seq_pl=cfg_cpu; 3: seq_pl=cfg_mem;
-             7: seq_pl=16'h0008; default: seq_pl=16'h0000; endcase
+             5: seq_pl=cfg_floppy; 7: seq_pl=16'h0008; default: seq_pl=16'h0000; endcase
   endfunction
   always @(posedge clk) begin
     io_strobe <= 0;
@@ -91,6 +95,36 @@ module tb_top (
       default: ;
     endcase
   end
+
+  // ---------------- df0: adf_track_engine (as main.vhd: it owns IO_STROBE/IO_DIN after the replay) ----
+  wire        io_fpga, eng_strobe;
+  wire [15:0] eng_din;
+  wire        avm_read, avm_write;
+  wire [31:0] avm_address;
+  wire [15:0] avm_writedata;
+  reg  [15:0] avm_rdata = 0;
+  reg         avm_rvalid = 0;
+  import "DPI-C" function int adf_rd(input int addr);
+  adf_engine_tb i_adf (
+    .clk(clk), .reset(rst_ext), .bus_grant(done), .disk_mounted(disk_mounted), .disk_tracks(disk_tracks),
+    .io_fpga(io_fpga), .io_strobe(eng_strobe), .io_din(eng_din), .io_dout(io_dout), .io_wait(io_wait),
+    .avm_write(avm_write), .avm_read(avm_read), .avm_address(avm_address), .avm_writedata(avm_writedata),
+    .avm_readdata(avm_rdata), .avm_readdatavalid(avm_rvalid), .avm_waitrequest(1'b0));
+  always @(posedge clk) begin
+    avm_rvalid <= 0;
+    if (avm_read) begin avm_rdata <= adf_rd(avm_address)[15:0]; avm_rvalid <= 1; end
+  end
+  // +flpdbg: the first floppy-channel frames and image reads
+  reg flpdbg = 0; initial flpdbg = $test$plusargs("flpdbg");
+  reg io_fpga_q = 0; integer nfr = 0, nrd = 0, nst = 0;
+  always @(posedge clk) if (flpdbg) begin
+    io_fpga_q <= io_fpga;
+    if (eng_strobe && io_fpga) begin nst <= nst + 1; if (nst < 400 || io_dout != 16'h0000 && io_dout != 16'h4489 && nst < 200000) $display("FLP strobe din=%04x dout=%04x wait=%0d v=%0d", eng_din, io_dout, io_wait, vpos); end
+    if (io_fpga && !io_fpga_q) begin nfr <= nfr + 1; if (nfr < 60 || nfr % 1000 == 0) $display("FLP frame open v=%0d", vpos); end
+    if (avm_read) begin nrd <= nrd + 1; if (nrd < 8) $display("FLP read %08x", avm_address); end
+  end
+  wire        mm_strobe = io_strobe | eng_strobe;
+  wire [15:0] mm_din    = done ? eng_din : io_din;
 
   // ---------------- CPU ----------------
   wire [23:1] cpu_addr;
@@ -251,7 +285,7 @@ module tb_top (
     ._joy1(16'hFFFF), ._joy2(16'hFFFF), ._joy3(16'hFFFF), ._joy4(16'hFFFF),
     .joya1(16'h0), .joya2(16'h0), .mouse_btn(3'b000), .kms_level(1'b0), .kbd_mouse_type(2'b00),
     .kbd_mouse_data(8'h00), .kbd_ack(), .pwr_led(), .fdd_led(), .hdd_led(), .rtc(65'h0),
-    .IO_UIO(io_uio), .IO_FPGA(1'b0), .IO_STROBE(io_strobe), .IO_WAIT(io_wait), .IO_DIN(io_din),
+    .IO_UIO(io_uio), .IO_FPGA(io_fpga), .IO_STROBE(mm_strobe), .IO_WAIT(io_wait), .IO_DIN(mm_din),
     .IO_DOUT(io_dout),
     ._hsync(hsync_n), ._vsync(vsync_n), ._csync(), .field1(), .lace(), .hblank(hblank),
     .vblank(vblank), .red(red), .green(green), .blue(blue), .ar(), .scanline(), .ce_pix(),
@@ -298,6 +332,13 @@ module tb_top (
     trace_tick({30'b0, clk7_en, clk7n_en}, {9'b0, ram_addr23, ram_addr}, {31'b0, ram_oe_n},
                {31'b0, ram_we_n}, {28'b0, src}, {28'b0, sfm, bfm}, {23'b0, hpos}, {21'b0, vpos},
                {31'b0, minimig_inst.dbr}, {30'b0, c1, c3});
+  end
+  // +dskdbg: every disk DMA write to chip RAM (address, data)
+  reg dskdbg = 0; initial dskdbg = $test$plusargs("dskdbg");
+  reg dsk_we_q = 0;
+  always @(posedge clk) if (dskdbg) begin
+    dsk_we_q <= s_dsk && !ram_we_n;
+    if (s_dsk && !ram_we_n && !dsk_we_q) $display("DSKW %06x %04x", {ram_addr[20:1], 1'b0}, ram_wdata);
   end
   // copper debug (+copdbg): state at every start of frame
   reg copdbg = 0;
