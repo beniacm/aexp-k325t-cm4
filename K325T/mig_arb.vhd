@@ -12,9 +12,12 @@
 -- Grant: per command; client 0 whenever it has something to offer and client 1 is not locked.
 --
 -- Line port (client 0): lp_req with lp_we / lp_addr (app_addr units = 16-bit words, as avm_mig;
--- the 64-byte line's address, bits 4..0 ignored) / lp_wdata (512 bits, word 0 = bytes 0..15); lp_busy is '1' from the request until the
--- line is done; read data arrives as 4 x 128 bits on lp_rvalid / lp_rdata (word 0 first);
--- lp_done pulses with the last read word, or when the last write command is accepted.
+-- the 64-byte line's address) / lp_wdata (512 bits, word 0 = bytes 0..15); lp_busy is '1' from the
+-- request until the line is done.  Reads: lp_addr bits 4..3 name the 16-byte word to fetch first
+-- (critical word first; bits 2..0 ignored): the 4 commands go out as words c, c+1, c+2, c+3 (mod 4)
+-- and the data arrives in that order as 4 x 128 bits on lp_rvalid / lp_rdata.  Writes: bits 4..0
+-- ignored, word 0 first.  lp_done pulses with the last read word, or when the last write command
+-- is accepted.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -138,7 +141,11 @@ begin
             case lst is
                when L_IDLE =>
                   if lp_req = '1' then
-                     l_addr  <= unsigned(lp_addr(27 downto 5)) & "00000";
+                     if lp_we = '1' then
+                        l_addr <= unsigned(lp_addr(27 downto 5)) & "00000";
+                     else
+                        l_addr <= unsigned(lp_addr(27 downto 3)) & "000";   -- critical word first
+                     end if;
                      l_wdata <= lp_wdata;
                      l_cmd_n <= (others => '0');
                      l_rd_n  <= (others => '0');
@@ -146,7 +153,7 @@ begin
                   end if;
                when L_RD =>
                   if ca then
-                     l_addr  <= l_addr + 8;
+                     l_addr(4 downto 3) <= l_addr(4 downto 3) + 1;          -- wraps inside the line
                      l_cmd_n <= l_cmd_n + 1;
                      if l_cmd_n = 3 then lst <= L_WAIT_RD; end if;
                   end if;

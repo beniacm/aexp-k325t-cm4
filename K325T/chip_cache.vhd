@@ -30,6 +30,13 @@
 -- modulo the group: MiSTer's SDRAM burst order, minimig's chip48), with the same timing as rdata_o.
 -- Port B moves a line as 8 x 64 bits (was 32 x 16).  Addressing, tags, identity layout, stalls and
 -- write behaviour are unchanged.
+-- Fill path (stage 2b): the line is read critical word first (the 16-byte word with the missing
+-- access comes first) and installed while the words arrive; the tag is written when the request
+-- goes out, and an access to the line being filled waits only until its own 16-byte word is in
+-- (a beat count, Gray-coded from the ui_clk side).  A dirty victim is read out of the data RAM into
+-- a write-back buffer while the MIG fetches the new line, and written back after the fill: its
+-- write is no longer part of the stall.  A new miss waits until the engine is idle (fill and
+-- write-back done).
 -- Not in this version (study section 3): prefetchers, write miss without stall.
 --------------------------------------------------------------------------------
 library ieee;
@@ -112,34 +119,63 @@ architecture rtl of chip_cache is
    signal a_lane_q    : unsigned(1 downto 0) := (others => '0');   -- lane of the word in q
 
    -- miss handling (clk_i)
-   type mst_t is (M_IDLE, M_WAIT, M_INSTALL, M_FLUSH);
+   type mst_t is (M_IDLE, M_FLUSH);
    signal mst         : mst_t := M_IDLE;
-   signal req_tgl, ack_s1, ack_s2, ack_d : std_logic := '0';
+   signal req_tgl     : std_logic := '0';
+   signal done_s1, done_s2 : std_logic := '0';       -- the engine's job-done toggle, synchronised
+   signal done_seen   : std_logic := '0';
+   signal eng_idle    : std_logic;
+   signal bc_s1, bc_s2 : std_logic_vector(2 downto 0) := (others => '0');   -- beat count (Gray)
    attribute ASYNC_REG : string;
-   attribute ASYNC_REG of ack_s1, ack_s2 : signal is "TRUE";
+   attribute ASYNC_REG of done_s1, done_s2, bc_s1, bc_s2 : signal is "TRUE";
+   signal bc_bin      : unsigned(2 downto 0);
+   signal cbase       : unsigned(2 downto 0) := (others => '0');   -- beat count at the next fill
+   signal fill_base   : unsigned(2 downto 0) := (others => '0');
+   signal fill_act    : std_logic := '0';           -- a fill whose tag is installed is running
+   signal fill_set    : unsigned(12 downto 0) := (others => '0');
+   signal fill_way    : std_logic := '0';
+   signal fill_crit   : unsigned(1 downto 0) := (others => '0');
+   signal beats_ok    : unsigned(2 downto 0);       -- 16-byte words of that fill installed (0..4)
+   signal notready    : std_logic;
+   signal hitany      : std_logic;
    signal r_way       : std_logic := '0';
    signal r_set       : unsigned(12 downto 0) := (others => '0');
    signal r_line      : unsigned(15 downto 0) := (others => '0');
    signal r_vline     : unsigned(15 downto 0) := (others => '0');
    signal r_vdirty    : std_logic := '0';
+   signal r_crit      : unsigned(1 downto 0) := (others => '0');
    signal rnd         : unsigned(15 downto 0) := x"ACE1";
    signal fills, wbacks : unsigned(31 downto 0) := (others => '0');
    signal flush_idx   : unsigned(12 downto 0) := (others => '0');
    signal reset_d     : std_logic := '0';
+   signal rlatch      : std_logic := '0';
 
    -- fill engine (ui_clk)
-   type fst_t is (F_IDLE, F_EVRD, F_EVWR, F_EVWAIT, F_RDREQ, F_RDWAIT, F_WRB, F_ACK);
+   type fst_t is (F_IDLE, F_RUN, F_WBREQ, F_WBWAIT);
    signal fst         : fst_t := F_IDLE;
    signal req_s1, req_s2, req_d : std_logic := '0';
    attribute ASYNC_REG of req_s1, req_s2 : signal is "TRUE";
-   signal ack_tgl     : std_logic := '0';
+   signal done_tgl    : std_logic := '0';
+   signal bcnt        : unsigned(2 downto 0) := (others => '0');   -- beats installed, all fills
+   signal bcnt_g      : std_logic_vector(2 downto 0) := (others => '0');
+   signal rd_sent     : std_logic := '0';           -- the line read has been requested
+   signal rd_done     : std_logic := '0';           -- ... and all its words have arrived
+   signal got         : std_logic_vector(3 downto 0) := (others => '0');   -- line words arrived
+   signal f_rx        : unsigned(1 downto 0) := (others => '0');   -- words received so far
+   signal vic_done    : std_logic := '0';           -- the victim is in the write-back buffer
+   signal ins_n       : unsigned(2 downto 0) := (others => '0');   -- words installed (0..4)
+   signal ins_h       : std_logic := '0';           -- half (64 bits) of the word being installed
+   signal wb_line     : std_logic_vector(511 downto 0) := (others => '0');
+   signal e_way       : std_logic := '0';
+   signal e_set       : unsigned(12 downto 0) := (others => '0');
+   signal e_crit      : unsigned(1 downto 0) := (others => '0');
+   signal e_dirty     : std_logic := '0';
    signal b_addr      : std_logic_vector(16 downto 0) := (others => '0');   -- 64-bit group index
    signal b_wdata     : std_logic_vector(63 downto 0) := (others => '0');
    signal b_we        : std_logic := '0';
    signal b_q         : std_logic_vector(63 downto 0);
    signal f_cnt       : unsigned(5 downto 0) := (others => '0');
    signal f_line      : std_logic_vector(511 downto 0) := (others => '0');
-   signal f_w         : unsigned(1 downto 0) := (others => '0');
    signal lp_req      : std_logic := '0';
    signal lp_we       : std_logic := '0';
    signal lp_addr     : std_logic_vector(27 downto 0) := (others => '0');
@@ -155,7 +191,14 @@ begin
    hit0  <= '1' when t0(17) = '1' and unsigned(t0(15 downto 0)) = bline else '0';
    hit1  <= '1' when t1(17) = '1' and unsigned(t1(15 downto 0)) = bline else '0';
    hway  <= hit1;
-   miss  <= '1' when mode = '1' and (acc = '1' and hit0 = '0' and hit1 = '0') else
+   hitany <= hit0 or hit1;
+   -- the line being filled: its tag is valid already, but a 16-byte word not yet installed waits
+   bc_bin   <= unsigned(bc_s2) xor ('0' & unsigned(bc_s2(2 downto 1))) xor ("00" & bc_s2(2));
+   beats_ok <= bc_bin - fill_base;
+   notready <= '1' when fill_act = '1' and setn = fill_set and hway = fill_way and
+                        resize(bword(4 downto 3) - fill_crit, 3) >= beats_ok else '0';
+   eng_idle <= '1' when done_s2 = done_seen else '0';
+   miss  <= '1' when mode = '1' and acc = '1' and (hitany = '0' or notready = '1') else
             '1' when mode = '1' and mst = M_FLUSH else '0';
    miss_o <= miss;
    mode_o <= mode;
@@ -218,9 +261,11 @@ begin
    begin
       if rising_edge(clk_i) then
          rnd <= rnd(14 downto 0) & (rnd(15) xor rnd(13) xor rnd(12) xor rnd(10));
-         ack_s1 <= ack_tgl; ack_s2 <= ack_s1; ack_d <= ack_s2;
+         done_s1 <= done_tgl; done_s2 <= done_s1;
+         bc_s1 <= bcnt_g; bc_s2 <= bc_s1;
          reset_d <= reset_i;
          w0 := false; w1 := false; wa := setn; wd0 := t0; wd1 := t1;
+         if fill_act = '1' and beats_ok = 4 then fill_act <= '0'; end if;
          case mst is
             when M_FLUSH =>
                wa := flush_idx; wd0 := (others => '0'); wd1 := (others => '0'); w0 := true; w1 := true;
@@ -228,40 +273,50 @@ begin
                if flush_idx = SETS - 1 then mst <= M_IDLE; end if;
             when M_IDLE =>
                if mode = '1' and acc = '1' then
-                  if hit0 = '1' then
-                     if we_n_i = '0' and t0(16) = '0' then wd0 := t0(17) & '1' & t0(15 downto 0); w0 := true; end if;
-                  elsif hit1 = '1' then
-                     if we_n_i = '0' and t1(16) = '0' then wd1 := t1(17) & '1' & t1(15 downto 0); w1 := true; end if;
-                  else
-                     -- a miss: choose the victim, ask the fill engine
+                  if hitany = '1' then
+                     -- a hit (also on a filling line whose word is in): a write marks the line dirty
+                     if notready = '0' and we_n_i = '0' then
+                        if hit0 = '1' and t0(16) = '0' then wd0 := t0(17) & '1' & t0(15 downto 0); w0 := true; end if;
+                        if hit1 = '1' and t1(16) = '0' then wd1 := t1(17) & '1' & t1(15 downto 0); w1 := true; end if;
+                     end if;
+                  elsif eng_idle = '1' and fill_act = '0' then
+                     -- a miss: choose the victim, install the new tag now (its words follow), ask the
+                     -- fill engine; the access waits in notready until its 16-byte word is in
                      if t0(17) = '0' then way := '0';
                      elsif t1(17) = '0' then way := '1';
                      else way := rnd(0); end if;
                      r_way  <= way;
                      r_set  <= setn;
                      r_line <= bline;
+                     r_crit <= bword(4 downto 3);
                      if way = '0' then
                         r_vline <= unsigned(t0(15 downto 0)); r_vdirty <= t0(17) and t0(16);
+                        wd0 := "10" & std_logic_vector(bline); w0 := true;
+                        if t0(17) = '1' and t0(16) = '1' then wbacks <= wbacks + 1; end if;
                      else
                         r_vline <= unsigned(t1(15 downto 0)); r_vdirty <= t1(17) and t1(16);
+                        wd1 := "10" & std_logic_vector(bline); w1 := true;
+                        if t1(17) = '1' and t1(16) = '1' then wbacks <= wbacks + 1; end if;
                      end if;
-                     req_tgl <= not req_tgl;
-                     mst <= M_WAIT;
+                     fills     <= fills + 1;
+                     fill_act  <= '1';
+                     fill_set  <= setn;
+                     fill_way  <= way;
+                     fill_crit <= bword(4 downto 3);
+                     fill_base <= cbase;
+                     cbase     <= cbase + 4;
+                     done_seen <= not done_seen;     -- the engine is busy until it toggles back
+                     req_tgl   <= not req_tgl;
                   end if;
                end if;
-            when M_WAIT =>
-               if ack_s2 /= ack_d then mst <= M_INSTALL; end if;
-            when M_INSTALL =>
-               wa := r_set;
-               if r_way = '0' then wd0 := "10" & std_logic_vector(r_line); w0 := true;
-               else wd1 := "10" & std_logic_vector(r_line); w1 := true; end if;
-               fills <= fills + 1;
-               if r_vdirty = '1' then wbacks <= wbacks + 1; end if;
-               mst <= M_IDLE;
          end case;
          -- a full reset (its first tick): latch mode and size, invalidate all tags (a cold boot:
          -- dirty lines are dropped; the Amiga clears its memory after a cold boot anyway)
-         if reset_i = '1' and reset_d = '0' and (mst = M_IDLE or mst = M_FLUSH) then
+         -- (once per reset, and only with the fill engine idle: a fill must not write into the data
+         --  RAM after a switch to identity mode)
+         if reset_i = '0' then rlatch <= '0'; end if;
+         if reset_i = '1' and rlatch = '0' and eng_idle = '1' and fill_act = '0' then
+            rlatch <= '1';
             mode <= cache_on_i;
             case shrink_i is
                when "01" => smask <= to_unsigned(1023, 13);
@@ -282,71 +337,88 @@ begin
    lp_req_o   <= lp_req;
    lp_we_o    <= lp_we;
    lp_addr_o  <= lp_addr;
-   lp_wdata_o <= f_line;
+   lp_wdata_o <= wb_line;
 
    process (ui_clk_i)
-      variable la : unsigned(27 downto 0);
+      variable la   : unsigned(27 downto 0);
+      variable slot : integer range 0 to 3;
    begin
       if rising_edge(ui_clk_i) then
          req_s1 <= req_tgl; req_s2 <= req_s1; req_d <= req_s2;
          lp_req <= '0';
          b_we   <= '0';
+         bcnt_g <= std_logic_vector(bcnt xor ('0' & bcnt(2 downto 1)));
+         -- the line's words as they arrive (critical word first: arrival i is word e_crit + i)
+         if lp_rvalid_i = '1' and fst = F_RUN then
+            slot := to_integer(e_crit + f_rx);
+            f_line(128 * slot + 127 downto 128 * slot) <= lp_rdata_i;
+            got(slot) <= '1';
+            f_rx <= f_rx + 1;
+         end if;
+         if lp_done_i = '1' and fst = F_RUN then rd_done <= '1'; end if;
          case fst is
             when F_IDLE =>
                if req_s2 /= req_d then
+                  e_way <= r_way; e_set <= r_set; e_crit <= r_crit; e_dirty <= r_vdirty;
+                  got <= (others => '0'); f_rx <= (others => '0');
+                  rd_sent <= '0'; rd_done <= '0';
+                  vic_done <= not r_vdirty;
+                  ins_n <= (others => '0'); ins_h <= '0';
                   f_cnt <= (others => '0');
                   b_addr <= r_way & std_logic_vector(r_set) & "000";
-                  if r_vdirty = '1' then fst <= F_EVRD; else fst <= F_RDREQ; end if;
+                  fst <= F_RUN;
                end if;
-            when F_EVRD =>
-               -- read the victim's 8 x 64 bits from port B (one cycle of latency)
-               if f_cnt /= 0 then
-                  f_line(64 * to_integer(f_cnt - 1) + 63 downto 64 * to_integer(f_cnt - 1)) <= b_q;
+            when F_RUN =>
+               -- 1. the line read goes out first (critical word first)
+               if rd_sent = '0' and lp_busy_i = '0' and lp_req = '0' then
+                  la := G_DDR_BASE + shift_left(resize(r_line, 28), 5) + shift_left(resize(e_crit, 28), 3);
+                  lp_addr <= std_logic_vector(la);
+                  lp_we   <= '0';
+                  lp_req  <= '1';
+                  rd_sent <= '1';
                end if;
-               if f_cnt = 8 then
-                  fst <= F_EVWR;
-               else
-                  b_addr(2 downto 0) <= std_logic_vector(f_cnt(2 downto 0) + 1);
-                  f_cnt <= f_cnt + 1;
+               -- 2. meanwhile a dirty victim is read out of the data RAM into the write-back buffer
+               if vic_done = '0' then
+                  if f_cnt /= 0 then
+                     wb_line(64 * to_integer(f_cnt - 1) + 63 downto 64 * to_integer(f_cnt - 1)) <= b_q;
+                  end if;
+                  if f_cnt = 8 then
+                     vic_done <= '1';
+                  else
+                     b_addr(2 downto 0) <= std_logic_vector(f_cnt(2 downto 0) + 1);
+                     f_cnt <= f_cnt + 1;
+                  end if;
+               -- 3. then the words are installed in arrival order, 2 x 64 bits each
+               elsif ins_n /= 4 then
+                  slot := to_integer(e_crit + ins_n(1 downto 0));
+                  if got(slot) = '1' then
+                     b_addr  <= e_way & std_logic_vector(e_set) & std_logic_vector(to_unsigned(slot, 2)) & ins_h;
+                     if ins_h = '0' then
+                        b_wdata <= f_line(128 * slot + 63 downto 128 * slot);
+                     else
+                        b_wdata <= f_line(128 * slot + 127 downto 128 * slot + 64);
+                     end if;
+                     b_we  <= '1';
+                     ins_h <= not ins_h;
+                     if ins_h = '1' then
+                        ins_n <= ins_n + 1;
+                        bcnt  <= bcnt + 1;           -- seen by clk_i one cycle after the write
+                     end if;
+                  end if;
+               elsif rd_done = '1' then
+                  if e_dirty = '1' then fst <= F_WBREQ; else done_tgl <= not done_tgl; fst <= F_IDLE; end if;
                end if;
-            when F_EVWR =>
+            when F_WBREQ =>
+               -- 4. the victim goes back to DDR3 after the fill: not part of the stall
                if lp_busy_i = '0' and lp_req = '0' then
                   la := G_DDR_BASE + shift_left(resize(r_vline, 28), 5);
                   lp_addr <= std_logic_vector(la);
                   lp_we   <= '1';
                   lp_req  <= '1';
-                  fst     <= F_EVWAIT;
+                  fst     <= F_WBWAIT;
                end if;
-            when F_EVWAIT =>
-               if lp_done_i = '1' then fst <= F_RDREQ; end if;
-            when F_RDREQ =>
-               if lp_busy_i = '0' and lp_req = '0' then
-                  la := G_DDR_BASE + shift_left(resize(r_line, 28), 5);
-                  lp_addr <= std_logic_vector(la);
-                  lp_we   <= '0';
-                  lp_req  <= '1';
-                  f_w     <= (others => '0');
-                  fst     <= F_RDWAIT;
-               end if;
-            when F_RDWAIT =>
-               if lp_rvalid_i = '1' then
-                  f_line(128 * to_integer(f_w) + 127 downto 128 * to_integer(f_w)) <= lp_rdata_i;
-                  f_w <= f_w + 1;
-                  if f_w = 3 then
-                     f_cnt <= (others => '0');
-                     fst <= F_WRB;
-                  end if;
-               end if;
-            when F_WRB =>
-               -- write the line into the data RAM (port B), 8 x 64 bits
-               b_addr <= r_way & std_logic_vector(r_set) & std_logic_vector(f_cnt(2 downto 0));
-               b_wdata <= f_line(64 * to_integer(f_cnt(2 downto 0)) + 63 downto 64 * to_integer(f_cnt(2 downto 0)));
-               b_we <= '1';
-               if f_cnt = 7 then fst <= F_ACK; end if;
-               f_cnt <= f_cnt + 1;
-            when F_ACK =>
-               ack_tgl <= not ack_tgl;
-               fst <= F_IDLE;
+            when F_WBWAIT =>
+               if lp_done_i = '1' then done_tgl <= not done_tgl; fst <= F_IDLE; end if;
          end case;
       end if;
    end process;
