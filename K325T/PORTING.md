@@ -719,3 +719,102 @@ running, no log entries at all) while it ran the MEGA65 core, eight minutes befo
 first loaded; not caused by this design (the FPGA drives only SPI MISO towards the module; BCM14/15,
 the module's debug console, are unconstrained pins with UNUSEDPIN PULLUP in both cores, so the
 console RX idles high).  That module also re-probes its empty SD slot (mmc3) twice a second.
+
+# Stage 2b: the cache grown up (branch `a1200-ddr3`, 2026-11-12)
+
+Bitstream of record: build P (`ext/aexp6_stage2b/aexp6_buildP_radxa.bit` in the harness tree, md5
+215843c0...; commits up to 085136a): timing met, WNS +0.080 ns (MIG ui_clk), `main_clk` +1.99 ns;
+438 / 445 block RAM tiles (the cache 384, the audio FIFO 2), 79.5 k LUTs of which 33.6 k LUT RAM (the
+three 22-bit tag arrays, each read twice: the access and the prefetcher), 37.1 k registers.
+
+## 1. The AGA agent's cache changes
+
+Taken from `a1200-aga`: the data RAM 64 bits wide with the AGA `chip48` output (821c130) and the
+68EC020's 32-bit write (cb0f9b1), plus a guard (12a5f16: the second word only for an even word
+address; the lane was computed modulo the 64-bit group).  Not taken: f1fcf48 (chip48 into minimig,
+the AGA switch) -- it depends on that branch's TG68K and Minimig patches; it also used stall register
+7 bit 0, which is the statistics-clear toggle (to be moved).  tb_chip_cache in every mode, and on
+the board (build N) the A500 identity mode: 27dbf6f3 / 0c253188 in every boot.
+
+## 2. Fill path
+
+Critical word first (mig_arb: the 4 commands of a line start with the 16-byte word of the missing
+access), each word installed into the data RAM as it arrives, the tag written when the request goes
+out and an access to the filling line waiting only for its own word (a Gray-coded beat count from
+the ui_clk side), the dirty victim read into a write-back buffer while the MIG fetches and written
+back after the fill.  **Stall per fill: 0.42 us** (chip test at 128 KB, 16 KB, 2 KB and with 2 MB
+chip; was 1.04 / 0.97 / 0.91 us), mean of stall ticks over fills (the stall controller has no
+per-stall histogram; the read latency median of the MIG port is 0.28-0.32 us).  With the 2 KB cache
+the determinism workload runs at ~68 % of real time instead of ~51 %.
+
+## 3. Kickstart in DDR3; the cache 3-way, 1.5 MB
+
+The Kickstart BRAM is gone: QNICE device 0x0100 writes the ROM through a load port of the cache
+(byte by byte, the QNICE held while a byte is handed over; 64-byte lines into DDR3 at backing words
+1.25 M..1.5 M).  Its 128 tiles join the cache: 3 banks of 512 KB, bank = way.
+- **Identity mode (A500)**: chip / slow RAM in banks 0 / 1 exactly as before (no tags, no stall);
+  the Kickstart direct-mapped in bank 2, each line fetched at its first use (a stall; once per line
+  after a full reset).  Same machine as phase 2: 27dbf6f3 / 0c253188 (3 boots), SysInfo with KS 1.3
+  identical to phase 2's; KS 3.1 (512 KB) boots and SysInfo shows the same values in identity and
+  cache mode.
+- **Cache mode**: 3-way set associative, 8192 sets, 1.5 MB; replacement: an invalid way, then a
+  Kickstart line (clean, cheap to fetch again -- the study's rule), else pseudo-random.
+- What AGA gets: 1.5 MB / 3-way in front of 2 MB chip + 512 KB ROM -- the size the AGA model found
+  sufficient with prefetchers (worst 1.13 % stalled); no further block RAM is free (7 tiles).
+
+## 4. Prefetchers
+
+Minimig patch 0002 exports Agnus' bus grant and the DMA slot's target register with every RAM
+access; the cache derives the class (bitplane, sprite, audio, disk, copper, blitter, CPU) and the
+stream (the target register; the CPU is one stream).  A stream entering a new line queues its next
+line (the previous one when it walks down); queued lines are fetched when the tag port and the
+engine are free and no demand miss waits.  Per class an enable bit (`stallmon.py pf MASK`) and
+counters: issued, useful (first demand use), wasted (evicted unused).  Not built: the copper's
+COP1LC restart and the blitter's precomputed sequence (the stream rule covers them from their second
+line on).
+
+Machine time: the determinism test at 24 KB (shrink 2) with the enables 0, 1, 2, 4, 8, 16, 32, 64
+and 127: **27dbf6f3 / 0c253188, 0 mismatching frames, every combination.**
+
+| workload, cache | prefetch | demand fills | stalled | hit rate (useful / issued) |
+|---|---|---|---|---|
+| chip test, 24 KB | off | 163.8 / 20 ms | 0.343 % | - |
+| chip test, 24 KB | CPU only | 55.4 / 20 ms | 0.116 % | CPU 75 % |
+| chip test, 24 KB | all | 3.4 / 20 ms | 0.007 % | CPU 79 % |
+| five demos, 192 KB (66 windows of 20 s) | off | 123.8 / 20 ms (max 1865) | 0.259 % (max 3.9 %) | - |
+| five demos, 192 KB | all | 48.2 / 20 ms (max 1230) | 0.101 % (max 2.6 %) | bitplane 96 %, sprite 89 %, audio 92 %, disk 99 %, copper 93 %, blitter 98 %, CPU 58 % |
+| determinism workload, 24 KB | off / all | 14,335 / 20 ms | 30.0 % | bitplane 27 %, blitter 88 %, CPU 64 % |
+
+The determinism workload at 24 KB thrashes (its working set is several times the cache): prefetch
+cannot help there and wastes most of its bitplane fetches -- capacity misses are not what
+prefetchers fix.  Where the misses are first touches of streams (the chip test, the demos), they
+remove 60-98 % of the demand fills.  The five demos ran through with prefetch off and on (stills
+every 10 s, all distinct where the demo moves).  The monitor's lag maximum is kept since the last
+full reset and sits at the cap (18.5 ms) in both runs, as it did in stage 2 with the full cache and
+no stalls between boots: it is reached while Kickstart clears memory after the reset (every line a
+first touch), not during the demos.
+
+## 5. Audio FIFO
+
+`audio_fifo.vhd`: Paula's level sampled every 128 machine ticks into a 2048-sample FIFO and played
+on the ungated source clock when (machine ticks + lag) reaches each sample's slot plus 256 samples
+(1.15 ms latency).  The framework takes the audio from the core's ungated clock (M2M-UPSTREAM
+audio-src-clock: `G_AUDIO_EXT_CLK`).  On / off at run time (`stallmon.py pf MASK afifo`).
+`sim/tb_audio_fifo.vhd`: random stalls of 3-400 ticks with catch-up -- 3000 samples in order, every
+one on the real-time grid.
+
+On the board, the 976.6 Hz tone of the determinism disk recorded from the HDMI dongle
+(`tone_analyze.py`, flicker-free on, identity mode):
+
+| stalls | audio | short-term phase jitter (RMS / max) | residual |
+|---|---|---|---|
+| none | direct / FIFO | 4.9 / 34.6 us, 4.3 / 31.0 us | 0.9 / 0.9 dB (flicker-free's pitch switches dominate) |
+| 14.3 us x 21 per frame (1.5 %) | direct / FIFO | 4.1 / 33.9 us, 3.8 / 30.1 us | -- |
+| 0.64 us x 1730 per frame (5.5 %) | direct / FIFO | 3.4 / 29.1 us, 3.2 / 18.8 us | -- |
+| **229 us x 2.6 per frame (3 %)** | **direct** | **74 / 378 us**, tone amplitude down to 30 % | +13.6 dB |
+| **229 us x 2.6 per frame (3 %)** | **FIFO** | **4.2 / 35.3 us** (as without stalls) | -1.5 dB |
+
+Stalls up to ~15 us are below the dongle's measurement floor with or without the FIFO (stage 1's
+"inaudible"); long stall clusters break the tone without the FIFO and are invisible with it.  Cost:
+1.15 ms of audio latency, 2 tiles; harmonics with the FIFO -57 dB instead of -62 dB (the 221 kHz
+sample-and-hold; a faster rate would need 4-8 tiles, not free).
