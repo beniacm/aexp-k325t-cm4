@@ -1,0 +1,28 @@
+K325T: the custom register mirror at $DE0000-$DEFFFF kept (adapts 0119 = MiSTer 74d6ce0)
+The photograph of a real A500+ (Gary) running vAmigaTS Memory/Rom/mirror/customD2 shows no answer at
+$D80000-$DDFFFF and the registers mirrored at $DE0000-$DFFFFF; customC2 and customD1 show the mirror
+at $C80000-$D7FFFF (no slow RAM there).  0119 unmapped $D80000-$DEFFFF (upstream: WhichAmiga 1.4 probing
+the A3000/A4000 DMAC at $DD0000 hit a register): $D80000-$DDFFFF stay unmapped, $DE0000-$DEFFFF (except
+Gayle at $DE1000 when the IDE controller is on) answers like $DF0000 again, with the chip bus slowdown
+(dbs) as for $DF.
+--- a/rtl/gary.v
++++ b/rtl/gary.v
+@@ -171,7 +171,8 @@
+ assign sel_gayle = hdc_ena && cpu_address_in[23:12]==12'b1101_1110_0001;  //GAYLE registers at $DE1000 - $DE1FFF
+ assign sel_rtc   = cpu_address_in[23:16]==8'b1101_1100;                   //RTC registers at $DC0000 - $DCFFFF
+ assign sel_reg   = cpu_address_in[23:16]==8'b1101_1111                    //chip registers at $DF0000 - $DFFFFF, and $C00000 - $D7FFFF without slow ram
+-                || cpu_address_in[23:21]==3'b110 && cpu_address_in[20:19]!=2'b11 && ~|t_sel_slow;
++                || cpu_address_in[23:21]==3'b110 && cpu_address_in[20:19]!=2'b11 && ~|t_sel_slow
++                || cpu_address_in[23:16]==8'b1101_1110 && ~sel_gayle;   // K325T: and the $DE0000 mirror (Gary, vAmigaTS customD2 photo)
+ assign sel_cia   = cpu_address_in[23:16]==8'hBF; // $BFxxxx
+ assign sel_cia_a = sel_cia & ~cpu_address_in[12];
+ assign sel_cia_b = sel_cia & ~cpu_address_in[13];
+@@ -181,7 +182,7 @@
+ assign sel_toccata = toccata_ena && cpu_address_in[23:16]==toccata_base; // Nominally $e9xxxx
+ 
+ //data bus slow down
+-assign dbs = cpu_address_in[23:21]==3'b000 || cpu_address_in[23:20]==4'b1100 || cpu_address_in[23:19]==5'b1101_0 || cpu_address_in[23:16]==8'b1101_1111;
++assign dbs = cpu_address_in[23:21]==3'b000 || cpu_address_in[23:20]==4'b1100 || cpu_address_in[23:19]==5'b1101_0 || cpu_address_in[23:17]==7'b1101_111;   // K325T: DE too (mirror)
+ assign xbs = ~(sel_cia | sel_gayle | sel_ide);
+ 
+ endmodule
