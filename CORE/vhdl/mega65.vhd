@@ -770,8 +770,12 @@ begin
    i_amiga_cold_boot : entity work.amiga_cold_boot
       port map (
          clk_i             => main_clk,
-         topology_i        => main_chip_aga & main_cpu(1) & main_fast_z3 & main_fast_size & main_chip_ecs &
-                              (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
+         -- stage 3 (P4): the REQUESTED memory mode (profile or override), not the effective AGA bit:
+         -- AGA needs the 2 MB chip RAM of the cache, which the cache takes only at a reset, so the
+         -- effective bits change only after this cold boot (a menu change of the AGA radio alone
+         -- would otherwise never trigger one)
+         topology_i        => main_cc_on_req & main_cc_2m_req & main_cpu(1) & main_fast_z3 & main_fast_size &
+                              main_chip_ecs & (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
          cold_req_i        => main_reset_m2m_i,
          amiga_reset_o     => amiga_cold_reset,
          chip_scrub_o      => amiga_chip_scrub,
