@@ -99,13 +99,19 @@ int hdd_get(struct hdd *h, uint8_t *s)
     return 0;
 }
 
-static void put16(uint8_t *b, unsigned w, unsigned v) { b[2 * w] = (uint8_t)(v >> 8); b[2 * w + 1] = (uint8_t)v; }
+/* IDENTIFY data is what a drive puts on the IDE bus: word values in the buffer as they are.  hdd_put
+   loads buffer word i from bytes 2i | 2i+1 << 8 (the sector byte order, see the header), so the block
+   is built little-endian here.  (The A1200 swaps the bytes between the IDE bus and the CPU -- gayle.v
+   models it; scsi.device swaps IDENTIFY words back, sector data stays as the CPU reads it.) */
+static void put16(uint8_t *b, unsigned w, unsigned v) { b[2 * w] = (uint8_t)v; b[2 * w + 1] = (uint8_t)(v >> 8); }
 
 static void putstr(uint8_t *b, unsigned w, unsigned nw, const char *s)
 {
     unsigned i, n = (unsigned)strlen(s);
-    for (i = 0; i < 2 * nw; i++)            /* ATA strings: first character in the high byte */
-        b[2 * w + i] = (uint8_t)(i < n ? s[i] : ' ');
+    for (i = 0; i < nw; i++) {              /* ATA strings: first character in the high byte */
+        unsigned c1 = 2 * i < n ? (uint8_t)s[2 * i] : ' ', c2 = 2 * i + 1 < n ? (uint8_t)s[2 * i + 1] : ' ';
+        put16(b, w + i, c1 << 8 | c2);
+    }
 }
 
 static void identify(struct hdd *h, uint8_t *b)

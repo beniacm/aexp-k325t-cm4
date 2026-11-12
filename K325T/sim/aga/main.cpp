@@ -124,6 +124,18 @@ static void hdd_thread() {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));      // until the Amiga's reset is over
   fprintf(stderr, "hddsrv: drive ready, %llu sectors, %u/%u/%u (tick %llu)\n", (unsigned long long)g_hdd.nblk,
           g_hdd.cyls, g_hdd.heads, g_hdd.spt, (unsigned long long)g_tick);
+  if (getenv("HDD_LINKTEST")) {          // loopback through hdd_spi + ide.v's buffer, no Amiga involved
+    int rounds = atoi(getenv("HDD_LINKTEST")), bad = 0, errs = 0;
+    uint8_t a[512], b[512];
+    for (int i = 0; i < rounds; i++) {
+      for (int k = 0; k < 512; k++) a[k] = (uint8_t)(k * 7 + i * 13 + (k >> 3));
+      if (hdd_engine(&g_hdd, 0x32, 0, 0, 0) || hdd_put(&g_hdd, a) || hdd_engine(&g_hdd, 0x32, 0, 0, 0) ||
+          hdd_get(&g_hdd, b)) { errs++; continue; }
+      for (int k = 0; k < 512; k++) if (a[k] != b[k]) { if (bad < 8) fprintf(stderr, "  byte %d: %02x -> %02x\n", k, a[k], b[k]); bad++; }
+    }
+    fprintf(stderr, "linktest: %d rounds, %d engine errors, %d bytes differ (tick %llu)\n", rounds, errs, bad,
+            (unsigned long long)g_tick);
+  }
   hdd_serve(&g_hdd, (volatile int*)&g_hdd_stop);
 }
 static bool g_active = false;

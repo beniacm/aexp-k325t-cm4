@@ -105,11 +105,14 @@ architecture rtl of hdd_spi is
    signal m_addr   : std_logic_vector(3 downto 0) := (others => '0');
    signal m_wr, m_rd : std_logic := '0';
    signal m_wdata  : std_logic_vector(15 downto 0) := (others => '0');
+   -- asynchronous mailbox reads by explicit address (one LUT RAM read port each)
+   signal out_word : std_logic_vector(15 downto 0);
+   signal in_word  : std_logic_vector(15 downto 0);
 
+   -- the byte to send as byte n of command c (w = the outbound mailbox word for that byte)
    function txbyte(c : std_logic_vector(7 downto 0); n : unsigned(9 downto 0);
                    flags : std_logic_vector(7 downto 0); res : std_logic_vector(15 downto 0);
-                   mo : t_mbox) return std_logic_vector is
-      variable w : std_logic_vector(15 downto 0);
+                   w : std_logic_vector(15 downto 0)) return std_logic_vector is
    begin
       if c = x"00" then
          case to_integer(n) is
@@ -120,7 +123,6 @@ architecture rtl of hdd_spi is
             when others => return x"00";
          end case;
       elsif c = x"41" and n >= 1 and n <= 512 then
-         w := mo(to_integer(n - 1) / 2);
          if n(0) = '1' then
             return w(15 downto 8);
          else
@@ -177,7 +179,7 @@ begin
                bytecnt <= nb;
                if bytecnt = 0 then
                   cmd <= rxb;
-                  tx  <= txbyte(rxb, nb, flags, result, mbox_out);
+                  tx  <= txbyte(rxb, nb, flags, result, out_word);
                   if rxb = x"01" then
                      done <= '0';
                   end if;
@@ -197,7 +199,7 @@ begin
                      end if;
                   end if;
                else
-                  tx <= txbyte(cmd, nb, flags, result, mbox_out);
+                  tx <= txbyte(cmd, nb, flags, result, out_word);
                   if cmd(7 downto 4) = x"2" then           -- REGWR
                      if bytecnt = 1 then
                         wr_hi <= rxb;
@@ -220,6 +222,9 @@ begin
       end if;
    end process p_spi;
 
+   -- for the byte after byte bytecnt: word (bytecnt + 1 - 1) / 2 = bytecnt / 2 of the GET data
+   out_word      <= mbox_out(to_integer(bytecnt(8 downto 1)));
+   in_word       <= mbox_in(to_integer(widx(7 downto 0)));
    spi_miso_o    <= tx(7);
    en            <= en_s(1);
    spi_miso_oe_o <= en and not cs_s(1);
@@ -284,7 +289,7 @@ begin
                   result <= x"DEAD";
                   st     <= S_ACK;
                elsif phase = 0 then
-                  m_wdata <= mbox_in(to_integer(widx(7 downto 0)));
+                  m_wdata <= in_word;
                   phase   <= "001";
                elsif phase = 1 then
                   m_wr  <= '1';
