@@ -1406,7 +1406,7 @@ upstream commit in its header); merges are listed with what they add beyond thei
 | 67af318 | d | cpucfg/cachecfg bits re-arranged | 68020 options | in 0113, main.vhd maps the bits |
 | 27acb14 | d | Gayle fast IDE for the throttled 68020 | IDE (not built here) | - |
 | 06f30af | b | Agnus: VHPOSR reads one CCK lower (#234) | vAmigaTS VPOS suite measured on an A500 ECS: every horizontal probe read +1 | 0118 |
-| 74d6ce0 | b | Gary: custom registers only at $DFxxxx (#235) | WhichAmiga 1.4 probing $DD0000 hit a real register; measured on hardware | 0119 |
+| 74d6ce0 | b | Gary: custom registers only at $DFxxxx (#235) | WhichAmiga 1.4 probing $DD0000 hit a real register; measured on hardware | 0119 + 0131 keeps the $DE0000 mirror (round 2) |
 | 5578afd | b | blitter freezes when BLTCON1 turns fill off during a D-only fill blit (#236) | Absolute Inebriation (Virtual Dreams) | 0120 |
 | d760626 | c | release 20260907 | binary | - |
 | 0bf2182 | b | restore the pre-#232 DMA grid | Rampage | net zero with 7ce2980 |
@@ -1419,11 +1419,11 @@ upstream commit in its header); merges are listed with what they add beyond thei
 | a527fbb | c | DSKBYTR legacy value without flux media | undoes c1134ac's change for emulated drives; our base already has the legacy value | - |
 | 16934d3 | c | merge #249 (zero drives) | - | - |
 | 8325735 | c | README A2065 (#250) | docs | - |
-| 7f93ed1 | b | Denise: OCS/ECS BPLCON1 writes act on the live scroll state | Absolute Inebriation | 0122 |
-| cfcc0dc | b | Agnus: export bitplane fetch provenance to Denise | Absolute Inebriation (with 3c8a0ed) | 0123 |
-| 3c8a0ed | b | Denise: OCS LORES off-grid fetch ownership | Absolute Inebriation | 0124 |
+| 7f93ed1 | b | Denise: OCS/ECS BPLCON1 writes act on the live scroll state | Absolute Inebriation | 0122, **left out in round 2** (vAmigaTS BPLCON1 timing1/2, photo) |
+| cfcc0dc | b | Agnus: export bitplane fetch provenance to Denise | Absolute Inebriation (with 3c8a0ed) | 0123, **left out in round 2** (with 0124/0125) |
+| 3c8a0ed | b | Denise: OCS LORES off-grid fetch ownership | Absolute Inebriation | 0124, **left out in round 2** (vAmigaTS DDF ddf8/shift5, photos) |
 | c5ffbf9 | b | merge "Fix Absolute Inebriation" | adds nothing beyond its parents | - |
-| 3c5d2ea | b | Denise: simplify the OCS LORES fetch state (#252) | refactor of 3c8a0ed, same behaviour | 0125 |
+| 3c5d2ea | b | Denise: simplify the OCS LORES fetch state (#252) | refactor of 3c8a0ed, same behaviour | 0125, **left out in round 2** |
 | 2bddf21 | b | CIA timers start two E-clock stages after START (#253) | Risky Woods sound effects (OCS/ECS, 68000), as WinUAE | 0126 |
 | 56ba962 | b | Gary: custom register mirror at $C00000-$D7FFFF again (#254) | Kickstart 1.2 found 1.75 MB phantom slow RAM after #235 | 0127 |
 | 691c2b7 | c | ddram_ctrl: DMA must not overtake a posted CPU write (#255) | MiSTer DDR controller | - |
