@@ -18,7 +18,8 @@
 --   aux_o: W0 = histogram[i(6..0)], W1 = min(16) & max(16) and W2 = count, both of the direction
 --          i(6); with i(7) = 1: W0 = sum(31..0), W1 = min & max, W2 = sum(47..32) (ticks);
 --          i = $FF / $FE: the top's Avalon debug words dbg_i(95..0) / dbg_i(191..96);
---          i = $E0-$E5: the core's result mailbox (Amiga $C0-$FF), longwords 3(i-$E0) .. +2
+--          i = $E0-$E5: the core's result mailbox (Amiga $C0-$FF), longwords 3(i-$E0) .. +2;
+--          i = $D0-$D6: the cache's prefetch counters of class i-$D0 (issued, useful, wasted)
 -- (the stall injector's registers 3..5 are reused: keep the injector off while measuring)
 --------------------------------------------------------------------------------
 library ieee;
@@ -34,6 +35,7 @@ entity lat_meter is
       aux_o      : out std_logic_vector(95 downto 0);
       dbg_i      : in  std_logic_vector(191 downto 0) := (others => '0');   -- index $FF / $FE
       mbox_i     : in  std_logic_vector(511 downto 0) := (others => '0');   -- index $E0-$E5 (async)
+      pf_i       : in  std_logic_vector(671 downto 0) := (others => '0');   -- index $D0-$D6 (async)
       lp_req     : out std_logic;
       lp_we      : out std_logic;
       lp_addr    : out std_logic_vector(27 downto 0);
@@ -136,7 +138,10 @@ begin
          end if;
 
          d := 0; if hidx(6) = '1' then d := 1; end if;
-         if hidx(7 downto 3) = "11100" and hidx(2 downto 0) < 6 then
+         if hidx(7 downto 3) = "11010" and hidx(2 downto 0) < 7 then
+            -- the cache's prefetch counters of class i - $D0: issued, useful, wasted
+            aux <= pf_i(96 * to_integer(hidx(2 downto 0)) + 95 downto 96 * to_integer(hidx(2 downto 0)));
+         elsif hidx(7 downto 3) = "11100" and hidx(2 downto 0) < 6 then
             -- the core's mailbox: longword k = words 2k (high) and 2k+1; three per index
             for k in 0 to 2 loop
                if 3 * to_integer(hidx(2 downto 0)) + k < 16 then

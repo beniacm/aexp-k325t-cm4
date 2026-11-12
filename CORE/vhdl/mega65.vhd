@@ -264,7 +264,11 @@ port (
    -- K325T stage 2: result mailbox = the last values the Amiga wrote to chip RAM $0000C0-$0000FF
    -- (68000 vectors 48-63, unused): test programs leave their result block there, so that a board
    -- without a picture can read it (stall controller page 7, lat_meter.vhd); word i = bits 16i+15..16i
-   k325t_mbox_o            : out std_logic_vector(511 downto 0)
+   k325t_mbox_o            : out std_logic_vector(511 downto 0);
+   -- K325T stage 2b: prefetch counters of the cache (7 classes x issued, useful, wasted)
+   k325t_pf_stats_o        : out std_logic_vector(671 downto 0);
+   -- K325T stage 2b: the clock of main_audio_left_o / _right_o (the ungated source clock)
+   k325t_audio_clk_o       : out std_logic
 );
 end entity MEGA65_Core;
 
@@ -383,6 +387,14 @@ signal main_cc_wdata          : std_logic_vector(15 downto 0);
 signal main_cc_we_n, main_cc_oe_n, main_cc_bhe_n, main_cc_ble_n : std_logic;
 signal main_mem_chip2m        : std_logic;   -- 2 MB chip RAM (cache mode only)
 signal main_mbox              : std_logic_vector(511 downto 0) := (others => '0');
+signal main_dma_dbr           : std_logic;                       -- stage 2b prefetch: bus owner
+signal main_dma_reg           : std_logic_vector(8 downto 1);
+signal main_pf_en             : std_logic_vector(6 downto 0);
+signal main_afifo_en          : std_logic;                       -- stage 2b audio FIFO
+signal main_mach_cnt          : unsigned(31 downto 0);
+signal main_lag               : unsigned(31 downto 0);
+signal main_aud_l, main_aud_r : signed(15 downto 0);             -- Paula, machine time
+signal src_reset_m2m          : std_logic_vector(1 downto 0) := "11";
 signal main_chip_data_u       : std_logic_vector(7 downto 0);
 signal main_chip_data_l       : std_logic_vector(7 downto 0);
 signal main_chip_wren_u       : std_logic;
@@ -632,6 +644,10 @@ begin
          stall_diag_o      => k325t_stall_diag_o,
          stall_mode_o      => k325t_stall_mode_o,
          stall_cache_o     => main_cache_cfg,
+         stall_pf_en_o     => main_pf_en,
+         stall_afifo_o     => main_afifo_en,
+         stall_mach_o      => main_mach_cnt,
+         stall_lag_o       => main_lag,
          miss_i            => main_cache_miss,
          cache_fills_i     => main_cache_fills,
          cache_wbacks_i    => main_cache_wbacks
@@ -736,8 +752,8 @@ begin
          video_fl_o           => video_fl_o,
 
          -- audio output (pcm format, signed values)
-         audio_left_o         => main_audio_left_o,
-         audio_right_o        => main_audio_right_o,
+         audio_left_o         => main_aud_l,
+         audio_right_o        => main_aud_r,
 
          -- Amiga memory bus, served by the BRAMs below
          ram_addr_o           => main_ram_addr,
@@ -747,6 +763,8 @@ begin
          ram_ble_n_o          => main_ram_ble_n,
          ram_we_n_o           => main_ram_we_n,
          ram_oe_n_o           => main_ram_oe_n,
+         dma_dbr_o            => main_dma_dbr,
+         dma_reg_o            => main_dma_reg,
 
          -- LEDs of the emulated Amiga
          pwr_led_o            => main_pwr_led,
@@ -1022,6 +1040,31 @@ begin
    end process p_mbox;
    k325t_mbox_o <= main_mbox;
 
+   -- stage 2b: the audio, sampled in machine time, played in real time (audio_fifo.vhd); the
+   -- framework takes it in the source clock domain (G_AUDIO_EXT_CLK)
+   k325t_audio_clk_o <= main_src_clk;
+   process (main_src_clk)
+   begin
+      if rising_edge(main_src_clk) then
+         src_reset_m2m <= src_reset_m2m(0) & main_reset_m2m_i;
+      end if;
+   end process;
+   i_audio_fifo : entity work.audio_fifo
+      port map (
+         wclk_i  => main_clk,
+         rclk_i  => main_src_clk,
+         rst_i   => src_reset_m2m(1),
+         en_i    => main_afifo_en,
+         l_i     => main_aud_l,
+         r_i     => main_aud_r,
+         mach_i  => main_mach_cnt,
+         lag_i   => main_lag,
+         l_o     => main_audio_left_o,
+         r_o     => main_audio_right_o,
+         level_o => open,
+         under_o => open
+      ); -- i_audio_fifo
+
    i_chip_cache : entity work.chip_cache
       port map (
          clk_i        => main_src_clk,
@@ -1036,6 +1079,10 @@ begin
          q_addr_i     => qnice_dev_addr_i(18 downto 0),
          q_data_i     => qnice_dev_data_i(7 downto 0),
          q_wait_o     => qnice_kick_wait,
+         dbr_i        => main_dma_dbr,
+         dreg_i       => main_dma_reg,
+         pf_en_i      => main_pf_en,
+         pf_stats_o   => k325t_pf_stats_o,
          chip_sel_i   => main_cc_chip_sel,
          slow_sel_i   => main_cc_slow_sel,
          addr_i       => main_cc_addr,

@@ -70,6 +70,9 @@ entity main is
       ram_ble_n_o             : out std_logic;                      -- byte enable bits 7:0, active low
       ram_we_n_o              : out std_logic;                      -- write enable, active low
       ram_oe_n_o              : out std_logic;                      -- read enable, active low
+      -- K325T stage 2b: the bus owner of the access (minimig patch 0002), for the cache's prefetchers
+      dma_dbr_o               : out std_logic;
+      dma_reg_o               : out std_logic_vector(8 downto 1);
 
       -- LEDs of the emulated Amiga
       pwr_led_o               : out std_logic;
@@ -197,6 +200,8 @@ architecture synthesis of main is
          ram_ble_n      : out std_logic;
          ram_we_n       : out std_logic;
          ram_oe_n       : out std_logic;
+         dma_dbr        : out std_logic;
+         dma_reg        : out std_logic_vector(8 downto 1);
 
          rst_ext        : in  std_logic;
          rst_out        : out std_logic;
@@ -790,6 +795,8 @@ begin
          ram_ble_n      => ram_ble_n_o,
          ram_we_n       => ram_we_n_o,
          ram_oe_n       => ram_oe_n_o,
+         dma_dbr        => dma_dbr_o,
+         dma_reg        => dma_reg_o,
 
          rst_ext        => amiga_rst,
          rst_out        => open,

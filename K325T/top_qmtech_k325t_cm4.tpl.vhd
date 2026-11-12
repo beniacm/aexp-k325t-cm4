@@ -198,6 +198,8 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal ad_rbc             : std_logic_vector(7 downto 0) := (others => '0');
    signal ad_dbg             : std_logic_vector(191 downto 0);
    signal amiga_mbox         : std_logic_vector(511 downto 0);   -- the core's result mailbox
+   signal amiga_pf_stats     : std_logic_vector(671 downto 0);   -- the cache's prefetch counters
+   signal amiga_audio_clk    : std_logic;   -- the core's audio clock (its ungated source clock)
    signal lat_aux           : std_logic_vector(95 downto 0);
    signal diag_out          : std_logic_vector(95 downto 0);
    signal stall_mode        : std_logic_vector(3 downto 0);    -- stall controller register 0
@@ -353,7 +355,7 @@ begin
    i_lat_meter : entity work.lat_meter
       port map (
          clk => mig_ui_clk, rst => mem_not_ready, cfg_i => rk_vid_sel,
-         page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox,
+         page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats,
          lp_req => lm_req, lp_we => lm_we, lp_addr => lm_addr, lp_wdata => lm_wdata,
          lp_busy => lm_busy, lp_done => lm_done
       );

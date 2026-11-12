@@ -10,6 +10,7 @@ python3-spidev; writes nothing to the module's flash).
     stallmon.py read                 one snapshot, key=value
     stallmon.py log SECS [EVERY]     a snapshot every EVERY seconds (default 10), one line each
     stallmon.py cache on|off [SHRINK 0..3] [chip2m]   chip RAM through the cache (next full reset)
+    stallmon.py pf [MASK]                   chip cache prefetch counters / set the enables (7 bits)
     stallmon.py mbox                        the Amiga's result block at $C0-$FF (16 longwords)
     stallmon.py avm                         Avalon debug: the write burst avm_mig waits in
     stallmon.py lat SECS [r|w|rw]    line latency meter (64-byte reads / writes on the MIG line port)
@@ -182,6 +183,27 @@ def main():
         print("avm_mig: state %s, beats_left %d, inflight %d, fifo %d, aborts %d (mod 16)" %
               (st[m >> 16 & 15] if (m >> 16 & 15) < 6 else m >> 16 & 15, m >> 8 & 255, m >> 4 & 15,
                m & 15, m >> 20 & 15))
+    elif cmd == "pf":
+        # chip cache prefetchers: "pf MASK" sets the enables (b0 bitplane, b1 sprite, b2 audio, b3 disk,
+        # b4 copper, b5 blitter, b6 CPU; via page 5 + registers 3/4, injector off), "pf" reads the counters
+        names = ["bitplane", "sprite", "audio", "disk", "copper", "blitter", "CPU"]
+        if len(sys.argv) > 2:
+            m = int(sys.argv[2], 0)
+            b.wr(6, 5)
+            b.wr(3, m & 15)
+            b.wr(4, m >> 4 & 7)
+            b.wr(6, 0)
+            print("prefetch enables %s" % (", ".join(n for i, n in enumerate(names) if m >> i & 1) or "none"))
+        else:
+            b.wr(6, 7)
+            for c, n in enumerate(names):
+                b.wr(4, 0xD)
+                b.wr(5, c)
+                r = b.status()
+                w = [int.from_bytes(bytes(r[60 + 4 * k:64 + 4 * k]), "big") for k in range(3)]
+                print("%-9s issued %10d  useful %10d  wasted %10d  (hit rate %s)" %
+                      (n, w[0], w[1], w[2], "%.1f %%" % (100.0 * w[1] / w[0]) if w[0] else "-"))
+            b.wr(4, 0); b.wr(5, 0); b.wr(6, 0)
     elif cmd == "mbox":
         # the core's result mailbox: the longwords the Amiga last wrote to $C0-$FF (lat_meter $E0-$E5)
         pass                                # (register 0 kept: it holds the cache shrink bit 1;

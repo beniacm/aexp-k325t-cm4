@@ -20,7 +20,8 @@ entity tb_chip_cache is
    generic (G_MODE : natural := 1; G_SHRINK : natural := 0; G_N : natural := 100000;
             G_WR : natural := 35; G_SLOW : natural := 20;    -- percent
             G_KICK : natural := 15;                           -- percent of the runs: Kickstart reads
-            G_KBYTES : natural := 32768);                     -- Kickstart bytes loaded through QNICE
+            G_KBYTES : natural := 32768;                      -- Kickstart bytes loaded through QNICE
+            G_PF : natural := 0);                             -- prefetch enables (127 = all)
 end entity;
 
 architecture sim of tb_chip_cache is
@@ -58,6 +59,9 @@ architecture sim of tb_chip_cache is
    signal q_addr : std_logic_vector(18 downto 0) := (others => '0');
    signal q_data : std_logic_vector(7 downto 0) := (others => '0');
    signal kick_loaded : boolean := false;
+   signal dbr : std_logic := '0';
+   signal dreg : std_logic_vector(7 downto 0) := (others => '0');
+   signal pf_stats : std_logic_vector(671 downto 0);
    function kbyte(i : natural) return std_logic_vector is
    begin
       return std_logic_vector(to_unsigned((i * 7 + i / 256 + 3) mod 256, 8));
@@ -97,6 +101,8 @@ begin
                 chip1m_i => '1', chip_sel_i => chip_sel, slow_sel_i => slow_sel, addr_i => addr,
                 kick_sel_i => kick_sel, kick512_i => '1',
                 q_clk_i => q_clk, q_we_i => q_we, q_addr_i => q_addr, q_data_i => q_data, q_wait_o => q_wait,
+                dbr_i => dbr, dreg_i => dreg, pf_en_i => std_logic_vector(to_unsigned(G_PF, 7)),
+                pf_stats_o => pf_stats,
                 wdata_i => wdata, we_n_i => we_n, oe_n_i => oe_n, bhe_n_i => bhe_n, ble_n_i => ble_n,
                 long_i => long, wdata2_i => wdata2,
                 rdata_o => rdata, rdata48_o => rdata48, miss_o => miss, fills_o => fills, wbacks_o => wbacks, mode_o => mode,
@@ -156,6 +162,17 @@ begin
          uniform(s1, s2, r);
          if run = 0 then
             uniform(s1, s2, r); run := 1 + integer(r * 40.0);   -- a DMA-like run or a single access
+            -- the bus owner: runs are DMA streams (a bitplane / sprite / blitter register), single
+            -- accesses the CPU
+            uniform(s1, s2, r);
+            if run > 1 then
+               dbr <= '1';
+               if r < 0.5 then dreg <= std_logic_vector(to_unsigned(16#88# + integer(r * 14.0), 8));
+               elsif r < 0.75 then dreg <= std_logic_vector(to_unsigned(16#A0# + integer((r - 0.5) * 120.0), 8));
+               else dreg <= x"38"; end if;
+            else
+               dbr <= '0'; dreg <= x"00";
+            end if;
             uniform(s1, s2, r); is_slow := r < real(G_SLOW) / 100.0 and G_MODE = 1;   -- identity: 1M chip, no slow RAM
             uniform(s1, s2, r); is_kick := r < real(G_KICK) / 100.0;
             uniform(s1, s2, r);
@@ -227,6 +244,14 @@ begin
              integer'image(bad) & ", wrong chip48 " & integer'image(bad48) & ", fills " & integer'image(to_integer(fills)) & ", write-backs " &
              integer'image(to_integer(wbacks)) & ", MIG errors " & integer'image(mig_err) &
              ", Kickstart accesses " & integer'image(nkick) & " (writes " & integer'image(kwr) & ")";
+      for c in 0 to 6 loop
+         if unsigned(pf_stats(96 * c + 95 downto 96 * c + 64)) /= 0 then
+            report "prefetch class " & integer'image(c) & ": issued " &
+                   integer'image(to_integer(unsigned(pf_stats(96 * c + 95 downto 96 * c + 64)))) & ", useful " &
+                   integer'image(to_integer(unsigned(pf_stats(96 * c + 63 downto 96 * c + 32)))) & ", wasted " &
+                   integer'image(to_integer(unsigned(pf_stats(96 * c + 31 downto 96 * c))));
+         end if;
+      end loop;
       if bad = 0 and bad48 = 0 and mig_err = 0 and (G_MODE = 0 or fills > 0) then
          report "TB_CHIP_CACHE_PASS";
       else

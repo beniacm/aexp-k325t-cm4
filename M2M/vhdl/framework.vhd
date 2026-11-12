@@ -30,7 +30,11 @@ generic (
    -- true: the board has none of the I2C buses (no RTC etc.); the RTC/I2C controller then
    -- sees idle (high) SCL/SDA lines, i.e. every transfer ends with a NACK instead of a
    -- clock line that floats low and stalls it
-   G_NO_I2C : boolean := false
+   G_NO_I2C : boolean := false;
+   -- M2M-UPSTREAM audio-src-clock (K325T stage 2b): true = the core's audio samples are produced in
+   -- main_audio_clk_i's domain, not main_clk_i's (a core whose main clock can stop keeps its audio
+   -- running from an ungated clock, e.g. through a FIFO)
+   G_AUDIO_EXT_CLK : boolean := false
 );
 port (
    clk_i                   : in    std_logic;                  -- 100 MHz clock
@@ -141,6 +145,7 @@ port (
    main_drive_led_col_i    : in    std_logic_vector(23 downto 0);
    main_osm_control_m_o    : out   std_logic_vector(255 downto 0);
    main_qnice_gp_reg_o     : out   std_logic_vector(255 downto 0);
+   main_audio_clk_i        : in    std_logic := '0';         -- with G_AUDIO_EXT_CLK
    main_audio_l_i          : in    signed(15 downto 0);
    main_audio_r_i          : in    signed(15 downto 0);
    video_clk_i             : in    std_logic;
@@ -333,6 +338,7 @@ signal main_flip_joyports     : std_logic;
 ---------------------------------------------------------------------------------------------
 
 signal audio_left             : std_logic_vector(15 downto 0);
+signal main_audio_src_clk     : std_logic;   -- M2M-UPSTREAM audio-src-clock
 signal audio_right            : std_logic_vector(15 downto 0);
 
 ---------------------------------------------------------------------------------------------
@@ -823,13 +829,14 @@ begin
       ); -- i_main2qnice
 
    -- Clock domain crossing: CORE to AUDIO
+   main_audio_src_clk <= main_audio_clk_i when G_AUDIO_EXT_CLK else main_clk_i;
    i_main2audio: entity work.cdc_stable
       generic map (
          G_REGISTER_SRC => true,
          G_DATA_SIZE    => 32
       )
       port map (
-         src_clk_i                => main_clk_i,
+         src_clk_i                => main_audio_src_clk,
          src_data_i(15 downto  0) => std_logic_vector(main_audio_l_i),
          src_data_i(31 downto 16) => std_logic_vector(main_audio_r_i),
          dst_clk_i                => audio_clk,

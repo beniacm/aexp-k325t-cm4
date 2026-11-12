@@ -1,0 +1,47 @@
+diff --git a/rtl/minimig.v b/rtl/minimig.v
+index b7f81c5..64c0ef2 100644
+--- a/rtl/minimig.v
++++ b/rtl/minimig.v
+@@ -172,6 +172,10 @@ module minimig
+ 	output 	     _ram_we,     // sram write enable
+ 	output 	     _ram_oe,     // sram output enable
+ 	input  [47:0] chip48,      // big chipram read
++	// MiSTer2MEGA65 K325T (2026-11-12, stage 2b): the bus owner of the current RAM access for the
++	// cache's prefetchers: Agnus' data bus request and the target register of her DMA slot
++	output        dma_dbr,     // Agnus owns the bus (DMA slot)
++	output  [8:1] dma_reg,     // register address of the DMA slot (BPLxDAT, SPRxDATA, AUDxDAT, ...)
+ 
+ 	//system	pins
+ 	input 	     rst_ext,     // reset from ctrl block
+@@ -742,6 +746,9 @@ minimig_sram_bridge RAM1
+ 
+ // MiSTer2MEGA65 (AExp Amiga 500 port), June 2026: see comment above.
+ assign ram_address[23] = 1'b0;
++// MiSTer2MEGA65 K325T (2026-11-12, stage 2b): see the port comment.
++assign dma_dbr = dbr;
++assign dma_reg = reg_address;
+ 
+ cart CART1
+ (
+diff --git a/rtl/minimig_m65.v b/rtl/minimig_m65.v
+index 840d8e7..89efd67 100644
+--- a/rtl/minimig_m65.v
++++ b/rtl/minimig_m65.v
+@@ -38,6 +38,8 @@ module minimig_m65
+ 	// SRAM-style memory interface (served by BRAM in mega65.vhd)
+ 	output [15:0] ram_data,       // write data
+ 	input  [15:0] ramdata_in,     // read data
++	output        dma_dbr,        // K325T stage 2b: Agnus owns the bus (prefetch stream id)
++	output  [8:1] dma_reg,        // K325T stage 2b: target register of the DMA slot
+ 	output [22:1] ram_address,    // BANKED word address (see minimig_sram_bridge.v;
+ 	                              // minimig's bit 23 is constant 0 after the AExp
+ 	                              // sweep change and is dropped here)
+@@ -135,6 +137,8 @@ minimig minimig_inst
+ 	._ram_we       (ram_we_n     ),
+ 	._ram_oe       (ram_oe_n     ),
+ 	.chip48        (48'h0        ), // AGA 64-bit fetch: OCS keeps fmode=0, logic prunes
++	.dma_dbr       (dma_dbr      ),
++	.dma_reg       (dma_reg      ),
+ 
+ 	//system pins
+ 	.rst_ext       (rst_ext      ),

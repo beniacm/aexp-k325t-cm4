@@ -43,7 +43,15 @@
 -- a write-back buffer while the MIG fetches the new line, and written back after the fill: its
 -- write is no longer part of the stall.  A new miss waits until the engine is idle (fill and
 -- write-back done).
--- Not in this version (study section 3): prefetchers, write miss without stall.
+-- Prefetchers (stage 2b): every DMA access carries Agnus' target register (minimig patch 0002:
+-- dbr_i, dreg_i), so the streams are known by channel: bitplanes (one per plane), sprites (per
+-- sprite), audio (per channel), disk, copper, blitter (A/B/C/D) and the CPU.  When a stream enters a
+-- new 64-byte line, the next line of the stream (the previous one if it walks downwards) is queued;
+-- queued lines are fetched while the engine is idle and no demand miss waits, exactly like a miss
+-- but with no access stalled behind it.  Enable bits per class (pf_en_i); counters per class:
+-- issued, useful (the first demand access to a prefetched line) and wasted (evicted unused).
+-- Not in this version: copper restart / COP1LC and the blitter's precomputed sequence (the stream
+-- rule covers them only from their second line on), write misses without stall.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -90,6 +98,13 @@ entity chip_cache is
       q_addr_i    : in  std_logic_vector(18 downto 0) := (others => '0');
       q_data_i    : in  std_logic_vector(7 downto 0) := (others => '0');
       q_wait_o    : out std_logic;
+      -- prefetch: Agnus' bus grant and target register of the access (minimig patch 0002), the
+      -- enables (b0 bitplane, b1 sprite, b2 audio, b3 disk, b4 copper, b5 blitter, b6 CPU) and the
+      -- counters (class c: bits 96c+95..96c+64 issued, +63..+32 useful, +31..+0 wasted)
+      dbr_i       : in  std_logic := '0';
+      dreg_i      : in  std_logic_vector(7 downto 0) := (others => '0');
+      pf_en_i     : in  std_logic_vector(6 downto 0) := (others => '0');
+      pf_stats_o  : out std_logic_vector(671 downto 0);
       -- line port (MIG ui_clk)
       ui_clk_i    : in  std_logic;
       lp_req_o    : out std_logic;
@@ -107,7 +122,8 @@ architecture rtl of chip_cache is
    constant SETS : natural := 8192;
 
    -- tag store: per way and set: valid, dirty, line address (backing word address 20..5)
-   type tag_t is array (0 to SETS - 1) of std_logic_vector(17 downto 0);
+   -- tag: 21..19 prefetch class, 18 prefetched and not used yet, 17 valid, 16 dirty, 15..0 line
+   type tag_t is array (0 to SETS - 1) of std_logic_vector(21 downto 0);
    signal tag0, tag1, tag2 : tag_t := (others => (others => '0'));
    attribute ram_style : string;
    attribute ram_style of tag0, tag1, tag2 : signal is "distributed";
@@ -121,7 +137,24 @@ architecture rtl of chip_cache is
    signal bword       : unsigned(20 downto 0);      -- backing word address
    signal bline       : unsigned(15 downto 0);      -- backing line
    signal setn        : unsigned(12 downto 0);
-   signal t0, t1, t2  : std_logic_vector(17 downto 0);
+   signal t0, t1, t2  : std_logic_vector(21 downto 0);
+   -- prefetch
+   signal pcls        : unsigned(2 downto 0);      -- class of the access (7 = none)
+   signal psid        : unsigned(7 downto 0);      -- stream of the access
+   type stl_t is array (0 to 255) of std_logic_vector(16 downto 0);   -- valid & last line
+   signal stl         : stl_t := (others => (others => '0'));
+   attribute ram_style of stl : signal is "distributed";
+   signal st_cur      : std_logic_vector(16 downto 0);
+   type pfq_t is array (0 to 7) of std_logic_vector(18 downto 0);     -- class & line
+   signal pfq         : pfq_t := (others => (others => '0'));
+   signal pf_wp, pf_rp : unsigned(3 downto 0) := (others => '0');
+   signal pf_last     : std_logic_vector(18 downto 0) := (others => '1');
+   signal pf_head     : std_logic_vector(18 downto 0);
+   signal pf_set      : unsigned(12 downto 0);
+   signal p0, p1, p2  : std_logic_vector(21 downto 0);
+   signal pf_hit      : std_logic;
+   type cnt7_t is array (0 to 6) of unsigned(31 downto 0);
+   signal pf_iss, pf_use, pf_wst : cnt7_t := (others => (others => '0'));
    signal hit0, hit1, hit2 : std_logic;
    signal miss        : std_logic;
    signal hway        : std_logic_vector(1 downto 0);
@@ -240,6 +273,30 @@ begin
    hit2  <= '1' when t2(17) = '1' and unsigned(t2(15 downto 0)) = bline else '0';
    hway  <= "01" when hit1 = '1' else "10" when hit2 = '1' else "00";
    hitany <= hit0 or hit1 or hit2;
+   -- the access's prefetch class and stream (Agnus' target register, minimig patch 0002)
+   pcls <= "110" when dbr_i = '0' else                                         -- CPU
+           "000" when dreg_i(7 downto 3) = "10001" else                         -- BPLxDAT $110-$11E
+           "001" when dreg_i(7 downto 5) = "101" else                           -- SPRxPOS..DATB $140-$17E
+           "010" when dreg_i = x"55" or dreg_i = x"5D" or dreg_i = x"65" or dreg_i = x"6D" else -- AUDxDAT
+           "011" when dreg_i = x"04" or dreg_i = x"13" else                     -- DSKDATR / DSKDAT
+           "100" when dreg_i = x"46" else                                       -- COPINS
+           "101" when dreg_i = x"00" or dreg_i = x"38" or dreg_i = x"39" or dreg_i = x"3A" else -- BLTxDAT
+           "111";
+   psid    <= x"FF" when dbr_i = '0' else unsigned(dreg_i);
+   st_cur  <= stl(to_integer(psid));
+   pf_head <= pfq(to_integer(pf_rp(2 downto 0)));
+   pf_set  <= unsigned(pf_head(12 downto 0)) and smask;
+   p0      <= tag0(to_integer(pf_set));
+   p1      <= tag1(to_integer(pf_set));
+   p2      <= tag2(to_integer(pf_set));
+   pf_hit  <= '1' when (p0(17) = '1' and p0(15 downto 0) = pf_head(15 downto 0)) or
+                       (p1(17) = '1' and p1(15 downto 0) = pf_head(15 downto 0)) or
+                       (p2(17) = '1' and p2(15 downto 0) = pf_head(15 downto 0)) else '0';
+   g_pfst : for c in 0 to 6 generate
+      pf_stats_o(96 * c + 95 downto 96 * c) <= std_logic_vector(pf_iss(c)) & std_logic_vector(pf_use(c)) &
+                                                std_logic_vector(pf_wst(c));
+   end generate;
+
    rom0  <= '1' when t0(17) = '1' and t0(15 downto 13) = KICK_LINE else '0';
    rom1  <= '1' when t1(17) = '1' and t1(15 downto 13) = KICK_LINE else '0';
    rom2  <= '1' when t2(17) = '1' and t2(15 downto 13) = KICK_LINE else '0';
@@ -327,8 +384,14 @@ begin
       variable way      : std_logic_vector(1 downto 0);
       variable w0, w1, w2 : boolean;
       variable wa       : unsigned(12 downto 0);
-      variable wd0, wd1, wd2 : std_logic_vector(17 downto 0);
-      variable vt       : std_logic_vector(17 downto 0);
+      variable wd0, wd1, wd2 : std_logic_vector(21 downto 0);
+      variable vt       : std_logic_vector(21 downto 0);
+      variable nt       : std_logic_vector(21 downto 0);
+      variable useful   : boolean;
+      variable busy_req : boolean;
+      variable cand     : unsigned(15 downto 0);
+      variable pline    : unsigned(15 downto 0);
+      variable pc       : integer range 0 to 7;
    begin
       if rising_edge(clk_i) then
          rnd <= rnd(14 downto 0) & (rnd(15) xor rnd(13) xor rnd(12) xor rnd(10));
@@ -346,11 +409,26 @@ begin
             when M_IDLE =>
                if tagged = '1' and acc = '1' then
                   if hitany = '1' then
-                     -- a hit (also on a filling line whose word is in): a write marks the line dirty
-                     if notready = '0' and we_n_i = '0' and kick_sel_i = '0' then
-                        if hit0 = '1' and t0(16) = '0' then wd0 := t0(17) & '1' & t0(15 downto 0); w0 := true; end if;
-                        if hit1 = '1' and t1(16) = '0' then wd1 := t1(17) & '1' & t1(15 downto 0); w1 := true; end if;
-                        if hit2 = '1' and t2(16) = '0' then wd2 := t2(17) & '1' & t2(15 downto 0); w2 := true; end if;
+                     -- a hit (also on a filling line whose word is in): a write marks the line dirty,
+                     -- the first use of a prefetched line counts it as useful
+                     if notready = '0' then
+                        case hway is
+                           when "00"   => vt := t0;
+                           when "01"   => vt := t1;
+                           when others => vt := t2;
+                        end case;
+                        useful := vt(18) = '1';
+                        nt := vt(21 downto 19) & '0' & vt(17) & vt(16) & vt(15 downto 0);
+                        if we_n_i = '0' and kick_sel_i = '0' then nt(16) := '1'; end if;
+                        if useful then pf_use(to_integer(unsigned(vt(21 downto 19)))) <=
+                                          pf_use(to_integer(unsigned(vt(21 downto 19)))) + 1; end if;
+                        if nt /= vt then
+                           case hway is
+                              when "00"   => wd0 := nt; w0 := true;
+                              when "01"   => wd1 := nt; w1 := true;
+                              when others => wd2 := nt; w2 := true;
+                           end case;
+                        end if;
                      end if;
                   elsif eng_idle = '1' and fill_act = '0' then
                      -- a miss: choose the victim, install the new tag now (its words follow), ask the
@@ -377,10 +455,14 @@ begin
                      r_vline <= unsigned(vt(15 downto 0));
                      r_vdirty <= vt(17) and vt(16);
                      if vt(17) = '1' and vt(16) = '1' then wbacks <= wbacks + 1; end if;
+                     if vt(17) = '1' and vt(18) = '1' then
+                        pf_wst(to_integer(unsigned(vt(21 downto 19)))) <= pf_wst(to_integer(unsigned(vt(21 downto 19)))) + 1;
+                     end if;
+                     nt := "000" & "0" & "10" & std_logic_vector(bline);
                      case way is
-                        when "00"   => wd0 := "10" & std_logic_vector(bline); w0 := true;
-                        when "01"   => wd1 := "10" & std_logic_vector(bline); w1 := true;
-                        when others => wd2 := "10" & std_logic_vector(bline); w2 := true;
+                        when "00"   => wd0 := nt; w0 := true;
+                        when "01"   => wd1 := nt; w1 := true;
+                        when others => wd2 := nt; w2 := true;
                      end case;
                      fills     <= fills + 1;
                      fill_act  <= '1';
@@ -390,6 +472,70 @@ begin
                      fill_base <= cbase;
                      cbase     <= cbase + 4;
                      done_seen <= not done_seen;     -- the engine is busy until it toggles back
+                     req_tgl   <= not req_tgl;
+                  end if;
+               end if;
+               ------------------------------------------------ prefetch (cache mode)
+               -- a stream that enters a new line queues its next line (the previous one downwards)
+               if mode = '1' and acc = '1' and pcls /= "111" and pf_en_i(to_integer(pcls)) = '1' and
+                  (st_cur(16) = '0' or unsigned(st_cur(15 downto 0)) /= bline) then
+                  stl(to_integer(psid)) <= '1' & std_logic_vector(bline);
+                  if st_cur(16) = '1' and unsigned(st_cur(15 downto 0)) = bline + 1 then cand := bline - 1;
+                  else cand := bline + 1; end if;
+                  if std_logic_vector(pcls) & std_logic_vector(cand) /= pf_last and pf_wp - pf_rp /= 8 then
+                     pfq(to_integer(pf_wp(2 downto 0))) <= std_logic_vector(pcls) & std_logic_vector(cand);
+                     pf_wp   <= pf_wp + 1;
+                     pf_last <= std_logic_vector(pcls) & std_logic_vector(cand);
+                  end if;
+               end if;
+               -- a queued line is fetched when nothing else uses the tag port or the engine: a line
+               -- already in the cache is dropped
+               busy_req := (tagged = '1' and acc = '1' and hitany = '0') or w0 or w1 or w2;
+               if mode = '1' and pf_wp /= pf_rp and not busy_req then
+                  if pf_hit = '1' then
+                     pf_rp <= pf_rp + 1;
+                  elsif eng_idle = '1' and fill_act = '0' then
+                     pf_rp <= pf_rp + 1;
+                     pline := unsigned(pf_head(15 downto 0));
+                     pc    := to_integer(unsigned(pf_head(18 downto 16)));
+                     if p0(17) = '0' then way := "00";
+                     elsif p1(17) = '0' then way := "01";
+                     elsif p2(17) = '0' then way := "10";
+                     elsif p0(15 downto 13) = KICK_LINE then way := "00";
+                     elsif p1(15 downto 13) = KICK_LINE then way := "01";
+                     elsif p2(15 downto 13) = KICK_LINE then way := "10";
+                     elsif rnd(1 downto 0) = "11" then way := '0' & rnd(2);
+                     else way := std_logic_vector(rnd(1 downto 0)); end if;
+                     case way is
+                        when "00"   => vt := p0;
+                        when "01"   => vt := p1;
+                        when others => vt := p2;
+                     end case;
+                     r_way    <= way;
+                     r_set    <= pf_set;
+                     r_line   <= pline;
+                     r_crit   <= "00";
+                     r_vline  <= unsigned(vt(15 downto 0));
+                     r_vdirty <= vt(17) and vt(16);
+                     if vt(17) = '1' and vt(16) = '1' then wbacks <= wbacks + 1; end if;
+                     if vt(17) = '1' and vt(18) = '1' then
+                        pf_wst(to_integer(unsigned(vt(21 downto 19)))) <= pf_wst(to_integer(unsigned(vt(21 downto 19)))) + 1;
+                     end if;
+                     nt := pf_head(18 downto 16) & "1" & "10" & pf_head(15 downto 0);
+                     wa := pf_set;
+                     case way is
+                        when "00"   => wd0 := nt; w0 := true;
+                        when "01"   => wd1 := nt; w1 := true;
+                        when others => wd2 := nt; w2 := true;
+                     end case;
+                     pf_iss(pc) <= pf_iss(pc) + 1;
+                     fill_act  <= '1';
+                     fill_set  <= pf_set;
+                     fill_way  <= way;
+                     fill_crit <= "00";
+                     fill_base <= cbase;
+                     cbase     <= cbase + 4;
+                     done_seen <= not done_seen;
                      req_tgl   <= not req_tgl;
                   end if;
                end if;
@@ -410,6 +556,7 @@ begin
             end case;
             mst <= M_FLUSH;
             flush_idx <= (others => '0');
+            pf_rp <= pf_wp;
             w0 := false; w1 := false; w2 := false;
          end if;
          if w0 then tag0(to_integer(wa)) <= wd0; end if;

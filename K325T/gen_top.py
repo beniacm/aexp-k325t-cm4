@@ -61,7 +61,8 @@ def remap(lines, table, extra_generics):
 
 fw = remap(fw, FW, '''         G_EXT_HR      => true,       -- memory bus from avm_mig (DDR3)
          G_TMDS_INVERT => "1010",     -- J11: green (D1) and clock pairs have P/N swapped
-         G_NO_I2C      => true''')
+         G_NO_I2C      => true,
+         G_AUDIO_EXT_CLK => true      -- the core's audio comes from its ungated source clock''')
 # framework: external memory ports (inserted before the last port line)
 last = max(k for k, l in enumerate(fw) if '=>' in l)
 fw[last] = fw[last].rstrip() + ','
@@ -75,7 +76,8 @@ fw.insert(last + 1, '''      ext_hr_clk_i            => mig_ui_clk,
       ext_avm_burstcount_o    => mem_burstcount,
       ext_avm_readdata_i      => mem_readdata,
       ext_avm_readdatavalid_i => mem_readdatavalid,
-      ext_avm_waitrequest_i   => mem_waitrequest''')
+      ext_avm_waitrequest_i   => mem_waitrequest,
+      main_audio_clk_i        => amiga_audio_clk''')
 core = remap(core, CORE, None)
 # core: the K325T stall machinery (stall_clk.vhd): configuration byte from the bridge, diagnostics
 last = max(k for k, l in enumerate(core) if '=>' in l)
@@ -92,7 +94,9 @@ core.insert(last + 1, '''         k325t_stall_cfg_i       => rk_vid_sel,
          k325t_lp_rvalid_i       => cc_rvalid,
          k325t_lp_rdata_i        => lp_rdata,
          k325t_lp_done_i         => cc_done,
-         k325t_mbox_o            => amiga_mbox''')
+         k325t_mbox_o            => amiga_mbox,
+         k325t_pf_stats_o        => amiga_pf_stats,
+         k325t_audio_clk_o       => amiga_audio_clk''')
 
 tpl = open(sys.argv[3]).read()
 tpl = tpl.replace('--@R6_DECLARATIONS@', '\n'.join(decl))

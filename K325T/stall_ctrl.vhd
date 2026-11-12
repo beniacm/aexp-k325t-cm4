@@ -35,6 +35,10 @@
 --   page 4: W0 = x"A1200001" (id) , W1:W2 = machine (passed) ticks at the snapshot
 --   page 5: W0 = probe(31:0) at the snapshot, W1 = probe(22) falling edges, W2 = ticks with any of
 --           probe(26:24) set;  page 6: W0 = probe(63:32), W1 = chip cache line fills, W2 = write-backs
+--   stage 2b: while page 5 is selected, writes to registers 3 / 4 also set the chip cache's prefetch
+--           enables (r3 b0 bitplane, b1 sprite, b2 audio, b3 disk; r4 b0 copper, b1 blitter, b2 CPU)
+--           and r4 b3 = the audio FIFO (audio_fifo.vhd) on;
+--           keep the stall injector off (mode b0) meanwhile, it reads registers 3 / 4 too
 --   register 7 bits 3..1 + register 0 bit 3: the chip cache (chip_cache.vhd), taken at a full reset:
 --           r7 b1 = chip RAM through the cache, b2 = 2 MB chip RAM, b3 & r0 b3 = shrink (sets / 1, 8,
 --           64, 512)
@@ -64,6 +68,9 @@ entity stall_ctrl is
       diag_o     : out std_logic_vector(95 downto 0);
       mode_o     : out std_logic_vector(3 downto 0);   -- register 0 (b2: test switch for the top)
       cache_o    : out std_logic_vector(3 downto 0);   -- register 7 bits 3..1 (cache) & register 0 bit 3
+      pf_en_o    : out std_logic_vector(6 downto 0);   -- stage 2b: the chip cache's prefetch enables
+      afifo_o    : out std_logic;                      -- stage 2b: the audio FIFO on (r4 b3, page 5)
+      mach_o     : out unsigned(31 downto 0);          -- stage 2b: machine ticks so far (for the FIFO)
       fills_i    : in  unsigned(31 downto 0) := (others => '0');   -- chip cache statistics (clk_i)
       wbacks_i   : in  unsigned(31 downto 0) := (others => '0')
    );
@@ -81,6 +88,8 @@ architecture rtl of stall_ctrl is
 
    type reg_t is array (0 to 7) of unsigned(3 downto 0);
    signal regs     : reg_t := (others => (others => '0'));
+   signal pf_en    : std_logic_vector(6 downto 0) := (others => '0');
+   signal afifo    : std_logic := '0';
    signal snap_tog : std_logic := '0';
    signal clr_tog  : std_logic := '0';
 
@@ -117,6 +126,9 @@ begin
    diag_o <= diag;
    mode_o <= std_logic_vector(regs(0));
    cache_o <= std_logic_vector(regs(7)(3 downto 1)) & regs(0)(3);
+   pf_en_o <= pf_en;
+   afifo_o <= afifo;
+   mach_o  <= mach_cnt(31 downto 0);
 
    process (clk_i)
       variable cr      : unsigned(40 downto 0);
@@ -144,6 +156,10 @@ begin
          if cfg_stable = 15 and cfg_s3(7) = '1' then
             idx := to_integer(unsigned(cfg_s3(6 downto 4)));
             regs(idx) <= unsigned(cfg_s3(3 downto 0));
+            -- stage 2b: with page 5 selected, registers 3 / 4 also set the cache's prefetch enables
+            if regs(6)(2 downto 0) = "101" and idx = 3 then pf_en(3 downto 0) <= cfg_s3(3 downto 0); end if;
+            if regs(6)(2 downto 0) = "101" and idx = 4 then pf_en(6 downto 4) <= cfg_s3(2 downto 0);
+                                                               afifo <= cfg_s3(3); end if;
          end if;
 
          ---------------------------------------------------------------- injector

@@ -78,3 +78,7 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
     -to [get_clocks clk_pll_i]
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/q_ack_reg}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/qack_s1_reg}]
+## stage 2b: audio_fifo.vhd -- the write pointer (main_clk, Gray) to the source clock (same tree,
+## but the FIFO treats them as unrelated) and the M2M reset into main_clk
+set_max_delay 32 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_audio_fifo/wp_g_reg*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_audio_fifo/wp_s1_reg*}]

@@ -41,6 +41,10 @@ entity clk is
       stall_diag_o    : out std_logic_vector(95 downto 0);   -- bridge STATUS 60..71 (src_clk_o)
       stall_mode_o    : out std_logic_vector(3 downto 0);    -- controller register 0 (src_clk_o)
       stall_cache_o   : out std_logic_vector(3 downto 0);    -- chip cache settings (src_clk_o)
+      stall_pf_en_o   : out std_logic_vector(6 downto 0);    -- chip cache prefetch enables (src_clk_o)
+      stall_afifo_o   : out std_logic;                       -- audio FIFO on (src_clk_o)
+      stall_mach_o    : out unsigned(31 downto 0);           -- machine ticks (src_clk_o)
+      stall_lag_o     : out unsigned(31 downto 0);           -- current lag (src_clk_o)
       cache_fills_i   : in  unsigned(31 downto 0) := (others => '0');
       cache_wbacks_i  : in  unsigned(31 downto 0) := (others => '0')
    );
@@ -106,10 +110,11 @@ begin
          probe_i => probe_i,
          ce_o    => ce,
          inj_o   => open,
-         lag_o   => open,
+         lag_o   => stall_lag_o,
          diag_o  => stall_diag_o,
          mode_o  => stall_mode_o,
-         cache_o => stall_cache_o,
+         cache_o => stall_cache_o, pf_en_o => stall_pf_en_o,
+         afifo_o => stall_afifo_o, mach_o => stall_mach_o,
          fills_i => cache_fills_i,
          wbacks_i => cache_wbacks_i
       );
