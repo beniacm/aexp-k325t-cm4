@@ -29,7 +29,7 @@ TESTS = ["pal256", "fmode1", "fmode2", "fmode3", "ddf3c", "hires8f3", "xor", "ha
 def grab(dev, secs, png):
     """record secs seconds of the HDMI input, discard the first second, keep the last frame"""
     tmp = png + ".mkv"
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "v4l2", "-input_format",
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "v4l2", "-use_wallclock_as_timestamps", "1", "-input_format",
                     "yuyv422", "-video_size", "1280x720", "-framerate", "50", "-i", dev, "-t", str(secs),
                     "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", tmp], timeout=secs + 30)
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", "1", "-sseof", "-0.1",

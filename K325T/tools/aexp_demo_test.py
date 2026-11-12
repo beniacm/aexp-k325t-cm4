@@ -161,9 +161,11 @@ def capture_device():
 
 
 def record(dev, path, secs):
-    """H.264 clip of the HDMI input; returns the Popen (runs in the background)"""
+    """H.264 clip of the HDMI input; returns the Popen (runs in the background).  Wall-clock
+    timestamps: the dongle's own v4l2 timestamps made "-t" end every clip before its first frame
+    (empty 261-byte files, seen 2026-11-12 after the dongle had run for hours)"""
     return subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                             "-f", "v4l2", "-input_format", "yuyv422", "-video_size", "1280x720",
+                             "-f", "v4l2", "-use_wallclock_as_timestamps", "1", "-input_format", "yuyv422", "-video_size", "1280x720",
                              "-framerate", "50", "-i", dev,
                              "-map", "0", "-t", str(secs), "-c:v", "libx264", "-preset", "veryfast",
                              "-crf", "20", path,
