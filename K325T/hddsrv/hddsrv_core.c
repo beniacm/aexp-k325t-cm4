@@ -67,6 +67,9 @@ int hdd_engine(struct hdd *h, uint8_t cmd, int has_data, uint16_t data, uint16_t
     return -1;
 }
 
+/* an engine error: -1 link, -2 the Amiga is in reset (result x"DEAD"): passed up unchanged */
+#define TRY(x) do { int rc_ = (x); if (rc_) return rc_; } while (0)
+
 static int regrd(struct hdd *h, unsigned a, uint16_t *v) { return hdd_engine(h, 0x10 | a, 0, 0, v); }
 static int regwr(struct hdd *h, unsigned a, uint16_t v)  { return hdd_engine(h, 0x20 | a, 1, v, 0); }
 static int ptr0(struct hdd *h)                           { return hdd_engine(h, 0x32, 0, 0, 0); }
@@ -148,7 +151,7 @@ static void identify(struct hdd *h, uint8_t *b)
 
 static int finish(struct hdd *h, unsigned status, unsigned error)
 {
-    if (regwr(h, 0, (uint16_t)(error << 8 | 1))) return -1;     /* error register (0 = none) */
+    TRY(regwr(h, 0, (uint16_t)(error << 8 | 1)));     /* error register (0 = none) */
     return regwr(h, 5, (uint16_t)status);
 }
 
@@ -168,7 +171,11 @@ static int wait_block(struct hdd *h)
         if (r < 0) return -1;
         if (hdd_status(h, &fl, 0)) return -1;
         if ((fl & 7) == 5) return 0;
-        if ((fl & 7) == 6) return -2;
+        if ((fl & 7) == 6 || (fl & 7) == 4) {   /* a reset, or a new command after a reset: give up
+                                                   this one, the next round takes the new request */
+            lg(h, "data phase ended by request %u (Amiga reset)", fl & 7, 0, 0, 0);
+            return -2;
+        }
         if (fl & 0x40) {                     /* a leftover done keeps att high: acknowledge it */
             uint8_t tx[1] = {0x01}, rx[1];
             h->io.xfer(h->io.ctx, tx, rx, 1);
@@ -180,12 +187,14 @@ static int wait_block(struct hdd *h)
 
 static int do_reset(struct hdd *h)
 {
-    h->resets++;
     h->multiple = 0;
     h->cur_heads = h->heads;
     h->cur_spt = h->spt;
-    if (regwr(h, 6, 0x0009)) return -1;      /* drive 0 present, no LBA48 */
-    return regwr(h, 5, ST_DRDY | ST_DSC);
+    TRY(regwr(h, 6, 0x0009));      /* drive 0 present, no LBA48 */
+    TRY(regwr(h, 5, ST_DRDY | ST_DSC));   /* -2 while the Amiga is still in reset: the caller retries */
+    h->resets++;
+    if (h->verbose) lg(h, "reset (request 110) answered", 0, 0, 0, 0);
+    return 0;
 }
 
 static int command(struct hdd *h)
@@ -196,7 +205,7 @@ static int command(struct hdd *h)
     uint8_t buf[HDD_MAX_MULTIPLE * 512];
     int lbamode, rc, write, multi;
 
-    if (regrd(h, 1, &r1) || regrd(h, 2, &r2) || regrd(h, 5, &r5)) return -1;
+    TRY(regrd(h, 1, &r1)); TRY(regrd(h, 2, &r2)); TRY(regrd(h, 5, &r5));
     cmd = r5 >> 8;
     drv = r5 & 0xFF;
     count = r1 & 0xFF;
@@ -213,7 +222,7 @@ static int command(struct hdd *h)
     switch (cmd) {
     case 0xEC:                               /* IDENTIFY DEVICE */
         identify(h, buf);
-        if (regwr(h, 0, 1) || ptr0(h) || hdd_put(h, buf)) return -1;
+        TRY(regwr(h, 0, 1)); TRY(ptr0(h)); TRY(hdd_put(h, buf));
         return regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | ST_LAST);
     case 0x91:                               /* INITIALIZE DEVICE PARAMETERS */
         h->cur_heads = head + 1;
@@ -245,19 +254,19 @@ static int command(struct hdd *h)
             last = i + n >= total;
             if (!write) {
                 if (h->io.rd(h->io.ctx, lba + i, n, buf)) return fail(h, ER_UNC);
-                if (regwr(h, 0, (uint16_t)n) || ptr0(h)) return -1;
+                TRY(regwr(h, 0, (uint16_t)n)); TRY(ptr0(h));
                 for (k = 0; k < n; k++)
                     if ((rc = hdd_put(h, buf + 512 * k))) return rc;
-                if (regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | (last ? ST_LAST : 0))) return -1;
+                TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | (last ? ST_LAST : 0)));
                 h->rd_sect += n;
                 if (!last && (rc = wait_block(h))) return rc;
             } else {
                 /* PIO out: DRQ for the block (no interrupt before the first block), the CPU fills
                    the buffer, request 101, the data comes back here */
-                if (regwr(h, 0, (uint16_t)n) || ptr0(h)) return -1;
-                if (regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | (i ? ST_IRQ : 0))) return -1;
+                TRY(regwr(h, 0, (uint16_t)n)); TRY(ptr0(h));
+                TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | (i ? ST_IRQ : 0)));
                 if ((rc = wait_block(h))) return rc;
-                if (ptr0(h)) return -1;
+                TRY(ptr0(h));
                 for (k = 0; k < n; k++)
                     if ((rc = hdd_get(h, buf + 512 * k))) return rc;
                 if (h->io.wr(h->io.ctx, lba + i, n, buf)) return fail(h, ER_UNC);
@@ -284,6 +293,7 @@ static int command(struct hdd *h)
 
 int hdd_init(struct hdd *h)
 {
+    uint8_t fl;
     h->heads = 16;
     h->spt = 63;
     h->cyls = (unsigned)(h->nblk / (16 * 63));
@@ -291,7 +301,10 @@ int hdd_init(struct hdd *h)
     h->cur_heads = h->heads;
     h->cur_spt = h->spt;
     h->multiple = 0;
-    return do_reset(h);
+    /* the drive appears; an idle unit gets the ready status, a pending request (a command the Amiga
+       issued while no server ran, or a reset) is left for the serve loop */
+    if (regwr(h, 6, 0x0009) || hdd_status(h, &fl, 0)) return -1;
+    return (fl & 7) ? 0 : regwr(h, 5, ST_DRDY | ST_DSC);
 }
 
 int hdd_poll(struct hdd *h, int timeout_ms)
@@ -305,15 +318,17 @@ int hdd_poll(struct hdd *h, int timeout_ms)
     case 0:
         return 0;
     case 6:
-        r = do_reset(h);
-        return r ? -1 : 1;
+        r = do_reset(h);                     /* -2: the reset is still on, the next round repeats it */
+        return r == -1 ? -1 : 1;
     case 4:
         r = command(h);
         if (r == -2) return 1;               /* the Amiga reset in the middle: the next round sees it */
         return r ? -1 : 1;
-    default:                                  /* 101 outside a command (should not happen) */
-        lg(h, "stray request %u", fl & 7, 0, 0, 0);
-        return regwr(h, 5, ST_DRDY | ST_DSC) ? -1 : 1;
+    default:                                  /* 101 outside a command: a server restarted in the
+                                                 middle of a data phase; end the command with an
+                                                 error, the OS retries */
+        lg(h, "stray request %u: command aborted", fl & 7, 0, 0, 0);
+        return fail(h, ER_ABRT) == -1 ? -1 : 1;
     }
 }
 

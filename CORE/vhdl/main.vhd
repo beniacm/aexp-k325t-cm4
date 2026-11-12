@@ -156,6 +156,10 @@ entity main is
       ide_writedata_i         : in  std_logic_vector(15 downto 0) := x"0000";
       ide_read_i              : in  std_logic := '0';
       ide_readdata_o          : out std_logic_vector(15 downto 0);
+      -- a1200-ide: minimig's reset (rst_out = sys_reset or the 68k RESET line): Gayle resets ide.v only
+      -- with a one-clock strobe at its start, so hdd_spi must see the whole reset to keep the host from
+      -- clearing the reset request (mgmt status write) before it has read it
+      ide_reset_o             : out std_logic;
 
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
@@ -899,7 +903,7 @@ begin
          dma_reg        => dma_reg_o,
 
          rst_ext        => amiga_rst,
-         rst_out        => open,
+         rst_out        => ide_reset_o,
          clk            => clk_main_i,
          clk7_en        => clk7_en,
          clk7n_en       => clk7n_en,

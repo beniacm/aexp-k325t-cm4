@@ -341,6 +341,7 @@ signal main_ide_write         : std_logic;
 signal main_ide_writedata     : std_logic_vector(15 downto 0);
 signal main_ide_read          : std_logic;
 signal main_ide_readdata      : std_logic_vector(15 downto 0);
+signal main_ide_reset         : std_logic;
 signal hr_fast_avm_write         : std_logic;
 signal hr_fast_avm_read          : std_logic;
 signal hr_fast_avm_address       : std_logic_vector(31 downto 0);
@@ -911,6 +912,7 @@ begin
          ide_writedata_i      => main_ide_writedata,
          ide_read_i           => main_ide_read,
          ide_readdata_o       => main_ide_readdata,
+         ide_reset_o          => main_ide_reset,
 
          -- MEGA65 joysticks and paddles/mouse/potentiometers
          joy_1_up_n_i         => main_joy_1_up_n_i ,
@@ -1614,7 +1616,7 @@ begin
          spi_miso_oe_o   => k325t_hd_miso_oe_o,
          att_o           => k325t_hd_att_o,
          mclk_i          => main_clk,
-         mrst_i          => main_reset_core_i or main_reset_m2m_i,
+         mrst_i          => main_reset_core_i or main_reset_m2m_i or main_ide_reset,
          ide_req_i       => main_ide_req,
          ide_address_o   => main_ide_address,
          ide_write_o     => main_ide_write,

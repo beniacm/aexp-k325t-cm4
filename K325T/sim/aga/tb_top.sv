@@ -34,6 +34,9 @@ module tb_top (
   // a1200-ide: Gayle IDE (0xF8 = 0x23 when ide_on) and the hard disk SPI of hdd_spi.vhd (main.cpp's
   // SPI master + the shared server core hddsrv_core.c on the other side)
   input  wire        ide_on,
+  input  wire        kbd_rst,          // a1200-ide tests: with rst_ext, a reset hdd_spi does not see (the board's
+                                        // keyboard reset: amiga_rst only, not main_reset_core/m2m)
+  input  wire        cpu_rst,          // a1200-ide tests: the 68k RESET instruction line (minimig _cpu_reset_in)
   input  wire        hd_sck, hd_mosi, hd_cs_n,
   output wire        hd_miso, hd_miso_oe, hd_att,
   // df0: the core's adf_track_engine, image words served by the C++ driver (DPI adf_rd)
@@ -140,6 +143,7 @@ module tb_top (
   wire [15:0] cpu_dout, cpu_din;
   wire [2:0]  cpu_ipl_n;
   wire cpu_as_n, cpu_uds_n, cpu_lds_n, cpu_rw, cpu_dtack_n, cpu_reset_out_n;
+  wire        mm_rst_out;              // minimig's reset (as main.vhd's ide_reset_o -> hdd_spi mrst on the board)
   wire [31:0] nmi_addr;
 
   wire [1:0] mm_cpucfg;
@@ -329,13 +333,13 @@ module tb_top (
   minimig minimig_inst (
     .cpu_address(cpu_addr), .cpu_data(cpu_dout), .cpudata_in(cpu_din), ._cpu_ipl(cpu_ipl_n),
     ._cpu_as(cpu_as_n), ._cpu_uds(cpu_uds_n), ._cpu_lds(cpu_lds_n), .cpu_r_w(cpu_rw),
-    ._cpu_dtack(cpu_dtack_n), ._cpu_reset(cpu_reset_n), ._cpu_reset_in(cpu_reset_out_n),
+    ._cpu_dtack(cpu_dtack_n), ._cpu_reset(cpu_reset_n), ._cpu_reset_in(cpu_reset_out_n & ~cpu_rst),
     .cpu_long(cpu_long), .chip32_en(chip32_en), .ram_long(ram_long),
     .nmi_addr(nmi_addr), .ovr(),
     .ram_data(ram_wdata), .ramdata_in(ramdata_mux), .ram_address({ram_addr23, ram_addr}),
     ._ram_bhe(ram_bhe_n), ._ram_ble(ram_ble_n), ._ram_we(ram_we_n), ._ram_oe(ram_oe_n),
     .chip48(chip48_q),
-    .rst_ext(rst_ext), .rst_out(), .clk(clk), .clk7_en(clk7_en), .clk7n_en(clk7n_en),
+    .rst_ext(rst_ext), .rst_out(mm_rst_out), .clk(clk), .clk7_en(clk7_en), .clk7n_en(clk7n_en),
     .c1(c1), .c3(c3), .cck(cck), .eclk(eclk),
     .rxd(1'b1), .txd(), .cts(1'b1), .rts(), .dtr(), .dsr(1'b1), .cd(1'b1), .ri(1'b1),
     ._joy1(16'hFFFF), ._joy2(16'hFFFF), ._joy3(16'hFFFF), ._joy4(16'hFFFF),
@@ -360,11 +364,14 @@ module tb_top (
   wire        ide_write, ide_read;
   wire [15:0] ide_writedata, ide_readdata;
   wire        hdd_fclk = use_cache ? ui_clk : clk;
+  // the SPI side resets only at power-up (on the board: the MIG's reset), not with the Amiga
+  reg hd_frst = 1;
+  always @(posedge clk) if (!rst_ext) hd_frst <= 0;
   hdd_spi i_hdd_spi (
-    .fclk_i(hdd_fclk), .frst_i(rst_ext), .enable_i(ide_on),
+    .fclk_i(hdd_fclk), .frst_i(hd_frst), .enable_i(ide_on),
     .spi_sck_i(hd_sck), .spi_mosi_i(hd_mosi), .spi_cs_n_i(hd_cs_n), .spi_miso_o(hd_miso),
     .spi_miso_oe_o(hd_miso_oe), .att_o(hd_att),
-    .mclk_i(clk), .mrst_i(rst_ext), .ide_req_i(ide_req6[2:0]), .ide_address_o(ide_address),
+    .mclk_i(clk), .mrst_i((rst_ext & ~kbd_rst) | mm_rst_out), .ide_req_i(ide_req6[2:0]), .ide_address_o(ide_address),
     .ide_write_o(ide_write), .ide_writedata_o(ide_writedata), .ide_read_o(ide_read),
     .ide_readdata_i(ide_readdata));
 

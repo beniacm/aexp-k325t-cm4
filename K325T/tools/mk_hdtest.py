@@ -15,6 +15,7 @@ hdtest, started from the startup-sequence, loops for ever:
        $EC $600DF00D after each complete pass
   Errors stop nothing (the next pass runs); a DOS error (Open/Read/Write failing) is counted in
   $E4 and the pass is skipped after a 1 s Delay.
+DOS requesters are switched off for hdtest (pr_WindowPtr = -1), so a failing disk shows up in $E4.
 The program is position-independent (one code hunk, no relocations), 68000 code, uses exec + dos only.
 """
 import argparse, os, struct, subprocess, sys, tempfile
@@ -23,6 +24,11 @@ SRC = r"""
         .text
 start:  lea     vars(%pc),%a4
         move.l  4.w,%a6
+        sub.l   %a1,%a1
+        jsr     -294(%a6)               | FindTask(0)
+        move.l  %d0,%a0
+        moveq   #-1,%d0
+        move.l  %d0,184(%a0)            | pr_WindowPtr = -1: DOS errors come back as IoErr, no requester
         lea     dosname(%pc),%a1
         moveq   #36,%d0
         jsr     -552(%a6)               | OpenLibrary("dos.library", 36)

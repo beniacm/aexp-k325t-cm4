@@ -98,7 +98,15 @@ static void spi_step(Vtb_top* top) {
       break;
   }
 }
+static struct hdd g_hdd;
+static long g_die_at = -1;            // HDD_DIE_AT_XFER: the server "crashes" at this transaction
+static std::atomic<long> g_xfer_n{0};
 static int b_xfer(void*, const uint8_t* tx, uint8_t* rx, int len) {
+  static long die_cmd = getenv("HDD_DIE_AT_CMD") ? atol(getenv("HDD_DIE_AT_CMD")) : -1, die_from = -1;
+  if (die_cmd > 0 && (long)g_hdd.cmds >= die_cmd && die_from < 0) die_from = g_xfer_n + 40;   // mid data phase
+  if (die_from > 0 && g_xfer_n + 1 == die_from) { g_die_at = die_from; die_cmd = -1; die_from = 0; }
+  if (++g_xfer_n == g_die_at) { fprintf(stderr, "hddsrv: simulated crash at transaction %ld (tick %llu)\n", g_die_at,
+                                        (unsigned long long)g_tick); return -1; }
   std::unique_lock<std::mutex> l(g_spi.m);
   g_spi.tx = tx; g_spi.rx = rx; g_spi.len = len; g_spi.done = 0; g_spi.pending = 1;
   g_spi.cv.wait(l, [] { return g_spi.done || g_hdd_stop.load(); });
@@ -117,9 +125,16 @@ static int b_wr(void*, uint64_t lba, unsigned n, const uint8_t* b) {
   return pwrite(g_hdd_fd, b, 512 * n, (off_t)(lba * 512)) == (ssize_t)(512 * n) ? 0 : -1;
 }
 static void b_log(void*, const char* m) { fprintf(stderr, "hddsrv: %s (tick %llu)\n", m, (unsigned long long)g_tick); }
-static struct hdd g_hdd;
+static std::atomic<unsigned> g_frame_a{0};
 static void hdd_thread() {
   int r;
+  if (getenv("HDD_START_FRAME")) {      // the server appears late (after Kickstart's probe)
+    unsigned f = (unsigned)atoi(getenv("HDD_START_FRAME"));
+    while (g_frame_a.load() < f && !g_hdd_stop.load()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    fprintf(stderr, "hddsrv: starting at frame %u\n", g_frame_a.load());
+  }
+  if (getenv("HDD_DIE_AT_XFER")) g_die_at = atol(getenv("HDD_DIE_AT_XFER"));
+restart:
   while ((r = hdd_init(&g_hdd)) != 0 && !g_hdd_stop.load())
     std::this_thread::sleep_for(std::chrono::milliseconds(20));      // until the Amiga's reset is over
   fprintf(stderr, "hddsrv: drive ready, %llu sectors, %u/%u/%u (tick %llu)\n", (unsigned long long)g_hdd.nblk,
@@ -136,7 +151,11 @@ static void hdd_thread() {
     fprintf(stderr, "linktest: %d rounds, %d engine errors, %d bytes differ (tick %llu)\n", rounds, errs, bad,
             (unsigned long long)g_tick);
   }
-  hdd_serve(&g_hdd, (volatile int*)&g_hdd_stop);
+  if (hdd_serve(&g_hdd, (volatile int*)&g_hdd_stop) < 0 && !g_hdd_stop.load()) {
+    fprintf(stderr, "hddsrv: restarting after a link error (tick %llu)\n", (unsigned long long)g_tick);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    goto restart;
+  }
 }
 static bool g_active = false;
 static Rec g_cur;
@@ -231,7 +250,8 @@ int main(int argc, char** argv) {
   const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
   bool shot_last = false;
   int reset_at = -1; uint64_t reset_cyc = 0;
-  const char* hdf_fn = nullptr; bool hdf_ro = false, ide_only = false, hdd_verbose = false;   // a1200-ide   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
+  const char* hdf_fn = nullptr; bool hdf_ro = false, ide_only = false, hdd_verbose = false;   // a1200-ide
+  double inj_p = 0; int inj_k = 0;   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -271,6 +291,7 @@ int main(int argc, char** argv) {
     else if (a == "--hdf-ro") hdf_ro = true;
     else if (a == "--ide") ide_only = true;
     else if (a == "--hdd-verbose") hdd_verbose = true;
+    else if (a == "--stall-inject") { inj_p = atof(nx()); inj_k = atoi(nx()); }
     else if (a == "--shot-last") shot_last = true;
     else if (a == "--reset-at") reset_at = atoi(nx());
     else if (a == "--pf") pf_mask = strtoul(nx(), 0, 0);
@@ -354,6 +375,7 @@ int main(int argc, char** argv) {
   const uint64_t SRC_H = 15969, UI_H = 5000;   // half periods in ps
   uint64_t t_src = SRC_H, t_ui = UI_H, src_edges = 0, stalled = 0;
   bool src_lvl = false, ui_lvl = false;
+  int inj_left = 0; uint64_t inj_n = 0;
   auto machine_edge = [&]() {
     if (!use_cache) { top->clk = 0; top->eval(); top->clk = 1; top->eval(); if (hdf_fn) spi_step(top); return; }
     for (;;) {
@@ -367,13 +389,37 @@ int main(int argc, char** argv) {
       src_edges++;
       if (src_edges == 64) top->cache_reset = 0;      // the full reset: the cache latches its mode
       bool pass = !top->miss;
+      // --stall-inject P K: the stall injector's effect in the bench: with probability P per source edge the
+      // machine clock stops for K source edges (ui_clk and so the disk link keep running)
+      if (pass && inj_left > 0) { inj_left--; pass = false; }
+      else if (pass && inj_p > 0 && (double)rand() / RAND_MAX < inj_p) { inj_left = inj_k - 1; pass = false; inj_n++; }
       top->src_clk = 1; if (pass) top->clk = 1; top->eval();
       if (pass) return;
       stalled++;
     }
   };
+  // HDD_RESET_AT_CMD=N[,S][,kbd|cpu]: once the server has started its N-th ATA command and moved S more
+  // sectors (default 0: at the command's start), a reset for 200 ticks: full (rst_ext, hdd_spi too: the
+  // board's M2M/menu reset), kbd (rst_ext but not hdd_spi's mrst: the board's keyboard reset, which is
+  // amiga_rst only) or cpu (minimig _cpu_reset_in: the 68k RESET instruction; resets Gayle, not the CPU)
+  const char* rs = getenv("HDD_RESET_AT_CMD");
+  long rst_cmd = rs ? atol(rs) : -1, rst_sect = (rs && strchr(rs, ',')) ? atol(strchr(rs, ',') + 1) : 0, rst_base = -1;
+  int rst_kind = !rs ? 0 : strstr(rs, "kbd") ? 1 : strstr(rs, "cpu") ? 2 : 0;
+  uint64_t kbd_until = 0;
+  top->kbd_rst = 0; top->cpu_rst = 0;
   for (uint64_t cyc = cyc0;; cyc++) {
     machine_edge();
+    if (rst_cmd > 0 && rst_base < 0 && (long)g_hdd.cmds >= rst_cmd) rst_base = (long)(g_hdd.rd_sect + g_hdd.wr_sect);
+    if (rst_cmd > 0 && rst_base >= 0 && (long)(g_hdd.rd_sect + g_hdd.wr_sect) >= rst_base + rst_sect) {
+      rst_cmd = -1;
+      fprintf(stderr, "%s reset at ATA command %llu after %ld sectors of it, frame %u tick %llu\n",
+              rst_kind == 1 ? "keyboard" : rst_kind == 2 ? "RESET-instruction" : "full", (unsigned long long)g_hdd.cmds,
+              rst_sect, g_frame, (unsigned long long)g_tick);
+      if (rst_kind == 1) { top->kbd_rst = 1; top->rst_ext = 1; reset_cyc = cyc; kbd_until = cyc + 200; }
+      else if (rst_kind == 2) { top->cpu_rst = 1; kbd_until = cyc + 200; }
+      else { top->rst_ext = 1; reset_cyc = cyc; }
+    }
+    if (kbd_until && cyc >= kbd_until) { top->kbd_rst = 0; top->cpu_rst = 0; kbd_until = 0; }
     g_tick++;
     if (cyc == 200) top->rst_ext = 0;
     if (reset_cyc && cyc == reset_cyc + 200) { top->rst_ext = 0; reset_cyc = 0; }
@@ -415,6 +461,7 @@ int main(int argc, char** argv) {
       col = 0;
       if (vpos == 0 && g_last_vpos > 0) {
         g_frame++;
+        g_frame_a = g_frame;
         if (g_frame % 10 == 0) fprintf(stderr, "frame %u tick %llu recs %llu pc %06x\n", g_frame,
                                        (unsigned long long)g_tick, (unsigned long long)g_nrec,
                                        top->o_cpu_addr << 1);
@@ -505,6 +552,7 @@ int main(int argc, char** argv) {
   fprintf(stderr, "done: %llu ticks, %llu records\n", (unsigned long long)g_tick,
           (unsigned long long)g_nrec);
   top->final();
+  if (inj_p > 0) fprintf(stderr, "injector: %llu stalls of %d source edges\n", (unsigned long long)inj_n, inj_k);
   if (hdf_fn) {
     fprintf(stderr, "hddsrv: %llu commands, %llu sectors read, %llu written, %llu errors, %llu resets, "
             "%llu timeouts; SPI %llu transactions %llu bytes\n", (unsigned long long)g_hdd.cmds,
