@@ -2,7 +2,8 @@
 // stub while IDE was off): true dual port, one clock, 1-cycle read latency, write-first per port
 module dpram #(parameter AW=12, DW=16) (input clock, input [AW-1:0] address_a, input [DW-1:0] data_a,
   input wren_a, output reg [DW-1:0] q_a, input [AW-1:0] address_b, input [DW-1:0] data_b,
-  input wren_b, output reg [DW-1:0] q_b);
+  input wren_b, output reg [DW-1:0] q_b,
+  input enable_a, input cs_a, input enable_b, input cs_b);   // bram.vhd ports (unused here)
   reg [DW-1:0] ram [0:(1<<AW)-1];
   integer i;
   initial for (i = 0; i < (1<<AW); i = i + 1) ram[i] = 0;

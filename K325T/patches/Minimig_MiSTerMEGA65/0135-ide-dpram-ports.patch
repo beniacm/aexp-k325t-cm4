@@ -1,0 +1,31 @@
+K325T: ide.v's two buffer RAMs get their enable/cs ports connected (A1200 hard disk, branch a1200-ide)
+rtl/bram.vhd's dpram (the AExp Vivado port of the altsyncram wrapper) has enable_a/b and cs_a/b with
+VHDL defaults '1'.  ide.v's instances leave them open; Vivado ties open ports of a Verilog instance
+of a VHDL entity to 0, so cs = 0: q all ones and no writes (found on the board: every buffer word
+read FFFF).  ide.v was not built before the hard disk (IDE off in the A500 port).
+--- a/rtl/ide.v
++++ b/rtl/ide.v
+@@ -297,7 +297,10 @@
+ 	.address_b(io_cnt[11:1]),
+ 	.data_b(io_writedata[15:0]),
+ 	.wren_b(write_data_io & (io_32 | ~io_cnt[0])),
+-	.q_b(buf_q[15:0])
++	.q_b(buf_q[15:0]),
++	// K325T (2026-11-13): bram.vhd's dpram has enable/cs ports with VHDL defaults '1'; Vivado ties
++	// ports a Verilog instance leaves open to 0 (cs = 0: q all ones, no writes), so connect them
++	.enable_a(1'b1), .cs_a(1'b1), .enable_b(1'b1), .cs_b(1'b1)
+ );
+ 
+ //dpram #(12,16) io_buf1
+@@ -313,7 +316,10 @@
+ 	.address_b(io_cnt[11:1]),
+ 	.data_b(io_32 ? io_writedata[31:16] : io_writedata[15:0]),
+ 	.wren_b(write_data_io & (io_32 | io_cnt[0])),
+-	.q_b(buf_q[31:16])
++	.q_b(buf_q[31:16]),
++	// K325T (2026-11-13): bram.vhd's dpram has enable/cs ports with VHDL defaults '1'; Vivado ties
++	// ports a Verilog instance leaves open to 0 (cs = 0: q all ones, no writes), so connect them
++	.enable_a(1'b1), .cs_a(1'b1), .enable_b(1'b1), .cs_b(1'b1)
+ );
+ 
+ //------------------------------------------------------------------------------
