@@ -2092,6 +2092,9 @@ round (FINDINGS.md).  The final form (this commit, the fix unconditional) is bui
   mouse click at ~50 s: "please insert disk 2 (press mouse)"), Mindflow, Motion, Roots 2.0, Full Moon,
   Domination and Crazy Sexy Cool (right click past its AntiVirus boot block) run through the parts the
   emulators show; with Nexus 7, Roots and Art Paradise (no fast RAM) that is 10 of the 11.  Twisted
-  runs for about 4 minutes and then stops in its own crash screen (a CHK exception, PC in fast RAM);
-  the emulator references are too short to show where it first differs.
+  runs for about 4 minutes and then stops in its own crash screen (a CHK exception, PC in fast RAM;
+  with disk 4 inserted earlier a Line-A exception instead): the part after the eye cube (line
+  drawings) is missing or garbled.  The emulator ran with disks A-D in four drives; the crash moving
+  with the swap time points at data read from the wrong disk (our core has only df0), not yet at a
+  CPU or chipset fault.
 - `aexp_demo_test.py` presses mouse buttons on a schedule (54c3b82).
