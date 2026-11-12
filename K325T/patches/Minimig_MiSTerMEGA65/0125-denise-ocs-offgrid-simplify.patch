@@ -1,5 +1,5 @@
 K325T: port of MiSTer-devel/Minimig-AGA_MiSTer 3c5d2ea (class b: changes OCS/ECS behaviour)
-"denise: simplify OCS LORES fetch ownership state" (#252), behaviour-preserving refactor of 0024.
+"denise: simplify OCS LORES fetch ownership state" (#252), behaviour-preserving refactor of 0124.
 --- a/rtl/denise_bitplanes.v
 +++ b/rtl/denise_bitplanes.v
 @@ -286,17 +286,13 @@

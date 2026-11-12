@@ -1,5 +1,5 @@
 K325T: port of MiSTer-devel/Minimig-AGA_MiSTer 56ba962 (class b: changes OCS/ECS behaviour)
-"gary: keep the custom register mirror at $C00000-$D7FFFF" (#254): with 0019, Kickstart 1.2 sized
+"gary: keep the custom register mirror at $C00000-$D7FFFF" (#254): with 0119, Kickstart 1.2 sized
 phantom slow RAM; the mirror stays where no slow RAM is configured, $D80000-$DEFFFF unmapped.
 --- a/rtl/gary.v
 +++ b/rtl/gary.v

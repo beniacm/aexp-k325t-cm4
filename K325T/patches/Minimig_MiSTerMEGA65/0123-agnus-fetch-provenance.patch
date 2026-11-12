@@ -1,5 +1,5 @@
 K325T: port of MiSTer-devel/Minimig-AGA_MiSTer cfcc0dc (class b: changes OCS/ECS behaviour)
-"agnus: export bitplane fetch provenance" (with 0024/0025: Absolute Inebriation, MiSTer #246/#251).
+"agnus: export bitplane fetch provenance" (with 0124/0125: Absolute Inebriation, MiSTer #246/#251).
 --- a/rtl/agnus.v
 +++ b/rtl/agnus.v
 @@ -66,6 +66,10 @@

@@ -1,4 +1,4 @@
-K325T stage 3: minimig_m65.v passes the 68EC020 32-bit chip-cycle signals of patch 0014 (cpu_long,
+K325T stage 3: minimig_m65.v passes the 68EC020 32-bit chip-cycle signals of patch 0114 (cpu_long,
 chip32_en, ram_long) to main.vhd.
 --- a/rtl/minimig_m65.v
 +++ b/rtl/minimig_m65.v

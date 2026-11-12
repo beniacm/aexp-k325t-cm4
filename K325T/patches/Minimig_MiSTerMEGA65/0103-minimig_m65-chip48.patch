@@ -1,8 +1,7 @@
-diff --git a/rtl/minimig_m65.v b/rtl/minimig_m65.v
-index 840d8e7..9553ee3 100644
+K325T stage 3: minimig_m65 passes the AGA wide fetch (chip48) from main.vhd into minimig (was tied to 0)
 --- a/rtl/minimig_m65.v
 +++ b/rtl/minimig_m65.v
-@@ -45,6 +45,9 @@ module minimig_m65
+@@ -47,6 +47,9 @@
  	output        ram_ble_n,      // lower byte enable (bits 7:0), active low
  	output        ram_we_n,       // write enable, active low
  	output        ram_oe_n,       // output/read enable, active low
@@ -12,13 +11,13 @@ index 840d8e7..9553ee3 100644
  
  	// system
  	input         rst_ext,        // external reset request, active high
-@@ -134,7 +137,8 @@ minimig minimig_inst
+@@ -136,7 +139,8 @@
  	._ram_ble      (ram_ble_n    ),
  	._ram_we       (ram_we_n     ),
  	._ram_oe       (ram_oe_n     ),
 -	.chip48        (48'h0        ), // AGA 64-bit fetch: OCS keeps fmode=0, logic prunes
 +	// K325T stage 3: was 48'h0 (AGA 64-bit fetch tied off); OCS/ECS keep fmode = 0 and ignore it
 +	.chip48        (chip48       ),
+ 	.dma_dbr       (dma_dbr      ),
+ 	.dma_reg       (dma_reg      ),
  
- 	//system pins
- 	.rst_ext       (rst_ext      ),

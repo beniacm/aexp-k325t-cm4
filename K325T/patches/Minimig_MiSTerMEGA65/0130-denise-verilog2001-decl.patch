@@ -1,4 +1,4 @@
-K325T: the BPLAM register of 0010 (MiSTer c1f14c3) declared outside its always block
+K325T: the BPLAM register of 0110 (MiSTer c1f14c3) declared outside its always block
 Vivado reads denise.v as Verilog, where an unnamed block takes no declarations (Synth 8-10632).
 --- a/rtl/denise.v
 +++ b/rtl/denise.v

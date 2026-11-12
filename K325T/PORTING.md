@@ -1321,7 +1321,7 @@ Proposed order (each step testable on the board against this bench and the FS-UA
 | `tools/mk_a500probe.py` | OCS/ECS probes for the class-b ports |
 | `tools/mk_bootadf.py` | bootable FFS ADF from AmigaDOS files (setchiprev first) |
 | `tools/run_winuae.py` | WinUAE 6.1 without a display (A1200 accuracy options, capture, scripted clicks) |
-| `patches/Minimig_MiSTerMEGA65/0004-0028` | MiSTer upstream ports, one per upstream commit (header names it) |
+| `patches/Minimig_MiSTerMEGA65/0103-0130` | MiSTer upstream ports, one per upstream commit (header names it) |
 | `cpu020/` | TG68K_MMU030.vhd and MiSTer's `cpu_cycles.v` with its tables (`.mem`) |
 
 Outside the repository: `ext/a1200_demos/` (downloads, `manifest.*`, `make_manifest.py`, `run_refs.sh`,
@@ -1398,20 +1398,20 @@ upstream commit in its header); merges are listed with what they add beyond thei
 | d39b26f | c | sys update | MiSTer framework | - |
 | bc4b31c | c | README | docs | - |
 | b265a3b | c | release 20260823 | binary | - |
-| b013ce3 | b | CIA: CNT pin and Timer A/B INMODE count sources (#230) | Crystal Kingdom Dizzy (crack sets INMODE by accident; the timer must never underflow) | 0016 |
+| b013ce3 | b | CIA: CNT pin and Timer A/B INMODE count sources (#230) | Crystal Kingdom Dizzy (crack sets INMODE by accident; the timer must never underflow) | 0116 |
 | c26772a | c | Akiko PIO command register (#229) | CD32 | - |
-| d16cd84 | b | Agnus: `field1` only with LACE ("false interlace") | LOF toggled by software without LACE was reported as interlace (video output only, no Amiga-visible change) | 0017 |
+| d16cd84 | b | Agnus: `field1` only with LACE ("false interlace") | LOF toggled by software without LACE was reported as interlace (video output only, no Amiga-visible change) | 0117 |
 | 7ce2980 | b | Agnus: DMA slot grid one CCK earlier (#232) | Hybris; reverted by 0bf2182 / 002eef2 (broke Rampage) | net zero, not ported |
-| 148931d | d | stock-speed throttle at half A1200 speed (#233) | 68020 speed | in 0013 (MiSTer's cpu_wrapper) |
-| 67af318 | d | cpucfg/cachecfg bits re-arranged | 68020 options | in 0013, main.vhd maps the bits |
+| 148931d | d | stock-speed throttle at half A1200 speed (#233) | 68020 speed | in 0113 (MiSTer's cpu_wrapper) |
+| 67af318 | d | cpucfg/cachecfg bits re-arranged | 68020 options | in 0113, main.vhd maps the bits |
 | 27acb14 | d | Gayle fast IDE for the throttled 68020 | IDE (not built here) | - |
-| 06f30af | b | Agnus: VHPOSR reads one CCK lower (#234) | vAmigaTS VPOS suite measured on an A500 ECS: every horizontal probe read +1 | 0018 |
-| 74d6ce0 | b | Gary: custom registers only at $DFxxxx (#235) | WhichAmiga 1.4 probing $DD0000 hit a real register; measured on hardware | 0019 |
-| 5578afd | b | blitter freezes when BLTCON1 turns fill off during a D-only fill blit (#236) | Absolute Inebriation (Virtual Dreams) | 0020 |
+| 06f30af | b | Agnus: VHPOSR reads one CCK lower (#234) | vAmigaTS VPOS suite measured on an A500 ECS: every horizontal probe read +1 | 0118 |
+| 74d6ce0 | b | Gary: custom registers only at $DFxxxx (#235) | WhichAmiga 1.4 probing $DD0000 hit a real register; measured on hardware | 0119 |
+| 5578afd | b | blitter freezes when BLTCON1 turns fill off during a D-only fill blit (#236) | Absolute Inebriation (Virtual Dreams) | 0120 |
 | d760626 | c | release 20260907 | binary | - |
 | 0bf2182 | b | restore the pre-#232 DMA grid | Rampage | net zero with 7ce2980 |
-| 2764b51 | b | Agnus: vertical beam readback one CCK later | Hybris (MiSTer #237); WinUAE 683311be as reference | 0021 |
-| 002eef2 | b | merge: #232 reverted + 2764b51 | - | = 0021 |
+| 2764b51 | b | Agnus: vertical beam readback one CCK later | Hybris (MiSTer #237); WinUAE 683311be as reference | 0121 |
+| 002eef2 | b | merge: #232 reverted + 2764b51 | - | = 0121 |
 | da7632e | c | OS3 Mountlist (#244) | host file system | - |
 | c1134ac | c | real floppy drives on the user port (#245) | MiSTer hardware | - |
 | e6d9262 | c | zero-floppy-drives mode | MiSTer menu option; changes the HPS floppy status word (our adf_track_engine would need it too) | - |
@@ -1419,26 +1419,26 @@ upstream commit in its header); merges are listed with what they add beyond thei
 | a527fbb | c | DSKBYTR legacy value without flux media | undoes c1134ac's change for emulated drives; our base already has the legacy value | - |
 | 16934d3 | c | merge #249 (zero drives) | - | - |
 | 8325735 | c | README A2065 (#250) | docs | - |
-| 7f93ed1 | b | Denise: OCS/ECS BPLCON1 writes act on the live scroll state | Absolute Inebriation | 0022 |
-| cfcc0dc | b | Agnus: export bitplane fetch provenance to Denise | Absolute Inebriation (with 3c8a0ed) | 0023 |
-| 3c8a0ed | b | Denise: OCS LORES off-grid fetch ownership | Absolute Inebriation | 0024 |
+| 7f93ed1 | b | Denise: OCS/ECS BPLCON1 writes act on the live scroll state | Absolute Inebriation | 0122 |
+| cfcc0dc | b | Agnus: export bitplane fetch provenance to Denise | Absolute Inebriation (with 3c8a0ed) | 0123 |
+| 3c8a0ed | b | Denise: OCS LORES off-grid fetch ownership | Absolute Inebriation | 0124 |
 | c5ffbf9 | b | merge "Fix Absolute Inebriation" | adds nothing beyond its parents | - |
-| 3c5d2ea | b | Denise: simplify the OCS LORES fetch state (#252) | refactor of 3c8a0ed, same behaviour | 0025 |
-| 2bddf21 | b | CIA timers start two E-clock stages after START (#253) | Risky Woods sound effects (OCS/ECS, 68000), as WinUAE | 0026 |
-| 56ba962 | b | Gary: custom register mirror at $C00000-$D7FFFF again (#254) | Kickstart 1.2 found 1.75 MB phantom slow RAM after #235 | 0027 |
+| 3c5d2ea | b | Denise: simplify the OCS LORES fetch state (#252) | refactor of 3c8a0ed, same behaviour | 0125 |
+| 2bddf21 | b | CIA timers start two E-clock stages after START (#253) | Risky Woods sound effects (OCS/ECS, 68000), as WinUAE | 0126 |
+| 56ba962 | b | Gary: custom register mirror at $C00000-$D7FFFF again (#254) | Kickstart 1.2 found 1.75 MB phantom slow RAM after #235 | 0127 |
 | 691c2b7 | c | ddram_ctrl: DMA must not overtake a posted CPU write (#255) | MiSTer DDR controller | - |
 | d241338 | c | A2065 CSR0 (#256) | - | - |
 | 83ea662 | c | ddram_ctrl read beat (#258) | - | - |
-| 61d3f02 | a | Denise: DIWHIGH 70/35 ns bits (#259) | AGA fine window | 0004 |
-| 16227ac | a | Denise: SPRxCTL 70/35 ns bits (#260) | AGA sprites | 0005 |
-| 430209e | a | Agnus: HBSTRT/HBSTOP fine bits (#261) | AGA | 0006 |
+| 61d3f02 | a | Denise: DIWHIGH 70/35 ns bits (#259) | AGA fine window | 0104 |
+| 16227ac | a | Denise: SPRxCTL 70/35 ns bits (#260) | AGA sprites | 0105 |
+| 430209e | a | Agnus: HBSTRT/HBSTOP fine bits (#261) | AGA | 0106 |
 | 6b82678 | c | cdtv_bridge / toccata declare before use (#264) | - | - |
-| e187420 | b | Agnus: a BPLxPT write right before its fetch goes nowhere (#262) | TLC PowerTrax (hint by Toni Wilen); not chipset-gated | 0007 (ported with the AGA set; OCS determinism unchanged) |
+| e187420 | b | Agnus: a BPLxPT write right before its fetch goes nowhere (#262) | TLC PowerTrax (hint by Toni Wilen); not chipset-gated | 0107 (ported with the AGA set; OCS determinism unchanged) |
 | cbf17d2 | c | Akiko unknown command length (#263) | CD32 | - |
 | c9502ba | c | A2065 CSR0 (#274) | - | - |
-| c55ecd9 | d | cycle-exact 68EC020 (#276) | A1200 speed | 0013-0015 |
+| c55ecd9 | d | cycle-exact 68EC020 (#276) | A1200 speed | 0113-0115 |
 | 6c66eb1 | c | floppy drive sounds (#275) | MiSTer feature (paula_floppy select decode rewritten, same function) | - |
-| f3ab2c1 | a | Denise: FMODE fetch start (#278) | Turrican 2 AGA scrolling | 0008 |
+| f3ab2c1 | a | Denise: FMODE fetch start (#278) | Turrican 2 AGA scrolling | 0108 |
 | ec1353d | d | 68030 with MMU (#277) | - | only TG68K_MMU030.vhd (the kernel needs it to compile) |
 | 6ec821d | c | README 68EC020 (#280) | - | - |
 | 5b93485 | c | RTG with MMU (#281), reverted by 4767064 | - | - |
@@ -1448,28 +1448,28 @@ upstream commit in its header); merges are listed with what they add beyond thei
 | 5cd5056 | c | README | - | - |
 | b961d73 | d | merge 68EC030 + cache (#283) | - | - |
 | 4767064 | c | revert #281 | - | - |
-| 4ab0d5f | a | Denise: sprite fine shift | Flink AGA black stripes | 0009 |
+| 4ab0d5f | a | Denise: sprite fine shift | Flink AGA black stripes | 0109 |
 | de795a7 | c | sdram_ctrl | - | - |
-| b988bd0 | a/c | merge Flink + 68EC020 freeze (sdram_ctrl) | - | = 0009 |
-| 8813609 | b | CPU write to a blitter register waits while a BLTPRI blit runs (#287) | Deep Core (CD32): the cached 68EC020 wrote into a running blit | 0028 adapted: 68020 only (a 68000 keeps the idle cycles of a BLTPRI blit); its ddram_ctrl part is c |
+| b988bd0 | a/c | merge Flink + 68EC020 freeze (sdram_ctrl) | - | = 0109 |
+| 8813609 | b | CPU write to a blitter register waits while a BLTPRI blit runs (#287) | Deep Core (CD32): the cached 68EC020 wrote into a running blit | 0128 adapted: 68020 only (a 68000 keeps the idle cycles of a BLTPRI blit); its ddram_ctrl part is c |
 | 5306e18 | c | sdram_ctrl | - | - |
-| cf24493 | d | cpu_wrapper memory word mux | timing | in 0013 |
-| a189426 | d | TG68K long chains | timing | in 0012 |
-| ba5adba | c/d | merge timings (#289) | - | in 0012/0013 |
+| cf24493 | d | cpu_wrapper memory word mux | timing | in 0113 |
+| a189426 | d | TG68K long chains | timing | in 0112 |
+| ba5adba | c/d | merge timings (#289) | - | in 0112/0113 |
 | 1abd1fa | c | Akiko | - | - |
 | 3192739 | c | Akiko | - | - |
 | ce1f386 | c | Akiko CD speed | - | - |
-| f1af4fe | d | cpu_wrapper: no chip read where TG68K skips the fetch | 68EC020 | in 0013 |
-| c1f14c3 | a | Denise: BPLAM (bplxor) up to the last pixel | Alien 3 (AGA) | 0010 |
-| 06db70b | a/c/d | merge: CD speed (c), Pierre le Chef CPU fix (d), Alien 3 (a) | - | in 0013 / 0010 |
+| f1af4fe | d | cpu_wrapper: no chip read where TG68K skips the fetch | 68EC020 | in 0113 |
+| c1f14c3 | a | Denise: BPLAM (bplxor) up to the last pixel | Alien 3 (AGA) | 0110 |
+| 06db70b | a/c/d | merge: CD speed (c), Pierre le Chef CPU fix (d), Alien 3 (a) | - | in 0113 / 0110 |
 | bf5d061 | c | Action Replay cartridge option (#291) | cartridge (gated by ar_on) | - |
 | a2826ce | c | Akiko | - | - |
 | b8a5bbd | c | Akiko DMA delays | - | - |
-| 6e84afe | a | Agnus: the final D write of a blit before the CPU, AGA only | - | 0011 |
-| 09226f7 | d | 68EC020 instruction cache and chip bus fetch | A1200 speed | 0012/0013 |
+| 6e84afe | a | Agnus: the final D write of a blit before the CPU, AGA only | - | 0111 |
+| 09226f7 | d | 68EC020 instruction cache and chip bus fetch | A1200 speed | 0112/0113 |
 | 69fb350 | b | userio: no opposite joystick directions | Deep Core crashed on them; limited to HPS joysticks by c88a6f9 | net c, not ported |
 | 6599190 | c | sdram_ctrl | - | - |
-| 897af79 | d | cpu_wrapper memory ready | timing | in 0013 |
+| 897af79 | d | cpu_wrapper memory ready | timing | in 0113 |
 | e47c345 | a/c/d | merge Akiko / Agnus (= 6e84afe) / CPU / joystick / SDRAM | - | see parents |
 | 0d6bd62 | c | SNAC joystick on the user port | MiSTer hardware | - |
 | 48a35dd | c | Akiko | - | - |
@@ -1482,46 +1482,46 @@ upstream commit in its header); merges are listed with what they add beyond thei
 | 7821c15 | c | sys update | - | - |
 | 7d5d3c2 | c | warnings | - | - |
 
-Totals (90 commits): **a** 7, all ported (0004-0006, 0008-0011); **b** 19: 14 ported as one patch each
-(0007 = e187420, 0016-0028), 4 are net zero (7ce2980 / 0bf2182 / the merge 002eef2 revert each other
-except for 2764b51 = 0021; the merge c5ffbf9 adds nothing), 69fb350 was narrowed to MiSTer's HPS
-joysticks by c88a6f9 (net c); **c** 47 (+ 4 merges mixing a/c/d); **d** 13, in 0012-0015 where they
+Totals (90 commits): **a** 7, all ported (0104-0106, 0108-0111); **b** 19: 14 ported as one patch each
+(0107 = e187420, 0116-0128), 4 are net zero (7ce2980 / 0bf2182 / the merge 002eef2 revert each other
+except for 2764b51 = 0121; the merge c5ffbf9 adds nothing), 69fb350 was narrowed to MiSTer's HPS
+joysticks by c88a6f9 (net c); **c** 47 (+ 4 merges mixing a/c/d); **d** 13, in 0112-0115 where they
 touch cpu_wrapper / TG68K (MiSTer master's files), the 68030 / MMU / fast-RAM cache not ported.
 
 ### Class a: OCS/ECS bit-identical
 
-0004-0011 (0007 = e187420 is class b by the definition, ported with this set).  OCS and ECS
+0104-0111 (0107 = e187420 is class b by the definition, ported with this set).  OCS and ECS
 determinism mailbox and frame 159 md5 identical before and after.  ddf3c now moves 64 px (origin
 335), as MiSTer master and FS-UAE.
 
 ### Class b: one patch per upstream commit
 
 Own probe `tools/mk_a500probe.py` (A500 configuration, no Kickstart) and the determinism workload,
-each patch alone on top of 0001-0015 (dependent pairs together: 0018+0021, 0016+0026, 0019+0027,
-0020+0028, 0022-0025), and all together (`build_p6`):
+each patch alone on top of 0001-0115 (dependent pairs together: 0118+0121, 0116+0126, 0119+0127,
+0120+0128, 0122-0125), and all together (`build_p6`):
 
 | patch (upstream) | behaviour change | own probe, before -> after | determinism workload (A500, fx68k) |
 |---|---|---|---|
-| 0016 (b013ce3) CIA INMODE | a timer with INMODE counts CNT (or underflows gated by CNT), not the E clock | timer A INMODE=1 from $0040 after 2 frames: $0010 (E counted) -> $0040 (CNT idle) | identical |
-| 0017 (d16cd84) false interlace | `field1` (video output, AExp's deinterlacer) only with LACE | - (not readable by the Amiga) | identical |
-| 0018 (06f30af) VHPOSR -1 | VHPOSR returns hpos-1 (htotal at the wrap) | VHPOSR after line $40->$41: $410C/$4127 -> $410B/$4126 | **changes**: checksums 27dbf6f3/0c253188 -> 6b9c877b/2649b948, entry $407E -> $407D, start sync row $00040002 -> $00020001; still single-valued (mismatch 0) |
-| 0019 (74d6ce0) Gary $DFxxxx | $D80000-$DEFFFF no longer reaches the registers | [$D80006]/[$DE1006]: $4139/$4143 -> 0/0; alone it also loses the $C0 mirror ([$C80006] 0) | identical |
-| 0020 (5578afd) blitter freeze | D-only fill blit, fill switched off in BLTCON1 mid-blit: blitter frozen until the next BLTSIZE | DMACONR two frames later: $2240 -> $6240 (BBUSY) | identical |
-| 0021 (2764b51) V readback delay | VPOSR/VHPOSR line through two clk7_en registers | first read with line $41: $410B -> $410F | identical to 0018 alone |
-| 0022-0025 (7f93ed1, cfcc0dc, 3c8a0ed, 3c5d2ea) OCS LORES | live BPLCON1 scroll; off-grid LORES fetch ownership | none (needs a picture check: vAmigaTS BPLCON1 below) | identical (5 lores planes) |
-| 0026 (2bddf21) CIA start delay | an E-clock timer starts two E stages after START | TALO 1/2/3 bus cycles after loading $1000: $FF/$FA/$F5 -> $00/$FB/$F6 | **changes**: E clocks over 50 frames $FFF52890 -> $FFF52892 (two fewer: the delay), so the picture of the result rows changes; checksums unchanged |
-| 0027 (56ba962) Gary mirror | $C00000-$D7FFFF mirror back where no slow RAM is | [$C80006] (no slow RAM): 0 with 0019 alone -> $4153 | identical |
-| 0028 (8813609) BLTPRI write hold, **adapted** | CPU write to a blitter register held while a BLTPRI blit runs -- **68020 only here** | 68000, D-only BLTPRI blit: 16 CCK around a BLTAFWM write; upstream's ungated rule 8206 CCK (to the end of the blit); with the gate the 68000 keeps 16, the 68020 gets $2010 CCK | identical |
+| 0116 (b013ce3) CIA INMODE | a timer with INMODE counts CNT (or underflows gated by CNT), not the E clock | timer A INMODE=1 from $0040 after 2 frames: $0010 (E counted) -> $0040 (CNT idle) | identical |
+| 0117 (d16cd84) false interlace | `field1` (video output, AExp's deinterlacer) only with LACE | - (not readable by the Amiga) | identical |
+| 0118 (06f30af) VHPOSR -1 | VHPOSR returns hpos-1 (htotal at the wrap) | VHPOSR after line $40->$41: $410C/$4127 -> $410B/$4126 | **changes**: checksums 27dbf6f3/0c253188 -> 6b9c877b/2649b948, entry $407E -> $407D, start sync row $00040002 -> $00020001; still single-valued (mismatch 0) |
+| 0119 (74d6ce0) Gary $DFxxxx | $D80000-$DEFFFF no longer reaches the registers | [$D80006]/[$DE1006]: $4139/$4143 -> 0/0; alone it also loses the $C0 mirror ([$C80006] 0) | identical |
+| 0120 (5578afd) blitter freeze | D-only fill blit, fill switched off in BLTCON1 mid-blit: blitter frozen until the next BLTSIZE | DMACONR two frames later: $2240 -> $6240 (BBUSY) | identical |
+| 0121 (2764b51) V readback delay | VPOSR/VHPOSR line through two clk7_en registers | first read with line $41: $410B -> $410F | identical to 0118 alone |
+| 0122-0125 (7f93ed1, cfcc0dc, 3c8a0ed, 3c5d2ea) OCS LORES | live BPLCON1 scroll; off-grid LORES fetch ownership | none (needs a picture check: vAmigaTS BPLCON1 below) | identical (5 lores planes) |
+| 0126 (2bddf21) CIA start delay | an E-clock timer starts two E stages after START | TALO 1/2/3 bus cycles after loading $1000: $FF/$FA/$F5 -> $00/$FB/$F6 | **changes**: E clocks over 50 frames $FFF52890 -> $FFF52892 (two fewer: the delay), so the picture of the result rows changes; checksums unchanged |
+| 0127 (56ba962) Gary mirror | $C00000-$D7FFFF mirror back where no slow RAM is | [$C80006] (no slow RAM): 0 with 0119 alone -> $4153 | identical |
+| 0128 (8813609) BLTPRI write hold, **adapted** | CPU write to a blitter register held while a BLTPRI blit runs -- **68020 only here** | 68000, D-only BLTPRI blit: 16 CCK around a BLTAFWM write; upstream's ungated rule 8206 CCK (to the end of the blit); with the gate the 68000 keeps 16, the 68020 gets $2010 CCK | identical |
 
-Why the two checksum changes are right: 0018 changes only the value VHPOSR returns (the read mux; no
+Why the two checksum changes are right: 0118 changes only the value VHPOSR returns (the read mux; no
 timing anywhere), and the workload checksums the beam values it reads and syncs its start to the E
 clock through VHPOSR -- so its numbers must change; that VHPOSR read one CCK high was measured on
-an A500 ECS against the vAmigaTS VPOS suite (upstream #234).  0026 makes the CIA count two E clocks
+an A500 ECS against the vAmigaTS VPOS suite (upstream #234).  0126 makes the CIA count two E clocks
 fewer from START, which is what the 8520 does (WinUAE models it; upstream found it with Risky Woods'
-sound effects); the workload's E-clock count shows exactly those two clocks.  Leaving 0018/0021 and
-0026 out restores the phase-2 values bit for bit.
+sound effects); the workload's E-clock count shows exactly those two clocks.  Leaving 0118/0121 and
+0126 out restores the phase-2 values bit for bit.
 
-Why 0028 is gated: upstream applies the hold to every CPU.  A BLTPRI blit only takes the cycles it
+Why 0128 is gated: upstream applies the hold to every CPU.  A BLTPRI blit only takes the cycles it
 can use; a D-only blit uses every second one, and a 68000 gets the others (HRM's cycle diagrams), so
 on an A500 a write lands mid-blit.  The CD32 case upstream fixed (Deep Core) is a 68EC020.
 
@@ -1553,12 +1553,12 @@ too long for this PC.  **On the board:** the same ADFs through the OSM mount and
 (`aexp_demo_test.py` style, ~25 s per test including the reset: about a day for the A500 part), after
 a one-time crop/scale calibration of the capture against the bench picture.
 
-Sample (17 tests, different areas; "before" = patches 0001-0015, "after" = all patches 0001-0028;
+Sample (17 tests, different areas; "before" = patches 0001-0115, "after" = all patches 0001-0128;
 mismatching pixels of 204,060 after colour mapping, at the bench crop / best crop near it):
 
 | test (setup) | before | after | note |
 |---|---|---|---|
-| Agnus/Registers/VPOS/vhpos2 (OCS) | 10,104 | **0** | VHPOSR in the VBL handler: exact with 0018/0021 |
+| Agnus/Registers/VPOS/vhpos2 (OCS) | 10,104 | **0** | VHPOSR in the VBL handler: exact with 0118/0121 |
 | Agnus/Registers/VPOS/cycle01vh (OCS) | 24,136 | **34** | VHPOSR across line $FF -> $100 |
 | Agnus/Copper/coptim/coptim1 (OCS) | 3,128 | **38** | |
 | Paula/Interrupts/vblank/vblank1 (OCS) | 2,804 | **80** | |
@@ -1569,22 +1569,22 @@ mismatching pixels of 204,060 after colour mapping, at the bench crop / best cro
 | Agnus/DDF/DDF/ddf1 (OCS) | 0 | 0 | exact both |
 | CIA/CIA/ciareg/aprab0 (ECS) | 0 | 0 | exact both (at crop 144,28) |
 | Memory/Rom/mirror/customC2, customD1 (ECS) | 0 | 0 | exact both |
-| Memory/Rom/mirror/customD2 (ECS) | 11,456 | 34,368 | **the tiff is wrong**: the real A500+ photo in the same folder shows no mirror at $D80000-$DDFFFF and a mirror at $DE0000-$DFFFFF; vAmiga (tiff) and our "before" mirror $D80000-$DBFFFF (64 probe lines wrong against the photo), "after" (0019) only misses the $DE0000 block (16 lines) |
+| Memory/Rom/mirror/customD2 (ECS) | 11,456 | 34,368 | **the tiff is wrong**: the real A500+ photo in the same folder shows no mirror at $D80000-$DDFFFF and a mirror at $DE0000-$DFFFFF; vAmiga (tiff) and our "before" mirror $D80000-$DBFFFF (64 probe lines wrong against the photo), "after" (0119) only misses the $DE0000 block (16 lines) |
 | Memory/Rom/mirror/custC, custD (ECS) | 2,806 / 5,398 | 8,914 / 28,998 | older CPU-timed versions of the above; their README: the references "are recordings of a machine", "still fail in vAmiga today" -- not usable |
-| Denise/Registers/BPLCON1/timing1 (ECS) | 702 | 1,578 | mid-line BPLCON1 writes: the reference shows the scroll change as a staircase, ours shows none before or after 0022 (open) |
+| Denise/Registers/BPLCON1/timing1 (ECS) | 702 | 1,578 | mid-line BPLCON1 writes: the reference shows the scroll change as a staircase, ours shows none before or after 0122 (open) |
 | Denise/Sprites/collision/sprcoll1 (OCS) | 15,752 | 15,752 | unchanged, open |
 
 Of the 17, the (b) set moves seven closer to their references (vhpos2, cycle01vh, coptim1 and
 vblank1 to exact or within 80 pixels), customD2 closer to the real machine's photo, leaves six
 unchanged (five of them exact), and makes three worse: custC/custD (references declared unusable by
-their author) and BPLCON1 timing1 (702 -> 1,578, open, like sprcoll1).  The $DE0000 mirror (0019
-unmaps it, a Gary-based A500+ mirrors it) is a follow-up for 0019.
+their author) and BPLCON1 timing1 (702 -> 1,578, open, like sprcoll1).  The $DE0000 mirror (0119
+unmaps it, a Gary-based A500+ mirrors it) is a follow-up for 0119.
 
 ## Package 3: the 68EC020 (MiSTer #276, 09226f7 and follow-ups)
 
-Patches 0012 (TG68K Kernel/ALU/Pack = MiSTer master), 0013 (cpu_wrapper: MiSTer master's 68EC020
+Patches 0112 (TG68K Kernel/ALU/Pack = MiSTer master), 0113 (cpu_wrapper: MiSTer master's 68EC020
 path transplanted into AExp's wrapper: 32-bit chip cycles, instruction cache, `cpu_cycles.v`
-throttle), 0014 (minimig.v + m68k_bridge, c55ecd9), 0015 (minimig_m65 ports); `K325T/cpu020/`
+throttle), 0114 (minimig.v + m68k_bridge, c55ecd9), 0115 (minimig_m65 ports); `K325T/cpu020/`
 (TG68K_MMU030.vhd for the kernel, `cpu_cycles.v` with its tables as `.mem` files).  The 68EC020
 timing is on when the machine is AGA and the CPU config is 68020 (`cpu_ec020` in main.vhd, latched in
 reset); fx68k stays the A500 CPU, unchanged (OCS determinism identical with the 020 patches).
@@ -1688,8 +1688,8 @@ MULU 11,633 against 14,208, chip reads 4,230).
 One build of this branch (radxacm3 variant, Vivado 2025.2.1, `VIVADO_JOBS=4`, nice 19, started only
 after the other agent's build had ended; commit `95ce6da` + the PORTING edits), bitstream
 `bin/aexp_k325t_cm4_radxacm3.bit` (not tested on a board).  Two synthesis-only fixes first:
-`cpu_cycles.v` and cpu_wrapper's cache arrays (patch 0029) were in SystemVerilog array form, and
-0010's register was declared inside an unnamed block (patch 0030).
+`cpu_cycles.v` and cpu_wrapper's cache arrays (patch 0129) were in SystemVerilog array form, and
+0110's register was declared inside an unnamed block (patch 0130).
 
 - **Timing met**: WNS +0.025 ns, WHS +0.041 ns, 0 failing endpoints.  Worst setup path: the chip
   cache's line-port address `b_addr` to a data-RAM lane tile in the MIG ui_clk domain (10 ns, 9.4 ns
