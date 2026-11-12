@@ -1,0 +1,16 @@
+K325T: the 68EC020 instruction cache arrays of 0013 (MiSTer 09226f7) in Verilog-2001 form
+ic_tag[64] / ic_dat[64] are SystemVerilog declarations; Vivado reads cpu_wrapper.v as Verilog and
+stops (Synth 8-11167).  Same arrays as [0:63].
+--- a/rtl/cpu_wrapper.v
++++ b/rtl/cpu_wrapper.v
+@@ -215,8 +215,8 @@
+ reg [23:2] r32_adr;
+ reg [15:0] r32_lo;
+ reg [15:0] chip_dout2_p;
+-reg  [16:0] ic_tag[64];
+-reg  [31:0] ic_dat[64];
++reg  [16:0] ic_tag[0:63];   // K325T: Verilog-2001 array form (Vivado reads .v as Verilog)
++reg  [31:0] ic_dat[0:63];
+ reg  [63:0] ic_val;
+ reg  [16:0] ic_tq;
+ reg  [31:0] ic_dq;

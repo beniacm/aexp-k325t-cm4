@@ -1,0 +1,14 @@
+K325T: the BPLAM register of 0010 (MiSTer c1f14c3) declared outside its always block
+Vivado reads denise.v as Verilog, where an unnamed block takes no declarations (Synth 8-10632).
+--- a/rtl/denise.v
++++ b/rtl/denise.v
+@@ -252,8 +252,8 @@
+ 
+ // BPLCON4 values are delayed for 1 lores pixel - TODO double-check this!
+ // AMR - bplxor is active from first write to BPL1DAT until DIWSTOP. (Fixes Andromeda: Nexus 7, shade cluster part)
++reg [1:0] diwstop_d;   // K325T: declared outside the always block (Verilog-2001: no declarations in an unnamed block)
+ always @ (posedge clk) begin
+-  reg [1:0] diwstop_d;
+   if (clk7_en) begin
+     diwstop_d <= {diwstop_d[0], hpos[8:0]==hdiwstop[8:0]};
+     if(reset || diwstop_d[1])
