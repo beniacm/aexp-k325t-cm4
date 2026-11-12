@@ -1701,3 +1701,204 @@ after the other agent's build had ended; commit `95ce6da` + the PORTING edits), 
   the 68EC020 cache and cycle model, the 64-bit cache lanes), of them 17,585 LUT RAM; 41,558
   registers; 438 / 445 RAMB36 (+2); 74 DSP48.  Block RAM is now the limit: the owner's coming 1.5 MB
   3-way data RAM has to come out of the same 445 tiles.
+
+# Stage 3, round 2: rebase onto stage 2b, open findings, vAmigaTS sample (2026-11-12)
+
+## Rebase onto `a1200-ddr3` (085136a: Kickstart in DDR3, 3-way 1.5 MB cache, fill path, prefetchers)
+
+- `a1200-aga` is cherry-picked commit by commit onto `085136a` (the pre-rebase head is kept as the
+  local branch `a1200-aga-prerebase-1`).  The two cache commits the owner already took (`821c130`,
+  `cb0f9b1`, now `df85fa6` / `90ec55f` + the correction `12a5f16`) were left out; conflicts:
+  PORTING.md (both chapters kept), `main.vhd` (the owner's `dma_dbr` / `dma_reg` ports next to
+  `ram_oe_n_int`), the stall-controller files (the owner's versions kept: this branch no longer
+  changes them since the AGA switch moved to the menu).
+- Patch numbers: the owner's series is 0001-0002 (0002 exports Agnus' DMA owner and register for the
+  prefetchers); this branch's series is now **0102-0131** (+100, same order), so later owner patches
+  (0003...) sort before it.  0103 (chip48 into minimig_m65) was regenerated on top of the owner's
+  0002; everything else applied unchanged.
+- Bench: chip_cache's new ports wired (Kickstart select and 512 KB flag, the owner's prefetch inputs
+  from minimig's `dma_dbr` / `dma_reg`, `--pf MASK`, the prefetch counters printed); with `--cache`
+  the Kickstart is read through the cache, its image placed in the DDR3 model where the QNICE load
+  port would put it (backing words 1.25 M..), every Kickstart read checked against the ROM model.
+  The line-port model answers critical word first like `mig_arb` and holds 1.5 M words.  GHDL keeps
+  chip_cache's signal name `tagged`, a SystemVerilog keyword: renamed in the generated Verilog.
+  `FAST_A500=1` builds stub the TG68K and the cache: A500 runs 2.7 x faster (used for vAmigaTS).
+
+Results on the rebased tree (bench, `build_r1`):
+
+- **AGA tests**: all 11 give the same per-frame md5 lists with ideal memory and with the real stage-2b
+  cache at shrink 0 (1.5 MB, 3-way), 2 and 3, the same lists as before the rebase; 0 wrong words and
+  0 wrong chip48 words (shrink 3: 2.26 M checked reads, 1.4-27 % of the source edges stalled, up to
+  117,727 fills per test).  Stall at full size: 0.94-1.32 % (the tests' pictures and the boot ROM are
+  all first-touch misses).
+- **Kickstart 3.1** with AGA, 2 MB chip, the stock 68EC020 and the Kickstart through the cache (from
+  the DDR3 model): the insert-disk screen, frame 320 byte-identical to the pre-rebase ideal-memory run;
+  11.6 M chip and Kickstart reads checked, 0 wrong; 0.117 % of the source edges stalled.
+- **Determinism** (A500, ideal memory): OCS and ECS give the new reference values below (unchanged by
+  the rebase; also with 0122 out and 0131 in).
+
+## Determinism reference values of the A500 modes (from the rebased tree on)
+
+The class-b patches 0118 (VHPOSR one CCK lower) and 0126 (CIA timer start delay) change what the
+determinism workload reads; they are accepted as accuracy fixes, so these are the new references
+(bench; the board will show the same once this tree runs there):
+
+| mode | phase 2 / stage 1-2 (published) | from stage 3 on (0118 + 0126) |
+|---|---|---|
+| OCS, checksums even / odd frame | 27dbf6f3 / 0c253188 | 6b9c877b / 2649b948 |
+| OCS, entry VHPOSR / frames with another entry | $407E / 0 | $407D / 48 (the start sync now picks another E phase) |
+| E clocks over 50 frames (row 7) | $FFF52890 | $FFF52892 |
+| start sync row 12 | $00040002 | $00020001 |
+| mismatches (row 4) | 0 | 0 |
+| ECS | same as OCS, VPOSR $A000 | same as OCS, VPOSR $A000 |
+
+Recipe for the published phase-2 values: build without `0118`, `0121` and `0126`
+(`patches/Minimig_MiSTerMEGA65/`), everything else may stay (the other class-b patches leave the
+workload bit-identical, measured patch by patch).
+
+## Open findings
+
+**BPLCON1 timing1 worse (702 -> 1,578 px): patch 0122 (MiSTer 7f93ed1), a real regression -- left out.**
+Bisected on the bench (fast builds with all patches, with and without 0122; colour-mapped mismatch
+at the bench crop): timing1 702 without / 1,578 with 0122, timing2 1,440 / 2,706.  Without 0122 the
+pictures equal the pre-class-b machine exactly.  The test writes BPLCON1 with the copper in the
+middle of lines.  The real A500 ECS photograph in the test's folder (and vAmiga's reference) shows
+the scroll change at the write position with black gaps that grow line by line.  Before 0122 the bench
+changes the scroll at about the right position, without the gaps; 0122 (scroll registers updated at
+the write) moves the change about 22 hires pixels earlier and loses even the one-pixel notches.  The
+reference is sound (photograph), so 0122 goes; 0123-0125 (Absolute Inebriation's off-grid fetch path)
+apply and behave the same without it.  Open: the gap behaviour itself (neither version has it), and
+whether Absolute Inebriation needs a live-scroll change with the right timing.
+
+**$DE0000 mirror: patch 0131 keeps it (adapts 0119 = MiSTer 74d6ce0).**  The A500+ photographs of
+vAmigaTS customC2 / customD1 / customD2 (Gary machine): mirror at $C80000-$D7FFFF, none at
+$D80000-$DDFFFF, mirror at $DE0000-$DFFFFF.  Upstream's motivation for 74d6ce0 was WhichAmiga 1.4
+probing the A3000/A4000 DMAC at $DD0000 and hitting a custom register (measured on hardware): that
+stays unmapped.  With 0131 the bench gives exactly the photograph (blocks 0-5 black, 6-7 yellow).
+The photo evidence is sound for the A500+ (Gary + RTC at $DC); vAmiga's own reference image for
+customD2 disagrees with its photograph (it mirrors $D80000-$DBFFFF too), so that reference is not
+used.  Determinism and the AGA tests are unaffected (identical).
+
+**68EC020 probe c1 (DBRA +7.7 %, MULU +1.6 % against MiSTer stock): a measurement artefact, not the
+CPU.**  Both differences are exactly 227 CCK = one PAL line (3,163 - 227 = 2,936 and 14,740 - 227 =
+14,513, MiSTer's values to the CCK).  A CPU difference would not be the same absolute amount for a
+2,048-iteration DBRA loop and a MULU loop of another length.  In c1 (8 lores planes FMODE 0) the
+display fetch takes every slot of the line's fetch window, so the end timestamp (`move.l 4(a6)`)
+can only get the bus at the start of a line: the bench's CPU trace (`ext/aga_groundwork/c1/`,
+`analyze.py`) shows the end read of c1 L0 and L6 issued at H = 2 of a new line.  There the line
+number read back depends on 0121 (vertical readback one CCK later, MiSTer 2764b51): the earlier
+measurement was taken without the class-b patches and saw the new line, MiSTer master (which has
+2764b51) sees the previous one, hence exactly one line less.  On the rebased tree (with 0118/0121)
+the probe gives c1 L0 2,936 and L6 14,513 and every row of the CPU table that MiSTer has equals
+MiSTer stock to the CCK; the trace's request-to-request time for c1 L0 is 3,163 CCK in both cases
+(the CPU itself did not change).  So c1 was never a CPU difference; it shows how sensitive a
+beam-timed measurement is to the readback patches.
+
+**fmode2 garbled in WinUAE only: WinUAE models FMODE=2 differently on purpose (not the Unix port).**
+WinUAE 6.1's `custom.cpp` (`fetch32_bpl`): with FMODE=2 (BPAGEM without BPL32) a 32-bit bitplane fetch
+returns the first word twice (`v = lget(pm) & 0xffff0000; v |= v >> 16`); its 6.1 beta changelog
+describes the Lisa shifter behaviour found "using test programs" on hardware (FMODE=2 CPU/copper
+BPLxDAT writes: "16-bits of bus noise + 16-bits of loaded data x 3").  The public AGA documents only
+say FMODE 1 and 2 are both 32-bit fetches (BPL32 vs. double-CAS page mode); our test assumed FMODE=2
+behaves like FMODE=1, as MiSTer, FS-UAE 3.1.66 (WinUAE 3.x core) and this core do.  So our test
+relies on undocumented behaviour; WinUAE's newer model may be right.  Only a real A1200 can decide:
+fmode2 is a board test to watch, not an acceptance criterion.
+
+**Twisted white from ~90 s in WinUAE 6.1b10 only.**  Unchanged with cycle-exact CPU off, CPU and
+memory cycle-exact off, CPU compatible and blitter cycle-exact off (least strict), and with the
+DMS images converted to ADF (xdms): the change is not in WinUAE's accuracy settings or its DMS
+reader.  Without fast RAM the demo shows nothing at all in WinUAE (black), in line with the pouet
+comment that it needs fast RAM.  Whether it is the Unix port or the beta cannot be told without
+another WinUAE build (not allowed); FS-UAE runs it, and the FPGA will be the third opinion.
+
+**Domination:** left as decided.
+
+## vAmigaTS: 120 tests, before and after the class-b patches
+
+120 tests, stratified over the A500-relevant areas (`ext/aga_groundwork/vts120/select.py`: Agnus
+blitter/copper/DDF/DIW/registers, Denise sprites/registers/modes/DIW, Paula interrupts/audio, CIA,
+CPU timing/IPL/exceptions/prefetch, memory, ports; no FPU, no AGA-only, no tests whose README declares
+the reference unusable: blitter line width 1/3/4, the old custC/D/E), each with its vAmiga reference
+screenshot (`ext/a500_tests/refs/`).  Bench `FAST_A500` builds, Kickstart 1.3 in place, OCS or ECS
+as the test's script, frame 280 from a state saved before the first disk access.  "Before" =
+`fv_base` (owner 0001/0002 + 0102-0115: no class-b patch), "after" = `fno2325` (the final set:
+0116-0121, 0126-0128, 0131; 0122-0125 out).  Colour-mapped mismatching pixels at the best crop near
+the bench's (144,22 +-2/+6); exact = 0, close = up to 500 of 204,060 pixels.  Per-test pictures,
+comparison PNGs, logs and `results.json` are in `ext/aga_groundwork/vts120/` (the same list can be
+run on the board later).
+
+| category | tests run | before: exact / close / off | after: exact / close / off | changed |
+|---|---|---|---|---|
+| Agnus/Blitter | 14 of 14 | 4 / 1 / 9 | 4 / 2 / 8 | 7 |
+| Agnus/Copper | 14 of 14 | 7 / 0 / 7 | 8 / 2 / 4 | 5 |
+| Agnus/DDF/DDF | 5 of 5 | 4 / 0 / 1 | 4 / 0 / 1 | 0 |
+| Agnus/DDF/DDFTIM | 3 of 3 | 0 / 0 / 3 | 0 / 3 / 0 | 3 |
+| Agnus/DIW | 6 of 6 | 5 / 1 / 0 | 5 / 1 / 0 | 0 |
+| Agnus/Registers | 10 of 10 | 3 / 1 / 6 | 3 / 2 / 5 | 3 |
+| Denise/Sprites | 13 of 13 | 2 / 3 / 8 | 2 / 3 / 8 | 0 |
+| Denise/Registers | 9 of 9 | 1 / 2 / 6 | 1 / 2 / 6 | 0 |
+| Denise/Modes | 4 of 4 | 0 / 0 / 4 | 0 / 0 / 4 | 0 |
+| Denise/DIW | 3 of 3 | 3 / 0 / 0 | 3 / 0 / 0 | 0 |
+| Paula/Interrupts | 10 of 10 | 1 / 0 / 9 | 1 / 2 / 7 | 8 |
+| Paula/Audio | 3 of 3 | 0 / 0 / 3 | 0 / 0 / 3 | 3 |
+| CIA/CIA | 5 of 5 | 3 / 0 / 2 | 3 / 0 / 2 | 0 |
+| CPU/Timing | 8 of 8 | 0 / 0 / 8 | 0 / 3 / 5 | 8 |
+| CPU/IPL | 4 of 4 | 0 / 0 / 4 | 0 / 0 / 4 | 4 |
+| CPU/Exceptions | 3 of 3 | 0 / 0 / 3 | 0 / 0 / 3 | 0 |
+| CPU/Prefetch | 1 of 1 | 1 / 0 / 0 | 1 / 0 / 0 | 0 |
+| Memory/Ram | 2 of 2 | 0 / 1 / 1 | 0 / 1 / 1 | 1 |
+| Mainboard/Ports | 3 of 3 | 1 / 0 / 2 | 1 / 0 / 2 | 0 |
+| **all** | 120 | 35 / 9 / 76 | 36 / 21 / 63 | 42 |
+
+Clusters of the remaining failures (after; `vts120/clusters.txt` lists every test with before/after):
+- **CPU instruction timing and interrupt latency** (CPU/Timing 8 of 8 not exact, CPU/IPL 4 of 4,
+  CPU/Exceptions stack frames 3 of 3): the class-b set brings CPU/Timing from 2,800-4,500 to 270-1,800
+  pixels (the beam readback the tests use), the rest is fx68k against vAmiga's 68000 model -- the
+  stack-frame tests differ by the same 894 pixels each (one detail of the exception frame or its
+  timing).  Candidate: compare fx68k's bus timing of exceptions/interrupts with the tests' photos.
+- **Paula interrupts** (9 of 10 not exact; 8 changed by the class-b set, two now close): interrupt
+  request/acknowledge timing against the beam (int, basicint, irqbpl, intreqcia, stack).
+- **Blitter** (10 of 14): busy/interrupt timing (bbusy, bltint, irqtim), bus sharing with the CPU
+  (bususage, cputim, race), line mode (line7) and undocumented minterm/channel cases.
+- **Sprites** (11 of 13): attached, blocked, clipping, collision, manual and DMA-timing cases --
+  Minimig's sprite engine, unchanged by the class-b set.
+- **Denise registers / modes**: BPLCON0-3 special cases (block, dual playfield, border blank,
+  colour-register lag), HAM.
+- **Copper**: lc3 (COP2LC/jump timing), irq4, waitmask6.
+- **Registers**: bitplane modulo/pointer drop timing (bplmod, drop11/21), DMACON bitplane enable.
+- **Audio DMA timing** (3 of 3) and **CIA-B port registers** (bprab1/3).
+Exact before and after: fill/barrel/sblit/wrap blits, most copper, DDF, DIW, Denise DIW, prefetch.
+
+
+## AGA cache traffic on the real stage-2b cache
+
+Measured on the RTL (bench `build_r1`: the owner's chip_cache as committed in `c935432`, 3-way 1.5 MB,
+critical-word-first fill, write-back after the fill, prefetchers as built), not on the old model.
+Line latency of the DDR3 model 34-49 ui_clk cycles (~0.42 us per fill, the owner's board figure),
+stock 68EC020 with its instruction cache, AGA, 2 MB chip, the study's two programs started from the
+bench boot ROM (no Kickstart), 100 frames each including the program's set-up (first-touch misses):
+
+| workload | prefetch | source edges stalled | demand fills | prefetches issued / useful / wasted (per class) |
+|---|---|---|---|---|
+| aga8cpu (8 planes hires FMODE 3, copper, 4 audio, CPU memcpy over 1 MB) | off | 1.105 % | 33,849 | - |
+| aga8cpu | all on | **0.020 %** | 160 | bpl 2,433 / 2,419 / 10, aud 1,781 / 1,757 / 23, cpu 29,470 / 27,971 / 1,493 |
+| worst (+ 8 sprites, random blits over 1 MB, CPU random reads over 2 MB) | off | 2.475 % | 77,559 | - |
+| worst | all on | **1.559 %** | 47,441 | bpl 9,134 / 9,110 / 19, spr 759 / 684 / 70, aud 1,383 / 1,366 / 16, cop 338 / 334 / 4, blt 11,038 / 10,977 / 50, cpu 55,332 / 33,234 / 18,497 |
+
+All reads checked against the shadow memory: 0 wrong (14.6 M reads over the four runs).  The
+prefetchers remove almost all stalls of the regular AGA load (sequential CPU copy: 95 % of the CPU
+prefetches are used); what is left in `worst` is its CPU's random reads over 2 MB, which no
+prefetcher can predict and 1.5 MB cannot hold (60 % of the CPU prefetches are used there).  The
+old model's figures (~1 us per fill, 1 MB) are superseded by these.  (The bench measures the stalled
+fraction of the source clock; the lag a stall builds is caught up at 10.3 %, the source / machine
+clock ratio, as in stage 2.)
+
+## Board preparation (no board yet)
+
+- `tools/aga_board_test.py`: the AGA test ADFs (as `aga<test>.adf` on the card) and the Kickstart 3.1
+  boot screen on the board, the HDMI capture (`/dev/video0`, 1280x720 at 50 fps, the first second
+  dropped, one capture at a time) checked block for block with mk_agatest's checker after finding
+  the picture's scale from its own block grid; the bench picture side by side.
+- `tools/demo_sheets.py`: after `aexp_demo_test.py --set a1200`, one contact sheet per demo with the
+  board's stills every 10 s next to the FS-UAE and WinUAE stills.
+- DMS images converted to ADF with `xdms` (installed from apt): `ext/a1200_demos/<demo>/adf/`.
