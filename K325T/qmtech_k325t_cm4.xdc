@@ -140,6 +140,10 @@ set_false_path -to [get_cells -hierarchical -filter {NAME =~ i_iprog/addr_s_reg*
 ## the core's result mailbox (main_clk, changes only when the Amiga writes $C0-$FF) read by lat_meter
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/main_mbox_reg*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
+## stage 3: the core's debug words read by lat_meter (fast RAM state, memory mode, stall register
+## read-back): quasi-static values, read twice by the tools -- not timed from any core register
+set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/*}] \
+               -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
 ## stage 3: the fast RAM debug word (amiga_fastram, the hr_core select; read while the state is frozen)
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]

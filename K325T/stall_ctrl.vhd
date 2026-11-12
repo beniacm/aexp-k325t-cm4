@@ -37,7 +37,8 @@
 --           probe(26:24) set;  page 6: W0 = probe(63:32), W1 = chip cache line fills, W2 = write-backs
 --   stage 2b: while page 5 is selected, writes to registers 3 / 4 also set the chip cache's prefetch
 --           enables (r3 b0 bitplane, b1 sprite, b2 audio, b3 disk; r4 b0 copper, b1 blitter, b2 CPU)
---           and r4 b3 = the audio FIFO (audio_fifo.vhd) on;
+--           and r4 b3 = the audio FIFO (audio_fifo.vhd) on; r5 b1 = memory mode override (stage 3 P4:
+--           without it the cache mode follows the machine profile: AGA = cache + 2 MB chip, else identity);
 --           keep the stall injector off (mode b0) meanwhile, it reads registers 3 / 4 too
 --   register 7 bits 3..1 + register 0 bit 3: the chip cache (chip_cache.vhd), taken at a full reset:
 --           r7 b1 = chip RAM through the cache, b2 = 2 MB chip RAM, b3 & r0 b3 = shrink (sets / 1, 8,
@@ -70,6 +71,8 @@ entity stall_ctrl is
       cache_o    : out std_logic_vector(3 downto 0);   -- register 7 bits 3..1 (cache) & register 0 bit 3
       pf_en_o    : out std_logic_vector(6 downto 0);   -- stage 2b: the chip cache's prefetch enables
       afifo_o    : out std_logic;                      -- stage 2b: the audio FIFO on (r4 b3, page 5)
+      memovr_o   : out std_logic;                      -- stage 3 (P4): cache_o overrides the menu (r5 b1, page 5)
+      regs_o     : out std_logic_vector(40 downto 0);  -- stage 3: read-back r7..r0 & pf_en & afifo & memovr
       mach_o     : out unsigned(31 downto 0);          -- stage 2b: machine ticks so far (for the FIFO)
       fills_i    : in  unsigned(31 downto 0) := (others => '0');   -- chip cache statistics (clk_i)
       wbacks_i   : in  unsigned(31 downto 0) := (others => '0')
@@ -90,6 +93,7 @@ architecture rtl of stall_ctrl is
    signal regs     : reg_t := (others => (others => '0'));
    signal pf_en    : std_logic_vector(6 downto 0) := (others => '0');
    signal afifo    : std_logic := '0';
+   signal memovr   : std_logic := '0';
    signal snap_tog : std_logic := '0';
    signal clr_tog  : std_logic := '0';
 
@@ -128,6 +132,10 @@ begin
    cache_o <= std_logic_vector(regs(7)(3 downto 1)) & regs(0)(3);
    pf_en_o <= pf_en;
    afifo_o <= afifo;
+   memovr_o <= memovr;
+   regs_o  <= std_logic_vector(regs(7)) & std_logic_vector(regs(6)) & std_logic_vector(regs(5)) &
+              std_logic_vector(regs(4)) & std_logic_vector(regs(3)) & std_logic_vector(regs(2)) &
+              std_logic_vector(regs(1)) & std_logic_vector(regs(0)) & pf_en & afifo & memovr;
    mach_o  <= mach_cnt(31 downto 0);
 
    process (clk_i)
@@ -160,6 +168,9 @@ begin
             if regs(6)(2 downto 0) = "101" and idx = 3 then pf_en(3 downto 0) <= cfg_s3(3 downto 0); end if;
             if regs(6)(2 downto 0) = "101" and idx = 4 then pf_en(6 downto 4) <= cfg_s3(2 downto 0);
                                                                afifo <= cfg_s3(3); end if;
+            -- stage 3 (P4): with page 5 selected, register 5 b1 = the memory mode override: the
+            -- cache settings below (r7 b3..1, r0 b3) are used instead of the menu's machine profile
+            if regs(6)(2 downto 0) = "101" and idx = 5 then memovr <= cfg_s3(1); end if;
          end if;
 
          ---------------------------------------------------------------- injector

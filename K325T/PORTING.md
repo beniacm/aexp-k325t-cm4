@@ -2098,3 +2098,30 @@ round (FINDINGS.md).  The final form (this commit, the fix unconditional) is bui
   with the swap time points at data read from the wrong disk (our core has only df0), not yet at a
   CPU or chipset fault.
 - `aexp_demo_test.py` presses mouse buttons on a schedule (54c3b82).
+
+# Stage 3, round 4: start-up -- one release, one consistent machine (2026-11-12)
+
+Measured on the Luckfox (`ext/aexp7_stage3/FINDINGS.md` 19:30, `luckfox/exp*.log`): QNICE reads the
+settings file once, 2 s after its start, and silently takes the factory defaults when the card does
+not answer (after a JTAG load or core switch m65io re-probed the bridge only every 2 s: a coin flip);
+the later Kickstart load succeeded, so an A500-default machine ran the A1200 Kickstart.  Separately
+(Radxa), the memory mode lived only in the stall controller's debug register r7, which is 0 after
+every configuration: a flashed core could not come up as an A1200 at all.
+
+- P1 (`CORE/m2m-rom/m2m-rom.asm` START_CARD, first in PREP_START; Kickstart OPTIONAL for the framework's
+  auto-load in `globals.vhd`): unless the settings file and Kickstart both came from the framework's
+  one mount, mount again (333 ms apart, at least 15 s) and load both from that one mount; no card:
+  fatal message, the core stays held; no settings file: factory defaults at once (first use).
+- P2 (`mega65.vhd` p_topo): the machine-topology menu lines follow the menu only while neither M2M
+  reset is set; the loaded profile takes effect at the release (one cold boot).
+- P3 (harness `rockchip/m65io.c`): a lost bridge is probed every 0.1 s for the first 10 s.
+- P4 (`mega65.vhd`, `stall_ctrl.vhd`, `stallmon.py`): the memory mode follows the profile: AGA = chip
+  RAM through the cache with 2 MB chip RAM, OCS/ECS = the identity mode of phase 2 (the menu offers
+  512K, 512K+512K slow and 1 MB chip; there is no "2 MB chip" entry for ECS -- adding one changes
+  OPTM_SIZE and the QNICE heap budget, not done).  chip_cache latches the mode at an M2M reset AND at
+  the cold boot a topology change triggers, so the profile in effect after the release brings its
+  memory mode.  The debug register is an explicit override now (`stallmon cache on|off ...` sets it,
+  `cache auto` clears it, both read back what is in effect; a lost write is an error): shrink levels,
+  the cache for the A500 and 2 MB chip RAM with ECS stay available for tests.  `stallmon cache` with
+  no argument prints the memory mode in effect (lat_meter $FB: stall registers r7..r0, prefetch /
+  audio FIFO / override bits, profile bits, requested and latched mode).

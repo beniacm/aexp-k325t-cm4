@@ -268,7 +268,7 @@ port (
    -- K325T stage 2b: prefetch counters of the cache (7 classes x issued, useful, wasted)
    k325t_pf_stats_o        : out std_logic_vector(671 downto 0);
    -- K325T stage 3 experiment: fast RAM path debug (amiga_fastram + the hr_core select), any clock
-   k325t_fast_dbg_o        : out std_logic_vector(191 downto 0);
+   k325t_fast_dbg_o        : out std_logic_vector(287 downto 0);
    -- K325T stage 2b: the clock of main_audio_left_o / _right_o (the ungated source clock)
    k325t_audio_clk_o       : out std_logic
 );
@@ -393,6 +393,12 @@ signal main_src_clk           : std_logic;
 signal main_cache_cfg         : std_logic_vector(3 downto 0);
 signal main_chip_aga          : std_logic;   -- AGA chipset (stage 3: with 2 MB chip RAM in the cache)
 signal main_cache_on          : std_logic;   -- the cache's latched mode
+-- stage 3 (P4): the memory mode follows the machine profile (AGA = cache + 2 MB chip RAM, else the
+-- identity mode of phase 2) unless the stall controller's override is set (stallmon cache on|off)
+signal main_memovr            : std_logic;
+signal main_stall_regs        : std_logic_vector(40 downto 0);   -- read-back (stallmon)
+signal main_cc_on_req         : std_logic;   -- the cache mode latched at the next (cold) reset
+signal main_cc_2m_req         : std_logic;   -- 2 MB chip RAM (with the cache mode)
 signal main_cache_miss        : std_logic;
 signal main_cache_rdata       : std_logic_vector(15 downto 0);
 signal main_cache_rdata48     : std_logic_vector(47 downto 0);   -- AGA chip48 (stage 3)
@@ -670,6 +676,8 @@ begin
          stall_cache_o     => main_cache_cfg,
          stall_pf_en_o     => main_pf_en,
          stall_afifo_o     => main_afifo_en,
+         stall_memovr_o    => main_memovr,
+         stall_regs_o      => main_stall_regs,
          stall_mach_o      => main_mach_cnt,
          stall_lag_o       => main_lag,
          miss_i            => main_cache_miss,
@@ -741,7 +749,11 @@ begin
    main_mem_chip1m <= main_topo(7);
    main_mem_slow   <= not main_topo(8) and not main_topo(7) and not main_mem_chip2m;
    -- stage 2: 2 MB chip RAM only with chip RAM in the cache (r7 b2 of the stall controller)
-   main_mem_chip2m <= main_cache_cfg(2) and main_cache_on;
+   -- stage 3 (P4): the profile decides (main_topo(5) = the AGA radio, held like the other topology
+   -- lines while QNICE restarts); stallmon's override (cache on|off ...) takes precedence for tests
+   main_cc_on_req  <= main_cache_cfg(1) when main_memovr = '1' else main_topo(5);
+   main_cc_2m_req  <= main_cache_cfg(2) when main_memovr = '1' else main_topo(5);
+   main_mem_chip2m <= main_cc_2m_req and main_cache_on;
    main_chip_ecs   <= main_topo(6) or main_mem_chip1m or main_mem_chip2m;
    -- stage 3: AGA is a machine configuration (chipset radio, line 78); it needs the 2 MB chip RAM of
    -- the cache (stall controller r7 b2, still a debug setting) and falls back to ECS without it
@@ -1133,8 +1145,11 @@ begin
    i_chip_cache : entity work.chip_cache
       port map (
          clk_i        => main_src_clk,
-         reset_i      => main_reset_m2m_i,
-         cache_on_i   => main_cache_cfg(1),
+         -- stage 3 (P4): the mode is latched at an M2M reset AND at the cold boot that a change of
+         -- the machine topology triggers (amiga_cold_boot), so the profile in effect after the
+         -- release (P2) brings its memory mode with it: one release = one consistent machine
+         reset_i      => main_reset_m2m_i or amiga_cold_reset,
+         cache_on_i   => main_cc_on_req,
          shrink_i     => main_cache_cfg(0) & main_cache_cfg(3),
          chip1m_i     => main_mem_chip1m,
          kick_sel_i   => main_kick_sel and not amiga_chip_scrub,
@@ -1490,7 +1505,15 @@ begin
    -- requests), W1 (request address), W2 (memory flags, acknowledges); $FC = W3 (hr_quiet, aborts,
    -- stray beats), W4 (memory-state age & blocked clocks), W5 (select: on, sel, fix, quiet count,
    -- select changes, hr_fast_on falls; the fix bit reads 1)
-   k325t_fast_dbg_o <= main_fast_dbg(143 downto 48) &
+   -- $FB (stage 3, P4): W0 = stall controller registers r7..r0, W1 = pf_en & afifo & override,
+   -- W2 = the memory mode in effect: 24..16 topology (P2), 9..8 shrink, 7 override, 6 ECS, 5 AGA,
+   -- 4 2 MB chip, 3 cache mode latched, 2 2 MB requested, 1 cache requested, 0 AGA radio (held)
+   k325t_fast_dbg_o <= main_stall_regs(40 downto 9) &
+                       "00000000000000000000000" & main_stall_regs(8 downto 0) &
+                       "0000000" & main_topo & "000000" & main_cache_cfg(0) & main_cache_cfg(3) &
+                       main_memovr & main_chip_ecs & main_chip_aga & main_mem_chip2m & main_cache_on &
+                       main_cc_2m_req & main_cc_on_req & main_topo(5) &
+                       main_fast_dbg(143 downto 48) &
                        main_fast_dbg(47 downto 16) &
                        main_fast_dbg(15 downto 0) & std_logic_vector(hr_blocked) &
                        hr_fast_on & hr_fast_sel & '1' & '0' & "00" & std_logic_vector(hr_quiet_cnt) &
