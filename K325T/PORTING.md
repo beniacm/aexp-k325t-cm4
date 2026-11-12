@@ -2074,3 +2074,24 @@ stale-value boot blocks; with the fix off the same pattern froze at the 2nd to 4
 with fast 11/11, AGA + 68000 with fast 11/11, fast RAM contents across a full reset 2/2 with 0
 errors (1 MB pattern), and a soak of chiptest2 / a 3 MB fast RAM test with a full reset after every
 round (FINDINGS.md).  The final form (this commit, the fix unconditional) is build6.
+
+## Stage 3 on the board, window 2: the fast RAM fix on the Radxa, demo reruns (2026-11-12)
+
+- build5_radxa (the switchable experiment 98facd5, md5 21c9ca80, WNS +0.046): A500 gate passes; A1200
+  + 4 MB fast with the fix off hung at the 15th full reset with exactly the Luckfox signature (`stallmon
+  fdbg`: a posted write held, `hr_fast_on`=1, `hr_fast_sel`=0, quiet counter 0); switching the fix on
+  live let Kickstart continue without a reset; with the fix on 25 of 25 resets were good.
+- **build6_radxa (4b724c6 = e51c7ab, the final fix; md5 0ac1a404, WNS +0.059 / WHS +0.027) is the Radxa
+  bitstream of record for stage 3**: A500 gate passes; 18 resets in the A1200 profile with fast RAM
+  good (sysinfo fast RAM test 0 errors, chiptest2 0 errors).
+- `mk_cputime.py` waits for E-clock phase 0 before the first row (4538db6): the board's rows are now
+  single-valued except c0 L0 and c0 L4 (1 CCK); bench reference for the board's setup
+  `ext/aga_groundwork/cpt2/cptadf.json`.  The probe's values depend on its own code layout, so
+  references belong to one probe build.
+- Demos with fast RAM (contact sheets `ext/aexp7_stage3/shots/demos_b5/`): Origin (needs disk 2 plus a
+  mouse click at ~50 s: "please insert disk 2 (press mouse)"), Mindflow, Motion, Roots 2.0, Full Moon,
+  Domination and Crazy Sexy Cool (right click past its AntiVirus boot block) run through the parts the
+  emulators show; with Nexus 7, Roots and Art Paradise (no fast RAM) that is 10 of the 11.  Twisted
+  runs for about 4 minutes and then stops in its own crash screen (a CHK exception, PC in fast RAM);
+  the emulator references are too short to show where it first differs.
+- `aexp_demo_test.py` presses mouse buttons on a schedule (54c3b82).
