@@ -172,8 +172,11 @@ constant KICK_ROM_NAME_START     : std_logic_vector(15 downto 0) := x"0000";
 
 constant C_CRTROMS_AUTO_NUM      : natural := 1;                                       -- Amount of automatically loadable ROMs and carts, maximum is 16
 constant C_CRTROMS_AUTO_NAMES    : string  := KICK_ROM_NAME;
+-- K325T stage 3 (start fix P1): Kickstart is OPTIONAL for the framework's auto-load, so that a card
+-- the module does not serve yet does not stop QNICE with a fatal error; the core firmware's PREP_START
+-- (START_CARD in m2m-rom.asm) treats it as mandatory and loads settings + Kickstart from one mount.
 constant C_CRTROMS_AUTO          : crtrom_buf_array := ( C_CRTROMTYPE_DEVICE, C_DEV_AMIGA_KICK,
-                                                         C_CRTROMTYPE_MANDATORY, KICK_ROM_NAME_START,
+                                                         C_CRTROMTYPE_OPTIONAL, KICK_ROM_NAME_START,
                                                          x"EEEE");                     -- Always finish the array using x"EEEE"
 
 ----------------------------------------------------------------------------------------------------------
