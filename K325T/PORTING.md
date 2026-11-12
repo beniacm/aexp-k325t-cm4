@@ -2009,3 +2009,68 @@ Cache traffic, Nexus 7 two minutes in (`stallmon.py rate 30`): 0.4 line fills pe
 real time stalled, 0.42 us per fill; with all prefetchers on 0.3 fills per 20 ms, prefetch hits
 bitplane 61/61, copper 6/6, CPU 675 of 758 (89 %).  In its loading phase: 18.6 fills per 20 ms,
 0.040 % stalled.
+
+# Stage 3, round 3: two reset faults of the 68EC020 machine on the board (2026-11-12)
+
+Both faults showed only on the board, only after a full reset, and both were sticky until the FPGA was
+reloaded; the bench boots once from power-up and never saw them.  Found on the Luckfox rig without a
+picture (result mailbox, probe, the new `stallmon fdbg`); logs and dated notes in
+`ext/aexp7_stage3/FINDINGS.md` and `ext/aexp7_stage3/luckfox/`.
+
+## Fault 1: the reset vectors read under the overlay (patch 0132, a1200-aga 68ceab2)
+
+minimig's `chip32_en` is not gated by the Kickstart overlay (`ovr` is the NMI-vector override), so
+the 68EC020 read the reset vectors ($0 SSP, $4 PC) as 32-bit chip cycles, but `ram_long` was 0 for
+the Kickstart bank: the second word came from the held `dout2_hold` of the last 32-bit chip read
+before the reset.  Initial PC = $00F8:<stale word>; a stale 0 (fresh bitstream, the bench) gave
+$F80000, whose ROM header `1114 4EF9 00F8 00D2` happens to jump to $F800D2.  Proof on the board: a
+boot block that leaves {$60FE, VALUE} as the last 32-bit read; VALUE $0000/$00D2 boot, $1234 does
+not.  Fixed by patch 0132 (`ram_long` also for the Kickstart bank, the ROM's word A+1 through the
+cache's rdata48; chip_cache needed no change).
+
+## Fault 2: the fast RAM path deadlocked across an M2M reset (this change)
+
+With 4 MB Zorro II fast RAM, a full reset during fast RAM traffic froze the next boot at the first
+fast RAM access ($200000 after autoconfig), and every later full reset froze the same way, in all
+fast RAM profiles (A1200, ECS + 68020, AGA + 68000), until a JTAG load.
+
+- Cause: `mega65.vhd` p_fast_sel, the hr_core select between the floppy master alone and the fast
+  RAM arbiter, follows `hr_fast_on` (the menu's fast RAM size) only after 64 memory clocks without
+  activity, and it counted the requests of the DESELECTED master as activity.  An M2M reset restarts
+  QNICE; until the firmware has reloaded the settings the menu bits read "no fast RAM"
+  (`fdbg`: fast_on_falls +1 per reset), so the select drops to 0.  A fast RAM request made in that
+  window (amiga_fastram repeats the one the reset interrupted 2.5 us after hr_rst; the CPU may also
+  still write) is held with waitrequest = 1, keeps the quiet counter at 0, and the select can never
+  return.  The request stays pending across every later reset.
+- Seen with the fix switched off (`fdbg` in the frozen state): amiga_fastram in WRITE_CMD,
+  avm_write = 1, waitrequest = 1; hr_fast_on = 1, hr_fast_sel = 0, quiet_cnt = 0.  Switching the fix
+  on in that state let the select return within 1 s and Kickstart continued without a reset.
+- Fix: only the hr_core bus itself counts as activity (the selected master's requests and the read
+  beats).  A held request of the selected master is on the bus, so no transaction is split.
+- amiga_fastram (`rst_i` = M2M or core reset): the access a reset interrupts is still completed on
+  the memory side -- a posted write reaches DDR3 (completed CPU writes survive a reset, as fast RAM
+  contents do on a real machine: reset-resident software, RAD:, exec's checks), a fill completes and
+  is installed -- and the toggle handshake ends in idle; only its result is not handed to the CPU
+  after the reset.  The cache is write-through, its lines are always clean and stay valid.
+- Which reset reaches what: an M2M reset = QNICE restart + hr_rst + Amiga cold reset (the only one
+  that could enter the hang); a core reset = hr_rst, the menu bits stay, the select stays; the
+  keyboard reset and the CPU's RESET instruction reach neither amiga_fastram nor the select.
+- `stallmon fdbg` (lat_meter $FD/$FC): both state machines of amiga_fastram, the toggles, request /
+  acknowledge / abort / stray-beat counters, the select state and its counters.
+
+Residual, not changed: a fast RAM write that the arbiter has already accepted (amiga_fastram has
+acknowledged it to the CPU and gone idle) can still be lost if the M2M reset reaches avm_mig in the
+few clocks before the write is handed to the MIG (avm_mig aborts on reset what it holds; ~100 ns).
+Closing it needs the memory side to finish accepted writes before honouring the reset: either
+avm_mig completes a single-beat write it has accepted before it aborts (only bursts that are still
+missing beats are cut), or the reset of the hr_core masters is delayed until amiga_fastram's last
+posted write has left avm_mig (a "write drained" signal from avm_mig back to the core), or
+amiga_fastram keeps a write open until a completion indication (Avalon writes have none: it would
+need a response channel or a read-back).
+
+Board acceptance (Luckfox, build5 = this logic behind a test bit, fix on; `ext/aexp7_stage3/luckfox/`):
+A1200 profile with 4 MB fast 41/41 full resets (from Kickstart idle, 1.5 s into a disk load, after
+stale-value boot blocks; with the fix off the same pattern froze at the 2nd to 4th reset), ECS + 68020
+with fast 11/11, AGA + 68000 with fast 11/11, fast RAM contents across a full reset 2/2 with 0
+errors (1 MB pattern), and a soak of chiptest2 / a 3 MB fast RAM test with a full reset after every
+round (FINDINGS.md).  The final form (this commit, the fix unconditional) is build6.

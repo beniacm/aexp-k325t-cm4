@@ -28,6 +28,7 @@
 -- the toggle handshake always ends in a defined idle on both sides), but its result is not handed
 -- to the CPU after the reset (m_orphan).  The cache is write-through (lines are always clean), so
 -- keeping the lines across the reset is correct.  dbg_o: state and counters for stallmon fdbg.
+-- (The hang this belongs to was the hr_core select in mega65.vhd p_fast_sel; see PORTING.)
 -- K325T, 68020: the address is the DDR3 word address (the parent maps the Zorro II/III
 -- windows, up to 256 MB); with pulse_i = '1' (the TG68K runs) ready_o is high for exactly
 -- one clock per access (the TG68K's clock enable) and an access starts on sel_i alone; with
@@ -51,7 +52,6 @@ entity amiga_fastram is
       rdata_o            : out std_logic_vector(15 downto 0);
       ready_o            : out std_logic;                      -- /DTACK (inverted), held until sel_i drops
       rst_i              : in  std_logic := '0';               -- M2M resets (clk_i): orphan the access
-      fix_i              : in  std_logic := '1';               -- experiment switch (stallmon fastfix)
       dbg_o              : out std_logic_vector(143 downto 0); -- stallmon fdbg (asynchronous)
 
       -- memory clock domain (MIG ui_clk), Avalon-MM master (16-bit words, word addresses)
@@ -158,7 +158,7 @@ begin
    begin
       if rising_edge(clk_i) then
          m_ack_d  <= hr_ack_tgl;
-         m_dbg_in <= sel_i & we_i & pulse_i & fix_i;
+         m_dbg_in <= sel_i & we_i & pulse_i & '1';
          m_ack_dd <= m_ack_d;
          -- the data array, read asynchronously (stable: written only for lines this side
          -- is not reading, or before the fill acknowledge arrives)
@@ -226,7 +226,7 @@ begin
 
          -- an M2M reset: the access in flight is not answered after it (its memory side still
          -- completes); a read hit / an answer being presented is cancelled
-         if rst_i = '1' and fix_i = '1' then
+         if rst_i = '1' then
             m_ready <= '0';
             if m_state = M_FILL then
                m_orphan <= '1';

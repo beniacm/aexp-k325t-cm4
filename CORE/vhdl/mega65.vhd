@@ -336,12 +336,7 @@ signal hr_fast_avm_waitrequest   : std_logic;
 signal hr_fast_on             : std_logic;
 signal hr_fast_sel            : std_logic := '0';
 signal hr_quiet_cnt           : unsigned(5 downto 0) := (others => '0');
--- stage 3 experiment: the fast RAM reset fix (stall controller page 5 r5 b0) and its debug
-signal main_fastfix_src       : std_logic;
-signal main_fastfix_s         : std_logic_vector(1 downto 0) := "00";
-signal hr_fastfix_s           : std_logic_vector(1 downto 0) := "00";
-attribute ASYNC_REG : string;
-attribute ASYNC_REG of main_fastfix_s, hr_fastfix_s : signal is "TRUE";
+-- stage 3: debug of the fast RAM path (stallmon fdbg)
 signal main_fast_dbg          : std_logic_vector(143 downto 0);
 signal hr_fast_on_d           : std_logic := '0';
 signal hr_fast_sel_d          : std_logic := '0';
@@ -671,7 +666,6 @@ begin
          stall_cache_o     => main_cache_cfg,
          stall_pf_en_o     => main_pf_en,
          stall_afifo_o     => main_afifo_en,
-         stall_fastfix_o   => main_fastfix_src,
          stall_mach_o      => main_mach_cnt,
          stall_lag_o       => main_lag,
          miss_i            => main_cache_miss,
@@ -1413,7 +1407,6 @@ begin
          rdata_o             => main_fast_rdata,
          ready_o             => main_fast_ready,
          rst_i               => main_reset_m2m_i or main_reset_core_i,
-         fix_i               => main_fastfix_s(1),
          dbg_o               => main_fast_dbg,
          hr_clk_i            => hr_clk_i,
          hr_rst_i            => hr_rst_i,
@@ -1450,10 +1443,7 @@ begin
    p_fast_sel : process (hr_clk_i)
    begin
       if rising_edge(hr_clk_i) then
-         hr_fastfix_s <= hr_fastfix_s(0) & main_fastfix_src;
-         if hr_core_read_o = '1' or hr_core_write_o = '1' or hr_core_readdatavalid_i = '1' or
-            (hr_fastfix_s(1) = '0' and (hr_flpm_avm_read = '1' or hr_flpm_avm_write = '1' or
-                                        hr_fast_avm_read = '1' or hr_fast_avm_write = '1')) then
+         if hr_core_read_o = '1' or hr_core_write_o = '1' or hr_core_readdatavalid_i = '1' then
             hr_quiet_cnt <= (others => '0');
          elsif hr_quiet_cnt /= 63 then
             hr_quiet_cnt <= hr_quiet_cnt + 1;
@@ -1473,21 +1463,14 @@ begin
       end if;
    end process p_fast_sel;
 
-   p_fastfix_main : process (main_clk)
-   begin
-      if rising_edge(main_clk) then
-         main_fastfix_s <= main_fastfix_s(0) & main_fastfix_src;
-      end if;
-   end process p_fastfix_main;
-
    -- stallmon fdbg (lat_meter $FD / $FC, three words each): $FD = amiga_fastram W0 (core flags,
    -- requests), W1 (request address), W2 (memory flags, acknowledges); $FC = W3 (hr_quiet, aborts,
    -- stray beats), W4 (memory-state age & blocked clocks), W5 (select: on, sel, fix, quiet count,
-   -- select changes, hr_fast_on falls)
+   -- select changes, hr_fast_on falls; the fix bit reads 1)
    k325t_fast_dbg_o <= main_fast_dbg(143 downto 48) &
                        main_fast_dbg(47 downto 16) &
                        main_fast_dbg(15 downto 0) & std_logic_vector(hr_blocked) &
-                       hr_fast_on & hr_fast_sel & hr_fastfix_s(1) & '0' & "00" & std_logic_vector(hr_quiet_cnt) &
+                       hr_fast_on & hr_fast_sel & '1' & '0' & "00" & std_logic_vector(hr_quiet_cnt) &
                        std_logic_vector(hr_nsel) & std_logic_vector(hr_non_fall) & x"0";
 
    hr_core_write_o        <= hr_arb_write      when hr_fast_sel = '1' else hr_flpm_avm_write;

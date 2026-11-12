@@ -140,13 +140,11 @@ set_false_path -to [get_cells -hierarchical -filter {NAME =~ i_iprog/addr_s_reg*
 ## the core's result mailbox (main_clk, changes only when the Amiga writes $C0-$FF) read by lat_meter
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/main_mbox_reg*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
-## stage 3 experiment: the fast RAM debug word (amiga_fastram, the hr_core select; read while the state
-## is frozen) and the fast RAM fix bit (static, synchronised by two registers in each clock)
+## stage 3: the fast RAM debug word (amiga_fastram, the hr_core select; read while the state is frozen)
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
-set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/hr_blocked_reg* || NAME =~ CORE/hr_nsel_reg* || NAME =~ CORE/hr_non_fall_reg* || NAME =~ CORE/hr_quiet_cnt_reg* || NAME =~ CORE/hr_fast_sel_reg* || NAME =~ CORE/hr_fastfix_s_reg* || NAME =~ CORE/i_cdc_fast_on/*}] \
+set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/hr_blocked_reg* || NAME =~ CORE/hr_nsel_reg* || NAME =~ CORE/hr_non_fall_reg* || NAME =~ CORE/hr_quiet_cnt_reg* || NAME =~ CORE/hr_fast_sel_reg* || NAME =~ CORE/i_cdc_fast_on/*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
-set_false_path -to   [get_cells -hierarchical -filter {NAME =~ CORE/main_fastfix_s_reg[0] || NAME =~ CORE/hr_fastfix_s_reg[0]}]
 ## the cache's prefetch counters (source clock) read by lat_meter (quasi-static, read twice)
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/pf_iss_reg* || NAME =~ CORE/i_chip_cache/pf_use_reg* || NAME =~ CORE/i_chip_cache/pf_wst_reg*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]

@@ -15,8 +15,7 @@ python3-spidev; writes nothing to the module's flash).
     stallmon.py mbox                        the Amiga's result block at $C0-$FF (16 longwords)
     stallmon.py avm                         Avalon debug: the write burst avm_mig waits in
     stallmon.py lat SECS [r|w|rw]    line latency meter (64-byte reads / writes on the MIG line port)
-    stallmon.py fastfix on|off       stage 3 experiment: the fast RAM reset fix (page 5 r5 b0)
-    stallmon.py fdbg                 stage 3 experiment: amiga_fastram / hr_core select state
+    stallmon.py fdbg                 stage 3: amiga_fastram / hr_core select state (debug)
     stallmon.py probe                debug builds: main_clk probe vector, RAM write/read counts
     stallmon.py rate SECS            machine frame rate (vsyncs against the ungated source clock),
                                      machine clock, stall statistics over SECS seconds
@@ -244,15 +243,8 @@ def main():
                                                          a1[0] / 1e5))
         print("since the last memory reset: %d write bursts, %d read bursts; last read %08x" %
               (a1[2] >> 16, a1[2] & 0xFFFF, a1[1]))
-    elif cmd == "fastfix":
-        # stage 3 experiment: the fast RAM reset fix (page 5, register 5 b0; keep the injector off)
-        on = sys.argv[2] == "on"
-        b.wr(6, 5)
-        b.wr(5, 1 if on else 0)
-        b.wr(6, 0)
-        print("fast RAM reset fix %s" % ("on" if on else "off"))
     elif cmd == "fdbg":
-        # stage 3 experiment: amiga_fastram + the hr_core select (lat_meter $FD / $FC)
+        # stage 3: amiga_fastram + the hr_core select (lat_meter $FD / $FC)
         b.wr(6, 7)
         def rd(i):
             b.wr(4, i >> 4)
