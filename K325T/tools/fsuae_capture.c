@@ -16,6 +16,9 @@
  *   CAP_KEY=N:K[,N:K..] scripted key press (SDL2 only, i.e. FS-UAE): function key F<K> (1..12) at swap
  *                     N, released 6 swaps later -- with "keyboard_key_f<K> = action_drive_0_insert_floppy_<i>"
  *                     in the FS-UAE config this swaps disks in a single drive (run_fsuae.py --swap)
+ *   CAP_HOTKEY=N:D[,..] scripted WinUAE hotkey (SDL3 only): End held + digit D at swap N (WinUAE's
+ *                     "End+1..0: disk swapper slot 1..10 into DF0"), all released 6 swaps later;
+ *                     N:F<k>: function key F<k> alone (for a key mapped in the WinUAE configuration)
  * Build: gcc -O2 -shared -fPIC -o fsuae_capture.so fsuae_capture.c -ldl
  */
 #define _GNU_SOURCE
@@ -135,6 +138,60 @@ static void keys(void *win)
     }
 }
 
+/* SDL3 key event: type, reserved, Uint64 timestamp, windowID, which, scancode, key, mod (16), raw (16),
+   down (bool), repeat (bool) */
+static void push_key3(void *win, int down, int scancode, int key)
+{
+    static push_fn push = NULL;
+    static winid_fn winid = NULL;
+    if (!push) {
+        push = (push_fn)dlsym(RTLD_NEXT, "SDL_PushEvent");
+        winid = (winid_fn)dlsym(RTLD_NEXT, "SDL_GetWindowID");
+    }
+    if (sdl2 || !push) return;
+    unsigned char ev[128];
+    memset(ev, 0, sizeof ev);
+    unsigned type = down ? 0x300 : 0x301;    /* SDL_EVENT_KEY_DOWN / UP */
+    unsigned id = winid ? winid(win) : 0;
+    memcpy(ev, &type, 4);
+    memcpy(ev + 16, &id, 4);
+    memcpy(ev + 24, &scancode, 4);
+    memcpy(ev + 28, &key, 4);
+    /* raw: the X11 keycode (evdev + 8) of the few keys used here, for front ends that read it */
+    unsigned short raw = 0;
+    if (scancode == 77) raw = 115;                                   /* End */
+    else if (scancode >= 30 && scancode <= 39) raw = scancode - 20;   /* 1..9, 0 -> evdev 2..11 */
+    else if (scancode >= 58 && scancode <= 67) raw = scancode + 9;    /* F1..F10 -> evdev 59..68 */
+    memcpy(ev + 34, &raw, 2);
+    ev[36] = down ? 1 : 0;
+    int r = push(ev);
+    fprintf(stderr, "[capture] swap %ld: key sc %d %s (push %d)\n", frame, scancode, down ? "down" : "up", r);
+}
+
+static void hotkeys(void *win)
+{
+    const char *c = getenv("CAP_HOTKEY");
+    if (!c) return;
+    const int END_SC = 77, END_KEY = 0x4000004D;       /* SDL_SCANCODE_END, SDLK_END */
+    while (*c) {
+        long n = strtol(c, (char **)&c, 10);
+        int d = -1, fk = 0;
+        if (*c == ':') { c++; if (*c == 'F') { c++; fk = 1; } d = (int)strtol(c, (char **)&c, 10); }
+        if (fk && d >= 1 && d <= 12) {               /* N:F<k>: a plain function key */
+            if (frame == n) push_key3(win, 1, 57 + d, (57 + d) | (1 << 30));
+            if (frame == n + 6) push_key3(win, 0, 57 + d, (57 + d) | (1 << 30));
+        } else if (d >= 0 && d <= 9) {
+            int sc = d == 0 ? 39 : 29 + d;               /* SDL_SCANCODE_1 = 30 .. _9 = 38, _0 = 39 */
+            int key = '0' + d;
+            if (frame == n) push_key3(win, 1, END_SC, END_KEY);
+            if (frame == n + 2) push_key3(win, 1, sc, key);
+            if (frame == n + 6) push_key3(win, 0, sc, key);
+            if (frame == n + 8) push_key3(win, 0, END_SC, END_KEY);
+        }
+        if (*c == ',') c++; else break;
+    }
+}
+
 void SDL_GL_SwapWindow(void *win)
 {
     static swap_fn real = NULL;
@@ -201,6 +258,7 @@ void SDL_GL_SwapWindow(void *win)
     real(win);
     click(win);
     keys(win);
+    hotkeys(win);
     frame++;
     if (maxf && frame == maxf) {
         if (vid) { pclose(vid); vid = NULL; }

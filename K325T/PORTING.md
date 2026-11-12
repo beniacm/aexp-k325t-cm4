@@ -2098,3 +2098,35 @@ round (FINDINGS.md).  The final form (this commit, the fix unconditional) is bui
   with the swap time points at data read from the wrong disk (our core has only df0), not yet at a
   CPU or chipset fault.
 - `aexp_demo_test.py` presses mouse buttons on a schedule (54c3b82).
+
+## Stage 3 closing package for the exact A1200 (2026-11-12, evening)
+
+- **Settings after a load** (handed to the Luckfox): the .cfg is applied at every core start and full
+  reset (QNICE log "Using config file"); what looked like menu defaults was the stall controller's
+  r7 (chip RAM through the cache, 2 MB chip) not being set: writes in the first seconds after a
+  configuration are lost, and r7 is 0 after every configuration, so a flashed stage-3 core comes up
+  without AGA until r7 is written and a full reset follows.  See `ext/aexp7_stage3/FINDINGS.md`.
+- **"Black still" after chiptest2:** 30 resets with probes: the machine always runs, the Kickstart
+  3.1 picture (with 4 MB fast) appears 10-20 s after the reset release.  The one "black" still was
+  chiptest2's own screen: the 2.2 s `hold_reset` had arrived as a short press (M2M's long press is
+  1.5 s), the disk stayed mounted and booted again.  The tools hold 3.5 s now.
+- **Twisted** detects the drives itself and, with one drive (as on a real A1200), asks for every disk
+  ("please insert disk 2/3/4" at ~70 / 250 / 350 s from power-on in FS-UAE) and waits.  The board's
+  crash came from our script inserting disk 3 while the demo still loaded from disk 2.  Single-drive
+  FS-UAE references with scripted swaps: `run_fsuae.py --swap` (`fsuae_capture.c` CAP_KEY).
+- **ddf3c** (DDFSTRT $3C, lores FMODE 3): FS-UAE's cycle-exact A1200, MiSTer's RTL and ours from
+  Kickstart all show the picture 64 lores pixels right of fmode3; only our RTL started from the bench's
+  boot ROM gives 8.  The fetch sequencer (`agnus_bitplanedma.v`, as MiSTer) is cleared only when
+  `ddfrun` drops at a 32-CCK boundary, so an off-grid start can keep either phase from line to line,
+  decided by where the first fetch line began.  The +64 phase is the emulator's (and so, as far as the
+  public evidence goes, the real chip's); a per-line restart of the sequencer at the DDFSTRT match
+  would remove the history dependence (Agnus change, left for later).  mk_agatest's "+8 lores pixels"
+  expectation for ddf3c was wrong.
+- **24-bit fast RAM mirror (closed):** in the 68EC020 mode `cpu_wrapper`'s `cpu_addr` is already the
+  masked 24-bit `cpu_addr_m` (output mux), so `sel_z2ram`/`sel_z3ram`/`ramaddr` decode the 24-bit
+  address and a mirror $xx200000 reaches fast RAM as on a real 68EC020; MiSTer master is the same.
+- **Twisted on the board (build6):** with the disks swapped at its own prompts (the demo tool detects
+  the navy "insert disk" screen) it runs to its end text, part for part as the single-drive FS-UAE
+  reference; WinUAE gives no reference past ~70 s (4 drives: white from ~90 s; one drive: this WinUAE
+  build takes no injected key presses, so its disk swapper cannot be driven).  With that, all 11
+  demos of the A1200 set run on the board.

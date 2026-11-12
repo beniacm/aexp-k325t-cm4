@@ -61,7 +61,8 @@ DEMOS_A1200 = {
     "mindflow": (["mindflow.adf"], [], 150),                   # Stellar (1994), mk_bootadf disk (setchiprev)
     "roots":    (["roots.adf"], [], 180),                      # Sanity (1994), DMS
     "roots2":   (["roots2.adf"], [], 240),                     # Sanity (1995), DMS, ECS part wants fast RAM
-    "twisted":  (["twisted1.adf", "twisted2.adf", "twisted3.adf", "twisted4.adf"], [90, 180, 270], 360),
+    "twisted":  (["twisted1.adf", "twisted2.adf", "twisted3.adf", "twisted4.adf"], [60, 200, 300], 600),
+                                                               # swaps at its own "insert disk" prompts
     "domination": (["domination.adf"], [], 180),               # Contraz (1996), mk_bootadf disk, 4 MB fast
     "csc":      (["csc.adf"], [], 150),                        # Essence, Crazy Sexy Cool (1995): waits for a
                                                                # mouse click after its system check
@@ -76,6 +77,23 @@ CLICKS_A1200 = {
     "origin": [(70, "L"), (75, "L")],
     "csc":    [(20, "R"), (30, "R"), (40, "R")],
 }
+
+
+def navy_prompt(png):
+    """Twisted's "Time to waste more memory! Please insert disk N!": a dark navy screen (about RGB 0,0,70-90)
+    over most of the picture; its crash screens are a brighter blue, its parts are not one colour"""
+    from PIL import Image
+    try:
+        im = Image.open(png).convert("RGB").resize((320, 180))
+    except Exception:
+        return False
+    px = list(im.getdata())
+    return sum(1 for r, g, b in px if r < 30 and g < 30 and 50 < b < 110) > 0.45 * len(px)
+
+
+# demos whose disk swaps wait for the demo's own prompt (seen in the live picture) instead of a fixed
+# time; the table's swap times are then only the earliest moments (and +150 s the latest)
+PROMPTS_A1200 = {"twisted": navy_prompt}
 
 
 def click(host, button):
@@ -279,8 +297,16 @@ def main():
                 clicks = [(int(c[:-1]), c[-1].upper()) for c in a.clicks.split(",") if c]
             events = sorted([(at, "disk", n, dn) for n, (dn, at) in enumerate(zip(disks[1:], swaps), 2)] +
                             [(at, "click", 0, b) for at, b in clicks])
+            prompt = PROMPTS_A1200.get(name) if a.set == "a1200" else None
             for at, kind, n, what in events:
                 time.sleep(max(0, at - (time.time() - t0)))
+                if kind == "disk" and prompt:
+                    seen, t_end = 0, time.time() + 150
+                    while seen < 6 and time.time() < t_end:      # 3 s of the prompt (LIVE: 2 per s)
+                        seen = seen + 1 if prompt(LIVE) else 0
+                        time.sleep(0.5)
+                    print("   prompt %s at %.0f s" % ("seen" if seen >= 6 else "NOT seen", time.time() - t0),
+                          flush=True)
                 if kind == "disk":
                     print("   disk %d at %.0f s" % (n, time.time() - t0), flush=True)
                     mount(a.host, what, listing, eject_first=True)

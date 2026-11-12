@@ -45,6 +45,9 @@ def main():
     ap.add_argument("--ppm-every", type=int, default=0)
     ap.add_argument("--click", default="", help="swap numbers of scripted mouse clicks (R prefix: right button)")
     ap.add_argument("--set", nargs="*", default=[], help="more key=value configuration lines")
+    ap.add_argument("--swap", default="", help="N:I,...: one drive; the floppies are WinUAE's disk swapper "
+                    "list and at swap N image I (0..) goes into DF0 (End+digit hotkey, CAP_HOTKEY)")
+    ap.add_argument("--hotkey", default="", help="raw CAP_HOTKEY (e.g. 3600:F6), replaces the one --swap makes")
     a = ap.parse_args()
     if not os.path.exists(CAP):
         subprocess.check_call(["gcc", "-O2", "-shared", "-fPIC", "-o", CAP,
@@ -54,10 +57,15 @@ def main():
     os.makedirs(home, exist_ok=True)
     cfg = ["use_gui=no", "kickstart_rom_file=" + KICK] + ACCURACY + [
         "fastmem_size=%d" % a.fast, "sound_output=none", "floppy_speed=100",
-        "nr_floppies=%d" % max(1, min(4, len(a.floppy)))]
-    for i, f in enumerate(a.floppy[:4]):
+        "nr_floppies=%d" % (1 if a.swap else max(1, min(4, len(a.floppy))))]
+    for i, f in enumerate(a.floppy[:1] if a.swap else a.floppy[:4]):
         cfg.append("floppy%d=%s" % (i, os.path.abspath(f)))
         cfg.append("floppy%dtype=0" % i)
+    if a.swap:
+        for i, f in enumerate(a.floppy):
+            cfg.append("diskimage%d=%s" % (i, os.path.abspath(f)))
+        for i in range(1, 4):
+            cfg.append("floppy%dtype=-1" % i)
     if a.hd:
         cfg.append("filesystem2=rw,DH0:%s:%s,0" % (a.hd_label, os.path.abspath(a.hd)))
     cfg += a.set
@@ -70,6 +78,10 @@ def main():
         env.update(CAP_PPM=os.path.join(os.path.abspath(a.outdir), a.name), CAP_PPM_EVERY=str(a.ppm_every))
     if a.click:
         env.update(CAP_CLICK=a.click)
+    if a.swap:
+        env.update(CAP_HOTKEY=",".join("%s:%d" % (n, (int(i) + 1) % 10) for n, i in (x.split(":") for x in a.swap.split(","))))
+    if a.hotkey:
+        env.update(CAP_HOTKEY=a.hotkey)
     with open(os.path.join(a.outdir, a.name + ".log"), "w") as so:
         try:
             rc = subprocess.call(["nice", "-n", "19", "xvfb-run", "-a", "-s", "-screen 0 1280x1024x24",
