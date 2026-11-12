@@ -306,10 +306,12 @@ _PS_CARD_OK
 ; treats it as mandatory:
 ;   - settings from the file (CONFIG_FILE open) and Kickstart loaded: nothing
 ;     to do (both came from the one framework mount);
-;   - else mount again, every 333 ms for at least 15 s while the card does not
-;     answer (then a fatal message, the core stays held), and read the settings
-;     file and Kickstart again, both from this one mount: no settings file =
-;     first use = factory defaults at once; no Kickstart = fatal, as before.
+;   - else mount again, every 333 ms for about 21 s while the card does not
+;     answer (a message on the screen meanwhile; then a fatal message, the core
+;     stays held), and read the settings file and Kickstart again, both from
+;     this one mount; no / an empty / a corrupt settings file = the factory
+;     defaults at once, which do not depend on the card, so a Kickstart the
+;     framework has already loaded stays; no Kickstart = fatal, as before.
 ; M2M-UPSTREAM home (comment only, nothing goes upstream): options.asm
 ; HELP_MENU_INIT (retry a failed mount before taking the factory defaults) and
 ; crts-and-roms.asm CRTROM_AUTOLOAD (retry the mount of a mandatory ROM).
@@ -331,15 +333,29 @@ START_CARD      SYSCALL(enter, 1)
 
 _SC_RETRY       MOVE    LOG_SC_RETRY, R8
                 SYSCALL(puts, 1)
-                MOVE    SC_TRIES, R4            ; R4: mount attempts left
+                MOVE    IO$CYC_MID, R6          ; R6: start (cycle counter, 763 Hz)
+                MOVE    @R6, R6
+                XOR     R4, R4                  ; R4: message shown (0 = no)
 _SC_MOUNT       MOVE    CONFIG_DEVH, R8
                 MOVE    1, R9                   ; partition #1 (framework-wide)
                 SYSCALL(f32_mnt_sd, 1)
                 CMP     0, R9
                 RBRA    _SC_MOUNTED, Z
                 MOVE    R9, R5                  ; R5: last mount error
-                SUB     1, R4
-                RBRA    _SC_NOCARD, Z
+                CMP     0, R4                   ; first failure: tell the user
+                RBRA    _SC_WAIT, !Z
+                MOVE    1, R4
+                RSUB    SCR$OSM_M_ON, 1
+                RSUB    SCR$CLR, 1
+                MOVE    SCR$ILX, R8
+                MOVE    1, @R8
+                MOVE    MSG_SC_WAIT, R8
+                RSUB    SCR$PRINTSTR, 1
+_SC_WAIT        MOVE    IO$CYC_MID, R7          ; elapsed = now - start (16 bits);
+                MOVE    @R7, R7                 ; bits 15..14 set = >= 16384 ticks
+                SUB     R6, R7                  ; = 21.5 s: give up
+                AND     0xC000, R7
+                RBRA    _SC_NOCARD, !Z
                 RSUB    WAIT333MS, 1
                 RBRA    _SC_MOUNT, 1
 
@@ -350,7 +366,10 @@ _SC_NOCARD      MOVE    CONFIG_FILE, R0         ; nothing from the card
                 RBRA    _SC_RET, 1
 
                 ; settings: the file name (config.vhd CFG_FILE) onto the stack
-_SC_MOUNTED     MOVE    LOG_SC_MOUNT, R8
+_SC_MOUNTED     CMP     0, R4                   ; the wait message is up: remove it
+                RBRA    _SC_MNT_LOG, Z
+                RSUB    SCR$OSM_OFF, 1
+_SC_MNT_LOG     MOVE    LOG_SC_MOUNT, R8
                 SYSCALL(puts, 1)
                 MOVE    SP, R7                  ; R7: stack pointer to restore
                 MOVE    M2M$RAMROM_DEV, R0
@@ -375,7 +394,7 @@ _SC_MOUNTED     MOVE    LOG_SC_MOUNT, R8
                 MOVE    0, @R0                  ; factory defaults, no waiting
                 MOVE    LOG_SC_NOCFG, R8
                 SYSCALL(puts, 1)
-                RBRA    _SC_ROM, 1
+                RBRA    _SC_ROMCHK, 1
 
 _SC_CFGOPEN     MOVE    CONFIG_FILE, R8         ; size = OPTM_ICOUNT bytes?
                 ADD     FAT32$FDH_SIZE_HI, R8
@@ -395,13 +414,13 @@ _SC_CFGOPEN     MOVE    CONFIG_FILE, R8         ; size = OPTM_ICOUNT bytes?
                 RBRA    _SC_CFGLOAD, !Z
                 MOVE    LOG_SC_CFGNEW, R8       ; factory defaults; the file
                 SYSCALL(puts, 1)                ; stays open for saving
-                RBRA    _SC_ROM, 1
+                RBRA    _SC_ROMCHK, 1
 
 _SC_CFGBAD      MOVE    CONFIG_FILE, R0
                 MOVE    0, @R0
                 MOVE    LOG_SC_CFGBAD, R8
                 SYSCALL(puts, 1)
-                RBRA    _SC_ROM, 1
+                RBRA    _SC_ROMCHK, 1
 
                 ; as HELP_MENU_INIT: byte n of the file = bit n of M2M$CFM_DATA
 _SC_CFGLOAD     MOVE    CONFIG_FILE, R8
@@ -437,6 +456,18 @@ _SC_CFG_X       SUB     1, R3
                 RBRA    _SC_CFG_B, 1
 _SC_CFG_D       MOVE    LOG_SC_CFGOK, R8
                 SYSCALL(puts, 1)
+
+                ; factory defaults (no / an empty / a corrupt settings file):
+                ; they do not depend on the card, so a Kickstart that the
+                ; framework has loaded stays (no second 5-s load at a first use)
+_SC_ROMCHK      MOVE    CRTROM_AUT_LDF, R0
+                CMP     0, @R0
+                RBRA    _SC_ROM, Z
+                MOVE    LOG_SC_ROMKEEP, R8
+                SYSCALL(puts, 1)
+                XOR     R8, R8
+                XOR     R9, R9
+                RBRA    _SC_RET, 1
 
                 ; Kickstart (auto-load ROM #0) from the same mount, as
                 ; crts-and-roms.asm CRTROM_AUTOLOAD does it
@@ -1876,7 +1907,6 @@ OPTM_G_ADF      .EQU    1
 ADF_FILE_EXT    .ASCII_W ".ADF"
 
 ; K325T stage 3, start fix P1 (START_CARD)
-SC_TRIES        .EQU    45                  ; mount attempts, 333 ms apart (>= 15 s)
 LOG_SC_RETRY    .ASCII_W "Start check: settings or Kickstart not from the SD card yet: mounting again\n"
 LOG_SC_MOUNT    .ASCII_W "Start check: SD card mounted: settings and Kickstart from this mount\n"
 LOG_SC_NOCFG    .ASCII_W "Start check: no settings file: factory defaults (first use)\n"
@@ -1884,7 +1914,10 @@ LOG_SC_CFGNEW   .ASCII_W "Start check: empty settings file: factory defaults\n"
 LOG_SC_CFGBAD   .ASCII_W "Start check: settings file corrupt: factory defaults\n"
 LOG_SC_CFGOK    .ASCII_W "Start check: settings loaded from the file\n"
 LOG_SC_ROMOK    .ASCII_W "Start check: Kickstart loaded\n"
-ERR_SC_NOCARD   .ASCII_P "The SD card did not answer for 15 s:\n"
+LOG_SC_ROMKEEP  .ASCII_W "Start check: factory defaults with the Kickstart already loaded\n"
+MSG_SC_WAIT     .ASCII_P "Waiting for the SD card ...\n\n"
+                .ASCII_W "The settings and Kickstart\nare read when it answers.\n"
+ERR_SC_NOCARD   .ASCII_P "The SD card did not answer for 20 s:\n"
                 .ASCII_P "settings and Kickstart not loaded.\n"
                 .ASCII_W "The Amiga stays in reset.\nReset to try again.\n"
 ERR_SC_NOROM    .ASCII_W "Kickstart /amiga/kick.rom not found.\n"
