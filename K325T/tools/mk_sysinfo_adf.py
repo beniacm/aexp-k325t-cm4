@@ -33,7 +33,8 @@ Rows (32-bit values):
         13 BFINS (memory), 14 CHK.L; an instruction that traps (illegal, line A/F, CHK) sets
         its bit too.
     25  (--x020) the tests started so far (a test that hangs is the highest bit).
-        The --x020 program also sends all rows over the serial port (115200 baud) as
+        The --x020 program also copies rows 1-5 and 18-25 into the result mailbox $C0-$FF (stallmon.py
+        mbox: $A5510001, rows 1..5, rows 18..25, 0, $600DF00D) and sends all rows over the serial port (115200 baud) as
         "SI rr xxxxxxxx" lines and "SI end" (for boards without a picture).  With --x020 the program no longer fits a boot block: the boot block loads
         it from the following sectors into chip RAM (AllocMem + trackdisk CMD_READ) and jumps
         to it; without --x020 the disk is the original boot-block-only one, byte for byte.
@@ -537,7 +538,22 @@ def x020_program():
         move.l  %a4,(%a0)
 """ + X020.replace("ROWS", str(ROWS + 2)) + """
         bsr     serout
+        bsr     mbox
 hang:   bra.s   hang
+mbox:   lea     0xc0.w,%a1                  | the result mailbox (stallmon.py mbox): rows without a picture
+        lea     data(%pc),%a0
+        move.l  #0xa5510001,(%a1)+          | marker
+        moveq   #4,%d0                      | rows 1-5: exec version, AttnFlags|VPOSR, DENISEID, MaxLocMem, MaxExtMem
+1:      move.l  4(%a0),(%a1)+
+        addq.l  #4,%a0
+        dbra    %d0,1b
+        lea     data+18*4(%pc),%a0
+        moveq   #7,%d0                      | rows 18-25: timings, fast RAM test, screen, 68020 tests
+2:      move.l  (%a0)+,(%a1)+
+        dbra    %d0,2b
+        move.l  #0,(%a1)+
+        move.l  #0x600df00d,(%a1)           | complete
+        rts
 """ + SER.replace("ROWS", str(ROWS + 2)).replace("TAG", "SI"))
 
 

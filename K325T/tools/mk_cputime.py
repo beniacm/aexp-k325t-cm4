@@ -21,6 +21,8 @@ Usage:  mk_cputime.py build OUTDIR      -> OUTDIR/cputime.bin (ORG, for the benc
                                            cputime000.bin (68000 variant without MOVEC)
         mk_cputime.py decode FRAME.png [--xscale N] [--yscale N]
         mk_cputime.py dump FILE         (a --dump of RESULT from the bench)
+        mk_cputime.py mbox "PAGE0 LONGS" "PAGE1 LONGS"   (two stallmon.py mbox readings, 16 hex longs
+                                        each, one per page; marker $C771000p, 14 longs of results)
 """
 import json, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -221,7 +223,33 @@ show:   move.w  #0x7fff,0x96(%%a6)
         beq.s   8b
         dbra    %%d3,7b
         move.l  #0x%(magic)x,0x%(done)x
-9:      bra.s   9b
+| the results also through the result mailbox $C0-$FF (stallmon.py mbox, boards without a picture):
+| two pages alternating every 100 frames: $C7710000 | page, 14 longs = result words 28*page.., $600DF00D
+        moveq   #0,%%d5
+9:      lea     0xc0.w,%%a1
+        move.l  #0xc7710000,%%d0
+        or.w    %%d5,%%d0
+        move.l  %%d0,(%%a1)+
+        lea     0x%(res)x,%%a0
+        move.w  %%d5,%%d0
+        mulu.w  #56,%%d0
+        add.l   %%d0,%%a0
+        moveq   #13,%%d0
+10:     move.l  (%%a0)+,(%%a1)+
+        dbra    %%d0,10b
+        move.l  #0x600df00d,(%%a1)
+        move.w  #99,%%d3
+11:     move.l  4(%%a6),%%d0
+        and.l   #0x1ff00,%%d0
+        cmp.l   #0x13000,%%d0
+        bne.s   11b
+12:     move.l  4(%%a6),%%d0
+        and.l   #0x1ff00,%%d0
+        cmp.l   #0x13000,%%d0
+        beq.s   12b
+        dbra    %%d3,11b
+        eor.w   #1,%%d5
+        bra.s   9b
 
 row:                                        | d0 -> 32 cells at a0 (8 px x 4 lines), a0 += 5 lines
         moveq   #31,%%d1
@@ -309,6 +337,23 @@ def decode(fn, xscale=2, yscale=1):
     return table(vals)
 
 
+def mbox(p0, p1):
+    words = [None] * 56
+    for txt in (p0, p1):
+        ls = [int(x, 16) for x in txt.replace(",", " ").split()]
+        if len(ls) < 16 or (ls[0] >> 16) != 0xC771 or ls[15] != 0x600DF00D:
+            raise SystemExit("not a cputime mailbox page: %s" % txt[:40])
+        page = ls[0] & 1
+        for k, l in enumerate(ls[1:15]):
+            words[28 * page + 2 * k] = l >> 16
+            words[28 * page + 2 * k + 1] = l & 0xFFFF
+    vals = {}
+    for c in range(4):
+        for l in range(len(LOOPS)):
+            vals[(c, l)] = words[c * len(LOOPS) + l]
+    return table(vals)
+
+
 def dump(fn):
     b = open(fn, "rb").read()
     vals = {}
@@ -328,5 +373,7 @@ if __name__ == "__main__":
         print(json.dumps(decode(a[2], xs, ys), indent=1))
     elif len(a) >= 3 and a[1] == "dump":
         print(json.dumps(dump(a[2]), indent=1))
+    elif len(a) >= 4 and a[1] == "mbox":
+        print(json.dumps(mbox(a[2], a[3]), indent=1))
     else:
         print(__doc__)
