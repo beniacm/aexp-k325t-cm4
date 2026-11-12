@@ -674,3 +674,39 @@ a faster fill path (critical word first, install while the beats arrive, write-b
 0.8-1.0 us per miss today); the prefetchers from the Agnus / Alice registers (not built); the
 audio FIFO; and block RAM for AGA (palette, wider fetch) -- 9 tiles are left, so the Kickstart
 (64 tiles today, 128 for 512 KB) should move into DDR3 behind the cache.
+
+## E. The second board (Luckfox rig: Luckfox Core3566, Digilent JTAG, no HDMI capture)
+
+Build L2 (`K325T/build.sh` without argument: the Luckfox pin variant of the same design, with the
+result mailbox: the Amiga's writes to $C0-$FF are readable through the stall controller's page 7,
+`stallmon.py mbox`; the test disks copy their result rows there).  Everything below was read
+through the bridge -- the rig has no picture.  A PC-side watchdog pinged the module every 2 s
+(second channel: adb over the carrier's mini-USB cable) and would have reloaded the MEGA65
+bitstream over JTAG after 3 misses; it never had to.
+
+- **DDR3 line latency** (build L): the same numbers as on the Radxa rig, to the histogram bin (B).
+- **Determinism** (stalltest3.adf, Kickstart 1.3, full reset + mount per boot), 38 boots: identity
+  x 8, cache 1 MB x 8, 128 KB x 7, 2 KB x 4, 2 MB chip with 1 MB / 128 KB / 2 KB cache x 4 / 3 / 4
+  (six of the 128 KB boots were meant as 2 KB: `stallmon.py mbox` cleared register 0, fixed):
+  every boot 27dbf6f3 / 0c253188, 0 mismatching frames, entry $407E, E-clocks 710,511-710,512 -- a
+  second board and a second DDR3 chip give the same machine.  With the 2 KB cache the machine ran
+  at about half of real time (~650 frames in the window instead of ~1,335): same values.
+- **2 MB chip RAM test with the 2 KB cache** (Kickstart 3.1, ECS, build L; `chipt60.adf`): 187
+  passes over 2 MB in 37 minutes, 0 errors; ~347 line fills and ~70-80 write-backs per 20 ms,
+  1.55-1.6 % of real time stalled, 0.91 us per fill.
+- **Full resets with the bus probes** (build L2, `aexp5_lf.py resets`): 100 full resets; after each
+  the Avalon capture read twice, 2 s apart: never the same open write burst with beats missing
+  (the frozen-bus signature), and ascal had written bursts since the reset every time: 100 / 100
+  ok.  (32 more with a single read before that: no repeated state either.)
+- **Soak**: from 2026-11-12 01:37 the 2 MB chip RAM test with the 2 KB cache (chiptest2.adf, KS
+  3.1, build L2) runs for 6 hours, read every minute through the mailbox
+  (`ext/aexp5_stage2/logs/luckfox/chip2m_2k_soak.log` in the harness tree).
+
+Not checkable without a picture: HDMI (ascal output, flicker-free behaviour, the frozen-picture
+symptom itself -- the reset check reads the Avalon bus instead), the demos.
+
+The Luckfox module stalled once (kernel included, 2026-11-11 21:17:03-21:53:34, monotonic clock
+running, no log entries at all) while it ran the MEGA65 core, eight minutes before build L was
+first loaded; not caused by this design (the FPGA drives only SPI MISO towards the module; BCM14/15,
+the module's debug console, are unconstrained pins with UNUSEDPIN PULLUP in both cores, so the
+console RX idles high).  That module also re-probes its empty SD slot (mmc3) twice a second.
