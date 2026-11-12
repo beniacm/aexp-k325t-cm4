@@ -662,6 +662,15 @@ inaudible level exist only with the artificial small caches (16 KB / 2 KB: the m
 behind real time; test settings).  The FIFO belongs to stage 3, where 2 MB chip RAM and a faster
 CPU make misses normal.
 
+**Where the stage-2 numbers come from.**  A crash of the build PC (2026-11-11 22:02) emptied /tmp,
+where the raw data of part of this stage lived.  Kept on disk (`ext/aexp5_stage2/logs` in the
+harness tree): the 160-reset proof of build J, the build-F loops, the build-I determinism table and
+the phase-2 runs, the latency and rate measurements, the testbench logs, the Luckfox runs and the
+flash-slot checks.  Reported from the numbers written down at the time only (raw logs lost): the
+build-H chip-test table above, the build-J demo run and HDMI frame-counter clip, the phase-2-fix
+155-reset loop, its SysInfo comparison and 3 determinism boots (the demos of the phase-2 fix and
+the flash checks were run again after the crash), and the m65io monitor-client test.
+
 ## D. Resources, timing, and what stage 3 needs
 
 Build J (all of the above with the debug captures): timing met, WNS +0.072 ns, WHS +0.027 ns.
