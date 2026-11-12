@@ -15,6 +15,8 @@ python3-spidev; writes nothing to the module's flash).
     stallmon.py mbox                        the Amiga's result block at $C0-$FF (16 longwords)
     stallmon.py avm                         Avalon debug: the write burst avm_mig waits in
     stallmon.py lat SECS [r|w|rw]    line latency meter (64-byte reads / writes on the MIG line port)
+    stallmon.py fastfix on|off       stage 3 experiment: the fast RAM reset fix (page 5 r5 b0)
+    stallmon.py fdbg                 stage 3 experiment: amiga_fastram / hr_core select state
     stallmon.py probe                debug builds: main_clk probe vector, RAM write/read counts
     stallmon.py rate SECS            machine frame rate (vsyncs against the ungated source clock),
                                      machine clock, stall statistics over SECS seconds
@@ -242,6 +244,39 @@ def main():
                                                          a1[0] / 1e5))
         print("since the last memory reset: %d write bursts, %d read bursts; last read %08x" %
               (a1[2] >> 16, a1[2] & 0xFFFF, a1[1]))
+    elif cmd == "fastfix":
+        # stage 3 experiment: the fast RAM reset fix (page 5, register 5 b0; keep the injector off)
+        on = sys.argv[2] == "on"
+        b.wr(6, 5)
+        b.wr(5, 1 if on else 0)
+        b.wr(6, 0)
+        print("fast RAM reset fix %s" % ("on" if on else "off"))
+    elif cmd == "fdbg":
+        # stage 3 experiment: amiga_fastram + the hr_core select (lat_meter $FD / $FC)
+        b.wr(6, 7)
+        def rd(i):
+            b.wr(4, i >> 4)
+            b.wr(5, i & 15)
+            r = b.status()
+            return [int.from_bytes(bytes(r[60 + 4 * k:64 + 4 * k]), "big") for k in range(3)]
+        w0, w1, w2 = rd(0xFD)
+        w3, w4, w5 = rd(0xFC)
+        b.wr(4, 0); b.wr(5, 0); b.wr(6, 0)
+        ms = ["IDLE", "READ", "FILL", "SERVED"][w0 >> 30]
+        print("core: m_state=%s busy=%d req_tgl=%d ack_dd=%d fill=%d hit=%d ready=%d orphan=%d sel=%d we=%d "
+              "pulse=%d fix=%d requests=%d addr=%07x" %
+              (ms, w0 >> 29 & 1, w0 >> 28 & 1, w0 >> 27 & 1, w0 >> 26 & 1, w0 >> 25 & 1, w0 >> 24 & 1,
+               w0 >> 23 & 1, w0 >> 22 & 1, w0 >> 21 & 1, w0 >> 20 & 1, w0 >> 19 & 1, w0 & 0xFFFF, w1 & 0x7FFFFFF))
+        hs = ["QUIET", "IDLE", "FILL_CMD", "FILL_DATA", "WRITE_CMD", "?5", "?6", "?7"][w2 >> 29]
+        print("mem:  hr_state=%s req_dd=%d ack_tgl=%d beat=%d avm_read=%d avm_write=%d waitrequest=%d "
+              "rdvalid=%d hr_rst=%d acks=%d quiet=%d aborts=%d stray_beats=%d state_age=%d%s" %
+              (hs, w2 >> 28 & 1, w2 >> 27 & 1, w2 >> 24 & 7, w2 >> 23 & 1, w2 >> 22 & 1, w2 >> 21 & 1,
+               w2 >> 20 & 1, w2 >> 19 & 1, w2 & 0xFFFF, w3 >> 24, w3 >> 16 & 255, w3 >> 8 & 255,
+               w4 >> 16, "+" if w4 >> 16 == 0xFFFF else ""))
+        print("sel:  hr_fast_on=%d hr_fast_sel=%d fix=%d quiet_cnt=%d select_changes=%d fast_on_falls=%d "
+              "blocked_clocks=%d%s" %
+              (w5 >> 31, w5 >> 30 & 1, w5 >> 29 & 1, w5 >> 20 & 63, w5 >> 12 & 255, w5 >> 4 & 255,
+               w4 & 0xFFFF, "+" if w4 & 0xFFFF == 0xFFFF else ""))
     elif cmd == "rate":
         rate(b, float(sys.argv[2]))
     elif cmd == "cache":

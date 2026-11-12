@@ -18,6 +18,7 @@
 --   aux_o: W0 = histogram[i(6..0)], W1 = min(16) & max(16) and W2 = count, both of the direction
 --          i(6); with i(7) = 1: W0 = sum(31..0), W1 = min & max, W2 = sum(47..32) (ticks);
 --          i = $FF / $FE: the top's Avalon debug words dbg_i(95..0) / dbg_i(191..96);
+--          i = $FD / $FC: the core's fast RAM debug words dbg2_i(191..96) / dbg2_i(95..0) (stage 3);
 --          i = $E0-$E5: the core's result mailbox (Amiga $C0-$FF), longwords 3(i-$E0) .. +2;
 --          i = $D0-$D6: the cache's prefetch counters of class i-$D0 (issued, useful, wasted)
 -- (the stall injector's registers 3..5 are reused: keep the injector off while measuring)
@@ -34,6 +35,7 @@ entity lat_meter is
       page7_o    : out std_logic;               -- register 6 selects page 7
       aux_o      : out std_logic_vector(95 downto 0);
       dbg_i      : in  std_logic_vector(191 downto 0) := (others => '0');   -- index $FF / $FE
+      dbg2_i     : in  std_logic_vector(191 downto 0) := (others => '0');   -- index $FD / $FC (async)
       mbox_i     : in  std_logic_vector(511 downto 0) := (others => '0');   -- index $E0-$E5 (async)
       pf_i       : in  std_logic_vector(671 downto 0) := (others => '0');   -- index $D0-$D6 (async)
       lp_req     : out std_logic;
@@ -156,6 +158,10 @@ begin
             aux <= dbg_i(95 downto 0);
          elsif hidx = x"FE" then
             aux <= dbg_i(191 downto 96);
+         elsif hidx = x"FD" then
+            aux <= dbg2_i(191 downto 96);
+         elsif hidx = x"FC" then
+            aux <= dbg2_i(95 downto 0);
          elsif hidx(7) = '1' then
             aux <= std_logic_vector(sum(d)(31 downto 0)) & std_logic_vector(mn(d)) &
                    std_logic_vector(mx(d)) & x"0000" & std_logic_vector(sum(d)(47 downto 32));

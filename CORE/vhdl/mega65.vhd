@@ -267,6 +267,8 @@ port (
    k325t_mbox_o            : out std_logic_vector(511 downto 0);
    -- K325T stage 2b: prefetch counters of the cache (7 classes x issued, useful, wasted)
    k325t_pf_stats_o        : out std_logic_vector(671 downto 0);
+   -- K325T stage 3 experiment: fast RAM path debug (amiga_fastram + the hr_core select), any clock
+   k325t_fast_dbg_o        : out std_logic_vector(191 downto 0);
    -- K325T stage 2b: the clock of main_audio_left_o / _right_o (the ungated source clock)
    k325t_audio_clk_o       : out std_logic
 );
@@ -334,6 +336,18 @@ signal hr_fast_avm_waitrequest   : std_logic;
 signal hr_fast_on             : std_logic;
 signal hr_fast_sel            : std_logic := '0';
 signal hr_quiet_cnt           : unsigned(5 downto 0) := (others => '0');
+-- stage 3 experiment: the fast RAM reset fix (stall controller page 5 r5 b0) and its debug
+signal main_fastfix_src       : std_logic;
+signal main_fastfix_s         : std_logic_vector(1 downto 0) := "00";
+signal hr_fastfix_s           : std_logic_vector(1 downto 0) := "00";
+attribute ASYNC_REG : string;
+attribute ASYNC_REG of main_fastfix_s, hr_fastfix_s : signal is "TRUE";
+signal main_fast_dbg          : std_logic_vector(143 downto 0);
+signal hr_fast_on_d           : std_logic := '0';
+signal hr_fast_sel_d          : std_logic := '0';
+signal hr_nsel                : unsigned(7 downto 0) := (others => '0');   -- select changes
+signal hr_non_fall            : unsigned(7 downto 0) := (others => '0');   -- hr_fast_on 1 -> 0
+signal hr_blocked             : unsigned(15 downto 0) := (others => '0');  -- fast request, select off
 signal hr_arb_write           : std_logic;
 signal hr_arb_read            : std_logic;
 signal hr_arb_address         : std_logic_vector(31 downto 0);
@@ -657,6 +671,7 @@ begin
          stall_cache_o     => main_cache_cfg,
          stall_pf_en_o     => main_pf_en,
          stall_afifo_o     => main_afifo_en,
+         stall_fastfix_o   => main_fastfix_src,
          stall_mach_o      => main_mach_cnt,
          stall_lag_o       => main_lag,
          miss_i            => main_cache_miss,
@@ -1397,6 +1412,9 @@ begin
          wdata_i             => main_fast_wdata,
          rdata_o             => main_fast_rdata,
          ready_o             => main_fast_ready,
+         rst_i               => main_reset_m2m_i or main_reset_core_i,
+         fix_i               => main_fastfix_s(1),
+         dbg_o               => main_fast_dbg,
          hr_clk_i            => hr_clk_i,
          hr_rst_i            => hr_rst_i,
          avm_write_o         => hr_fast_avm_write,
@@ -1424,12 +1442,18 @@ begin
 
    -- the select follows the menu (static; it changes with a cold boot of the Amiga) only
    -- after 64 memory clocks without any request or read beat: no transaction is split
+   -- K325T stage 3 fix: only the hr_core bus itself counts (the selected master's requests and the
+   -- read beats).  The menu bits read "no fast RAM" while QNICE restarts after an M2M reset, and
+   -- amiga_fastram repeats its interrupted request 2.5 us after hr_rst: a held request of the
+   -- DEselected fast master kept the counter at 0, the select could never come back, and the
+   -- request waited forever (every later reset re-entered the same state).
    p_fast_sel : process (hr_clk_i)
    begin
       if rising_edge(hr_clk_i) then
+         hr_fastfix_s <= hr_fastfix_s(0) & main_fastfix_src;
          if hr_core_read_o = '1' or hr_core_write_o = '1' or hr_core_readdatavalid_i = '1' or
-            hr_flpm_avm_read = '1' or hr_flpm_avm_write = '1' or
-            hr_fast_avm_read = '1' or hr_fast_avm_write = '1' then
+            (hr_fastfix_s(1) = '0' and (hr_flpm_avm_read = '1' or hr_flpm_avm_write = '1' or
+                                        hr_fast_avm_read = '1' or hr_fast_avm_write = '1')) then
             hr_quiet_cnt <= (others => '0');
          elsif hr_quiet_cnt /= 63 then
             hr_quiet_cnt <= hr_quiet_cnt + 1;
@@ -1437,8 +1461,34 @@ begin
          if hr_quiet_cnt = 63 then
             hr_fast_sel <= hr_fast_on;
          end if;
+         -- debug counters
+         hr_fast_on_d  <= hr_fast_on;
+         hr_fast_sel_d <= hr_fast_sel;
+         if hr_fast_sel /= hr_fast_sel_d then hr_nsel <= hr_nsel + 1; end if;
+         if hr_fast_on = '0' and hr_fast_on_d = '1' then hr_non_fall <= hr_non_fall + 1; end if;
+         if hr_fast_sel = '0' and (hr_fast_avm_read = '1' or hr_fast_avm_write = '1') and
+            hr_blocked /= x"FFFF" then
+            hr_blocked <= hr_blocked + 1;
+         end if;
       end if;
    end process p_fast_sel;
+
+   p_fastfix_main : process (main_clk)
+   begin
+      if rising_edge(main_clk) then
+         main_fastfix_s <= main_fastfix_s(0) & main_fastfix_src;
+      end if;
+   end process p_fastfix_main;
+
+   -- stallmon fdbg (lat_meter $FD / $FC, three words each): $FD = amiga_fastram W0 (core flags,
+   -- requests), W1 (request address), W2 (memory flags, acknowledges); $FC = W3 (hr_quiet, aborts,
+   -- stray beats), W4 (memory-state age & blocked clocks), W5 (select: on, sel, fix, quiet count,
+   -- select changes, hr_fast_on falls)
+   k325t_fast_dbg_o <= main_fast_dbg(143 downto 48) &
+                       main_fast_dbg(47 downto 16) &
+                       main_fast_dbg(15 downto 0) & std_logic_vector(hr_blocked) &
+                       hr_fast_on & hr_fast_sel & hr_fastfix_s(1) & '0' & "00" & std_logic_vector(hr_quiet_cnt) &
+                       std_logic_vector(hr_nsel) & std_logic_vector(hr_non_fall) & x"0";
 
    hr_core_write_o        <= hr_arb_write      when hr_fast_sel = '1' else hr_flpm_avm_write;
    hr_core_read_o         <= hr_arb_read       when hr_fast_sel = '1' else hr_flpm_avm_read;

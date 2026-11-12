@@ -22,6 +22,12 @@
 -- A memory-side reset (M2M reset) aborts and repeats the request, never acknowledges it.
 -- The constraints for these paths are in qmtech_k325t_cm4.xdc (amiga_fastram).
 --
+-- K325T stage 3 (fast RAM reset fix, 2026-11-12): rst_i = the M2M resets in clk_i.  An access the
+-- reset interrupts is completed on the memory side (a posted write must reach DDR3: completed CPU
+-- writes survive a reset, as fast RAM contents do on a real machine; a fill is completed too, so
+-- the toggle handshake always ends in a defined idle on both sides), but its result is not handed
+-- to the CPU after the reset (m_orphan).  The cache is write-through (lines are always clean), so
+-- keeping the lines across the reset is correct.  dbg_o: state and counters for stallmon fdbg.
 -- K325T, 68020: the address is the DDR3 word address (the parent maps the Zorro II/III
 -- windows, up to 256 MB); with pulse_i = '1' (the TG68K runs) ready_o is high for exactly
 -- one clock per access (the TG68K's clock enable) and an access starts on sel_i alone; with
@@ -44,6 +50,9 @@ entity amiga_fastram is
       wdata_i            : in  std_logic_vector(15 downto 0);
       rdata_o            : out std_logic_vector(15 downto 0);
       ready_o            : out std_logic;                      -- /DTACK (inverted), held until sel_i drops
+      rst_i              : in  std_logic := '0';               -- M2M resets (clk_i): orphan the access
+      fix_i              : in  std_logic := '1';               -- experiment switch (stallmon fastfix)
+      dbg_o              : out std_logic_vector(143 downto 0); -- stallmon fdbg (asynchronous)
 
       -- memory clock domain (MIG ui_clk), Avalon-MM master (16-bit words, word addresses)
       hr_clk_i           : in  std_logic;
@@ -90,6 +99,9 @@ architecture synthesis of amiga_fastram is
    signal m_start      : std_logic;
    signal m_rdata      : std_logic_vector(15 downto 0) := (others => '0');
    signal m_ready      : std_logic := '0';
+   signal m_orphan     : std_logic := '0';                         -- the reset interrupted this access
+   signal m_nreq       : unsigned(15 downto 0) := (others => '0'); -- debug: requests started
+   signal m_dbg_in     : std_logic_vector(3 downto 0) := (others => '0'); -- debug: sel, we, pulse, fix
    attribute async_reg : string;
    attribute async_reg of m_ack_d  : signal is "true";
    attribute async_reg of m_ack_dd : signal is "true";
@@ -113,8 +125,21 @@ architecture synthesis of amiga_fastram is
    signal hr_we_l      : std_logic;
    signal hr_waddr     : std_logic_vector(12 downto 0);
    signal hr_wdata     : std_logic_vector(15 downto 0);
+   -- debug (memory side)
+   signal hr_rst_d     : std_logic := '0';
+   signal hr_nack      : unsigned(15 downto 0) := (others => '0');  -- acknowledges
+   signal hr_nabort    : unsigned(7 downto 0) := (others => '0');   -- resets with a request open
+   signal hr_nstray    : unsigned(7 downto 0) := (others => '0');   -- read beats outside H_FILL_DATA
+   signal hr_age       : unsigned(15 downto 0) := (others => '0');  -- clocks in the current state
+   signal hr_state_d   : t_hstate := H_IDLE;
+   signal m_state_v    : std_logic_vector(1 downto 0);
+   signal avm_rd       : std_logic := '0';
+   signal avm_wr       : std_logic := '0';
+   signal hr_state_v   : std_logic_vector(2 downto 0);
 
 begin
+   avm_read_o  <= avm_rd;
+   avm_write_o <= avm_wr;
 
    ---------------------------------------------------------------------------
    -- core clock domain
@@ -133,6 +158,7 @@ begin
    begin
       if rising_edge(clk_i) then
          m_ack_d  <= hr_ack_tgl;
+         m_dbg_in <= sel_i & we_i & pulse_i & fix_i;
          m_ack_dd <= m_ack_d;
          -- the data array, read asynchronously (stable: written only for lines this side
          -- is not reading, or before the fill acknowledge arrives)
@@ -154,6 +180,7 @@ begin
                      m_req_data <= wdata_i;
                      m_req_be   <= (not uds_n_i) & (not lds_n_i);
                      m_req_tgl  <= not m_req_tgl;
+                     m_nreq     <= m_nreq + 1;
                      m_ready    <= '1';
                      m_state    <= M_SERVED;
                   elsif hit = '1' then
@@ -163,6 +190,7 @@ begin
                      m_req_hit  <= '0';
                      m_req_addr <= addr_i;
                      m_req_tgl  <= not m_req_tgl;
+                     m_nreq     <= m_nreq + 1;
                      m_state    <= M_FILL;
                   end if;
                elsif m_start = '1' and pulse_i = '1' and we_i = '0' and hit = '1' and
@@ -175,7 +203,12 @@ begin
             when M_FILL =>
                if busy = '0' then                  -- the line is in the data array
                   tags(to_integer(unsigned(m_req_addr(12 downto 3)))) <= '1' & m_req_addr(26 downto 13);
-                  m_state <= M_READ;
+                  if m_orphan = '1' then          -- the line is complete; nobody waits for it
+                     m_orphan <= '0';
+                     m_state  <= M_IDLE;
+                  else
+                     m_state <= M_READ;
+                  end if;
                end if;
 
             when M_READ =>
@@ -190,6 +223,17 @@ begin
                   m_state <= M_IDLE;
                end if;
          end case;
+
+         -- an M2M reset: the access in flight is not answered after it (its memory side still
+         -- completes); a read hit / an answer being presented is cancelled
+         if rst_i = '1' and fix_i = '1' then
+            m_ready <= '0';
+            if m_state = M_FILL then
+               m_orphan <= '1';
+            elsif m_state = M_READ or m_state = M_SERVED then
+               m_state <= M_IDLE;
+            end if;
+         end if;
       end if;
    end process core_proc;
 
@@ -227,27 +271,27 @@ begin
 
          case hr_state is
             when H_QUIET =>                       -- after a reset: let stray beats of an
-               avm_write_o <= '0';                -- aborted burst pass, then serve the
-               avm_read_o  <= '0';                -- pending request again
+               avm_wr <= '0';                -- aborted burst pass, then serve the
+               avm_rd  <= '0';                -- pending request again
                hr_quiet    <= hr_quiet - 1;
                if hr_quiet = 0 then
                   hr_state <= H_IDLE;
                end if;
 
             when H_IDLE =>
-               avm_write_o <= '0';
-               avm_read_o  <= '0';
+               avm_wr <= '0';
+               avm_rd  <= '0';
                if hr_req_dd /= hr_ack_tgl then   -- a request; m_req_* are stable now
                   hr_line <= m_req_addr(12 downto 3);
                   hr_beat <= (others => '0');
                   if m_req_fill = '1' then
-                     avm_read_o       <= '1';
+                     avm_rd       <= '1';
                      avm_address_o    <= std_logic_vector(word(31 downto 3)) & "000";
                      avm_burstcount_o <= x"08";
                      avm_byteenable_o <= "11";
                      hr_state         <= H_FILL_CMD;
                   else
-                     avm_write_o      <= '1';
+                     avm_wr      <= '1';
                      avm_address_o    <= std_logic_vector(word);
                      avm_writedata_o  <= m_req_data;
                      avm_byteenable_o <= m_req_be;
@@ -258,7 +302,7 @@ begin
 
             when H_FILL_CMD =>
                if avm_waitrequest_i = '0' then
-                  avm_read_o <= '0';
+                  avm_rd <= '0';
                   hr_state   <= H_FILL_DATA;
                end if;
 
@@ -267,14 +311,16 @@ begin
                   hr_beat <= hr_beat + 1;
                   if hr_beat = 7 then
                      hr_ack_tgl <= not hr_ack_tgl;
+                     hr_nack    <= hr_nack + 1;
                      hr_state   <= H_IDLE;
                   end if;
                end if;
 
             when H_WRITE_CMD =>
                if avm_waitrequest_i = '0' then     -- accepted (and the cache word written)
-                  avm_write_o <= '0';
+                  avm_wr <= '0';
                   hr_ack_tgl  <= not hr_ack_tgl;
+                  hr_nack     <= hr_nack + 1;
                   hr_state    <= H_IDLE;
                end if;
          end case;
@@ -282,13 +328,45 @@ begin
          -- The framework's reset (M2M reset) resets the Avalon arbiters: a transaction in
          -- flight is lost.  Never acknowledge it: abort, wait, and serve the request again
          -- (a fill or a write may be repeated; both are idempotent).
+         -- debug counters
+         hr_rst_d   <= hr_rst_i;
+         hr_state_d <= hr_state;
+         if hr_rst_i = '1' and hr_rst_d = '0' and hr_req_dd /= hr_ack_tgl then
+            hr_nabort <= hr_nabort + 1;
+         end if;
+         if avm_readdatavalid_i = '1' and hr_state /= H_FILL_DATA then
+            hr_nstray <= hr_nstray + 1;
+         end if;
+         if hr_state /= hr_state_d then
+            hr_age <= (others => '0');
+         elsif hr_age /= x"FFFF" then
+            hr_age <= hr_age + 1;
+         end if;
+
          if hr_rst_i = '1' then
-            avm_write_o <= '0';
-            avm_read_o  <= '0';
+            avm_wr <= '0';
+            avm_rd  <= '0';
             hr_quiet    <= (others => '1');
             hr_state    <= H_QUIET;
          end if;
       end if;
    end process mem_proc;
+
+   ---------------------------------------------------------------------------
+   -- debug word (read asynchronously by stallmon fdbg through lat_meter)
+   ---------------------------------------------------------------------------
+   m_state_v  <= "00" when m_state = M_IDLE else "01" when m_state = M_READ else
+                 "10" when m_state = M_FILL else "11";
+   hr_state_v <= "000" when hr_state = H_QUIET else "001" when hr_state = H_IDLE else
+                 "010" when hr_state = H_FILL_CMD else "011" when hr_state = H_FILL_DATA else "100";
+   -- W0: core flags & requests; W1: request address; W2: memory flags & acknowledges;
+   -- W3: hr_quiet, aborts, stray beats, 0; then 16 bits: clocks in the current memory state
+   dbg_o <= m_state_v & busy & m_req_tgl & m_ack_dd & m_req_fill & m_req_hit & m_ready & m_orphan &
+            m_dbg_in & "000" & std_logic_vector(m_nreq) &
+            "00000" & m_req_addr &
+            hr_state_v & hr_req_dd & hr_ack_tgl & std_logic_vector(hr_beat) & avm_rd & avm_wr &
+            avm_waitrequest_i & avm_readdatavalid_i & hr_rst_i & "000" & std_logic_vector(hr_nack) &
+            std_logic_vector(hr_quiet) & std_logic_vector(hr_nabort) & std_logic_vector(hr_nstray) & x"00" &
+            std_logic_vector(hr_age);
 
 end architecture synthesis;

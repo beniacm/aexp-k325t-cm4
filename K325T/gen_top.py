@@ -96,6 +96,7 @@ core.insert(last + 1, '''         k325t_stall_cfg_i       => rk_vid_sel,
          k325t_lp_done_i         => cc_done,
          k325t_mbox_o            => amiga_mbox,
          k325t_pf_stats_o        => amiga_pf_stats,
+         k325t_fast_dbg_o        => amiga_fast_dbg,
          k325t_audio_clk_o       => amiga_audio_clk''')
 
 tpl = open(sys.argv[3]).read()
