@@ -707,9 +707,11 @@ bitstream over JTAG after 3 misses; it never had to.
   the Avalon capture read twice, 2 s apart: never the same open write burst with beats missing
   (the frozen-bus signature), and ascal had written bursts since the reset every time: 100 / 100
   ok.  (32 more with a single read before that: no repeated state either.)
-- **Soak**: from 2026-11-12 01:37 the 2 MB chip RAM test with the 2 KB cache (chiptest2.adf, KS
-  3.1, build L2) runs for 6 hours, read every minute through the mailbox
-  (`ext/aexp5_stage2/logs/luckfox/chip2m_2k_soak.log` in the harness tree).
+- **Soak**: 2026-11-12 01:37-07:37, the 2 MB chip RAM test with the 2 KB cache (chiptest2.adf,
+  KS 3.1, build L2), read every minute through the mailbox: **1,805 passes over 2 MB in 6 hours, 0
+  errors**, 346-350 line fills per 20 ms, 1.55-1.6 % stalled throughout
+  (`ext/aexp5_stage2/logs/luckfox/chip2m_2k_soak.log` in the harness tree).  The PC-side watchdog
+  (ping every 2 s, ssh and adb uptime every minute) saw no miss and no gap in the module's clock.
 
 Not checkable without a picture: HDMI (ascal output, flicker-free behaviour, the frozen-picture
 symptom itself -- the reset check reads the Avalon bus instead), the demos.
@@ -818,3 +820,14 @@ Stalls up to ~15 us are below the dongle's measurement floor with or without the
 "inaudible"); long stall clusters break the tone without the FIFO and are invisible with it.  Cost:
 1.15 ms of audio latency, 2 tiles; harmonics with the FIFO -57 dB instead of -62 dB (the 221 kHz
 sample-and-hold; a faster rate would need 4-8 tiles, not free).
+
+## 6. The second board (Luckfox rig, build L3 = build P with Luckfox pins, no picture)
+
+- Kickstart 1.3 from DDR3 boots (2,238 line fills, as on the Radxa).
+- Determinism (stalltest3.adf, read through the mailbox), 9 boots: identity x 3, cache 1.5 MB x 2,
+  24 KB with prefetch off x 1 and all x 2, 2 MB chip with 2 KB cache and all prefetchers x 1:
+  27dbf6f3 / 0c253188, 0 mismatching frames, E-clocks 710,511-710,512 every time.
+- Chip test at 24 KB: 0.42 us per fill; demand fills 164.1 / 20 ms without prefetch, 3.5 with all
+  prefetchers (the Radxa: 163.8 / 3.4).
+- Line latency: the same distribution as before and as on the Radxa (read median 280-320 ns).
+Not checkable there: HDMI, the audio FIFO's sound, the demos.
