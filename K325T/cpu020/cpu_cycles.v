@@ -56,8 +56,8 @@ wire run  = |rate;
 wire m020 = (mode == 2'd1);
 wire go   = opc_start & cpu_ena & run;
 
-reg [5:0] cyc_rom[16384];
-reg [4:0] ea_rom[2048];
+reg [5:0] cyc_rom[0:16384-1];
+reg [4:0] ea_rom[0:2048-1];
 // K325T: the tables of MiSTer's .mif files (Quartus ram_init_file) as $readmemh files; the path is
 // relative to the synthesis run directory (CORE/CORE-K325T.runs/synth_1, like fx68k's microcode) and to
 // the simulation bench's run directory
@@ -298,9 +298,9 @@ wire  [3:0] ln = e_a[7:4];
 wire  [1:0] lw = e_a[3:2];
 wire  [5:0] sl = e_a[7:2];
 
-reg  [23:0] itag[16];
-reg  [23:0] dtag[16];
-reg  [23:0] ctag[64];
+reg  [23:0] itag[0:16-1];
+reg  [23:0] dtag[0:16-1];
+reg  [23:0] ctag[0:64-1];
 reg  [63:0] ivl, dvl, cvl;
 
 wire  [3:0] i_v   = (itag[ln] == tg) ? ivl[{ln, 2'b00} +: 4] : 4'd0;
