@@ -89,4 +89,6 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
     -to [get_clocks main_clk]
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_hdd_spi/mbox_out_reg* || NAME =~ CORE/i_hdd_spi/result_reg* || NAME =~ CORE/i_hdd_spi/ack_tgl_reg}] \
     -to [get_clocks clk_pll_i]
-set_max_delay 10 -datapath_only -to [get_cells -hierarchical -filter {NAME =~ CORE/i_hdd_spi/idereq_s1_reg* || NAME =~ CORE/i_hdd_spi/en_s_reg[0]}]
+## the ide request bits and the menu's IDE bit (both main_clk registers) into their two-flop synchronisers
+set_max_delay 10 -datapath_only -from [get_clocks main_clk] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_hdd_spi/idereq_s1_reg* || NAME =~ CORE/i_hdd_spi/en_s_reg[0]}]
