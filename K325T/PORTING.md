@@ -1001,8 +1001,8 @@ made to agree with WinUAE), but both differ from ours, and #278 is the fix to ta
 expectation (8 px) was a guess, not documentation: the public AGA documents do not say what the
 hardware does here, and nobody here has a real A1200 to settle it.  Everything else agrees with the
 documented semantics in all three.  What the tests do not
-cover, and where MiSTer master differs from AExp's base (`eb7a26e`, 2026-06-03; ~90 commits since,
-none of them in this tree): AGA fine positioning (35/70 ns bits of DIWHIGH and SPRxCTL, MiSTer #259,
+cover, and where MiSTer master differed from AExp's base (`eb7a26e`, 2026-06-03; ~90 commits since,
+none of them in this tree at the time; stage 3 below ports them): AGA fine positioning (35/70 ns bits of DIWHIGH and SPRxCTL, MiSTer #259,
 #260; 64-pixel sprites moved by the copper with them, Flink, #286), HBSTRT/HBSTOP fine bits (#261),
 a BPLxPT write right before its fetch (#262), FMODE 1-3 fetches that do not start on the 8/16-pixel
 step (Turrican 2 AGA, #278), BPLAM up to the last pixel of the window (`c1f14c3`), the final D write
@@ -1053,34 +1053,34 @@ adjacent lanes of the same 64-bit word (aligned: A[1] = 0) in one slot, i.e. 4 b
 Measured with `tools/mk_cputime.py` (11 loops x 4 bus conditions, colour clocks from VPOSR/VHPOSR,
 same beam phase for every start; code in chip RAM, instruction cache on where the CPU has one):
 
-| condition / loop (CCK for 2048 instructions) | ours 68000 (fx68k) | ours 68020 (TG68K, AExp+cpu-tg68k) | MiSTer "68020" (unthrottled) | MiSTer stock 68EC020 (#276 tables) | FS-UAE 68020 CE | 68EC020 manual, cache case, zero-wait memory |
-|---|---|---|---|---|---|---|
-| c0 DMA off / L0 dbra (2048x) | 10405 | 12412 | 789 | 3058 | 4136 | 3072 |
-| c0 DMA off / L1 add.l d0,d1 | 9584 | 5727 | 371 | 1397 | 1578 | 1408 |
-| c0 DMA off / L2 move.l (a0),d0 chip | 13693 | 13955 | 4379 | 6520 | 4674 | 3456 |
-| c0 DMA off / L3 move.w (a0),d0 chip | 9593 | 9841 | 4379 | 6525 | 4677 | 3456 |
-| c0 DMA off / L4 move.l d0,(a0) chip | 13693 | 13955 | 4379 | 4403 | 4407 | 2432 |
-| c0 DMA off / L5 move.w d0,(a0) chip | 9592 | 9841 | 4379 | 4403 | 4405 | 2432 |
-| c0 DMA off / L6 mulu.w d2,d0 | 46440 | 5727 | 371 | 14702 | 13354 | 14208 |
-| c0 DMA off / L7 move.l d0,d1 + divu.w d2,d1 | 59404 | 13955 | 4981 | 23917 | 29224 | 23936 |
-| c0 DMA off / L8 move.w $dff006,d0 | 17760 | 18069 | 6217 | 7050 | 8796 | 3968 |
-| c0 DMA off / L9 move.l (a0)+,d0 chip | 13695 | 13955 | 4379 | 6525 | 6755 | 3456 |
-| c0 DMA off / L10 move.l d0,(a0)+ chip | 13693 | 13955 | 4379 | 4403 | 4405 | 2432 |
-| c1 8pl lores FMODE0 / L0 dbra (2048x) | 36070 | 42465 | 891 | 2936 | 4292 | >= 3072 |
-| c1 8pl lores FMODE0 / L1 add.l d0,d1 | 31545 | 19708 | 437 | 1397 | 1579 | >= 1408 |
-| c1 8pl lores FMODE0 / L2 move.l (a0),d0 chip | 46096 | 47865 | 14546 | 18619 | 15922 | >= 3456 |
-| c1 8pl lores FMODE0 / L4 move.l d0,(a0) chip | 46097 | 47864 | 14546 | 14733 | 14738 | >= 2432 |
-| c1 8pl lores FMODE0 / L6 mulu.w d2,d0 | 39923 (*) | 19708 | 437 | 14513 | 13606 | >= 14208 |
-| c2 8pl lores FMODE3 / L0 dbra (2048x) | 12328 | 15088 | 785 | 3054 | 4141 | >= 3072 |
-| c2 8pl lores FMODE3 / L1 add.l d0,d1 | 11335 | 6972 | 376 | 1397 | 1578 | >= 1408 |
-| c2 8pl lores FMODE3 / L2 move.l (a0),d0 chip | 16363 | 16968 | 5189 | 6533 | 5678 | >= 3456 |
-| c2 8pl lores FMODE3 / L4 move.l d0,(a0) chip | 16356 | 16968 | 5189 | 5218 | 5224 | >= 2432 |
-| c2 8pl lores FMODE3 / L6 mulu.w d2,d0 | 49878 | 6972 | 376 | 14709 | 13356 | >= 14208 |
-| c3 blitter nasty / L0 dbra (2048x) | 18821 | 20827 | 9154 | 11437 | 12520 | >= 3072 |
-| c3 blitter nasty / L1 add.l d0,d1 | 18001 | 14142 | 8734 | 9761 | 9948 | >= 1408 |
-| c3 blitter nasty / L2 move.l (a0),d0 chip | 22113 | 22370 | 12741 | 14886 | 13048 | >= 3456 |
-| c3 blitter nasty / L4 move.l d0,(a0) chip | 22111 | 22370 | 12741 | 12783 | 12789 | >= 2432 |
-| c3 blitter nasty / L6 mulu.w d2,d0 | 54857 | 14142 | 8734 | 23068 | 21728 | >= 14208 |
+| condition / loop (CCK for 2048 instructions) | ours 68000 (fx68k) | ours 68020 (TG68K, AExp+cpu-tg68k) | MiSTer "68020" (unthrottled) | MiSTer stock 68EC020 (#276 tables) | ours stage 3: MiSTer's 68EC020 ported, stock (0xF4 = 3 + AGA) | FS-UAE 68020 CE | WinUAE 6.1b10 68020 CE (A1200 config, run_winuae.py) | 68EC020 manual, cache case, zero-wait memory |
+|---|---|---|---|---|---|---|---|---|
+| c0 DMA off / L0 dbra (2048x) | 10405 | 12412 | 789 | 3058 | 3057 | 4136 | 2156 | 3072 |
+| c0 DMA off / L1 add.l d0,d1 | 9584 | 5727 | 371 | 1397 | 1397 | 1578 | 1394 | 1408 |
+| c0 DMA off / L2 move.l (a0),d0 chip | 13693 | 13955 | 4379 | 6520 | 6519 | 4674 | 4230 | 3456 |
+| c0 DMA off / L3 move.w (a0),d0 chip | 9593 | 9841 | 4379 | 6525 | 6525 | 4677 | 4237 | 3456 |
+| c0 DMA off / L4 move.l d0,(a0) chip | 13693 | 13955 | 4379 | 4403 | 4403 | 4407 | 4229 | 2432 |
+| c0 DMA off / L5 move.w d0,(a0) chip | 9592 | 9841 | 4379 | 4403 | 4404 | 4405 | 4230 | 2432 |
+| c0 DMA off / L6 mulu.w d2,d0 | 46440 | 5727 | 371 | 14702 | 14702 | 13354 | 11633 | 14208 |
+| c0 DMA off / L7 move.l d0,d1 + divu.w d2,d1 | 59404 | 13955 | 4981 | 23917 | 23916 | 29224 | 19893 | 23936 |
+| c0 DMA off / L8 move.w $dff006,d0 | 17760 | 18069 | 6217 | 7050 | 7050 | 8796 | 4367 | 3968 |
+| c0 DMA off / L9 move.l (a0)+,d0 chip | 13695 | 13955 | 4379 | 6525 | 6525 | 6755 | 4234 | 3456 |
+| c0 DMA off / L10 move.l d0,(a0)+ chip | 13693 | 13955 | 4379 | 4403 | 4403 | 4405 | 4229 | 2432 |
+| c1 8pl lores FMODE0 / L0 dbra (2048x) | 36070 | 42465 | 891 | 2936 | 3163 | 4292 | 2030 | >= 3072 |
+| c1 8pl lores FMODE0 / L1 add.l d0,d1 | 31545 | 19708 | 437 | 1397 | 1397 | 1579 | 1394 | >= 1408 |
+| c1 8pl lores FMODE0 / L2 move.l (a0),d0 chip | 46096 | 47865 | 14546 | 18619 | 18619 | 15922 | 14063 | >= 3456 |
+| c1 8pl lores FMODE0 / L4 move.l d0,(a0) chip | 46097 | 47864 | 14546 | 14733 | 14733 | 14738 | 14063 | >= 2432 |
+| c1 8pl lores FMODE0 / L6 mulu.w d2,d0 | 39923 (*) | 19708 | 437 | 14513 | 14740 | 13606 | 11566 | >= 14208 |
+| c2 8pl lores FMODE3 / L0 dbra (2048x) | 12328 | 15088 | 785 | 3054 | 3054 | 4141 | 2149 | >= 3072 |
+| c2 8pl lores FMODE3 / L1 add.l d0,d1 | 11335 | 6972 | 376 | 1397 | 1397 | 1578 | 1395 | >= 1408 |
+| c2 8pl lores FMODE3 / L2 move.l (a0),d0 chip | 16363 | 16968 | 5189 | 6533 | 6533 | 5678 | 5056 | >= 3456 |
+| c2 8pl lores FMODE3 / L4 move.l d0,(a0) chip | 16356 | 16968 | 5189 | 5218 | 5218 | 5224 | 5056 | >= 2432 |
+| c2 8pl lores FMODE3 / L6 mulu.w d2,d0 | 49878 | 6972 | 376 | 14709 | 14709 | 13356 | 11639 | >= 14208 |
+| c3 blitter nasty / L0 dbra (2048x) | 18821 | 20827 | 9154 | 11437 | 11437 | 12520 | 10530 | >= 3072 |
+| c3 blitter nasty / L1 add.l d0,d1 | 18001 | 14142 | 8734 | 9761 | 9761 | 9948 | 9756 | >= 1408 |
+| c3 blitter nasty / L2 move.l (a0),d0 chip | 22113 | 22370 | 12741 | 14886 | 14886 | 13048 | 12595 | >= 3456 |
+| c3 blitter nasty / L4 move.l d0,(a0) chip | 22111 | 22370 | 12741 | 12783 | 12784 | 12789 | 12603 | >= 2432 |
+| c3 blitter nasty / L6 mulu.w d2,d0 | 54857 | 14142 | 8734 | 23068 | 23067 | 21728 | 19996 | >= 14208 |
 
 (*) wrapped: the probe measures modulo one frame (71,051 CCK); the true value is 110,974.  The 68000
 column checks the method: L0-L6 match the 68000's documented cycle counts within 1 % (DBRA 10, ADD.L
@@ -1315,8 +1315,14 @@ Proposed order (each step testable on the board against this bench and the FS-UA
 | `tools/mk_agatest.py` | AGA test payloads, boot-block ADFs, expected colours, checker, bench boot ROM |
 | `tools/mk_cputime.py` | CPU / chip-bus timing probe (payload, ADF, decoders) |
 | `tools/run_fsuae.py`, `tools/fsuae_capture.c` | FS-UAE without a display: stills, video, log |
-
 | `tools/mk_setchiprev.py` | 96-byte AmigaDOS tool: graphics.library SetChipRev(best) (SetPatch's AGA switch) for boot media without Workbench |
+| `sim/aga/adf_engine_tb.vhd` | the core's `adf_track_engine` with bench generics (df0 in the bench, GHDL -> Verilog) |
+| `sim/aga/run_vts.sh`, `sim/aga/vts_compare.py` | vAmigaTS tests on the bench, comparison with the references |
+| `tools/mk_a500probe.py` | OCS/ECS probes for the class-b ports |
+| `tools/mk_bootadf.py` | bootable FFS ADF from AmigaDOS files (setchiprev first) |
+| `tools/run_winuae.py` | WinUAE 6.1 without a display (A1200 accuracy options, capture, scripted clicks) |
+| `patches/Minimig_MiSTerMEGA65/0004-0028` | MiSTer upstream ports, one per upstream commit (header names it) |
+| `cpu020/` | TG68K_MMU030.vhd and MiSTer's `cpu_cycles.v` with its tables (`.mem`) |
 
 Outside the repository: `ext/a1200_demos/` (downloads, `manifest.*`, `make_manifest.py`, `run_refs.sh`,
 `ref/` recordings, stills, contact sheets and FS-UAE logs, `tools/ref_sheet.py`, `tools/fsuae_capture.so`);
@@ -1324,3 +1330,374 @@ Outside the repository: `ext/a1200_demos/` (downloads, `manifest.*`, `make_manif
 machines, the CPU timing JSONs, the cache-model results of the TG68K traces, the demo table).  The
 simulation traces (~1 GB) and the MiSTer-trace cache results lived in the session's RAM scratch area
 and were lost in a PC crash at 22:02 on 2026-11-11; their numbers are in the tables above.
+
+# Stage 3: AGA through the cache, MiSTer upstream, the 68EC020 (branch `a1200-aga`, 2026-11-11/12)
+
+Rebased onto `a1200-ddr3` (`1b9ff49`: 64-bit cache data path, 2 MB chip, stall clock).  Simulation
+only (Verilator bench `sim/aga/`, GHDL for the VHDL parts); no board, no Vivado run of the AGA
+machine yet.
+
+## Package 1: AGA through the real stage-2 cache
+
+- `chip_cache.vhd` (separate commits `821c130`, `cb0f9b1`, for the owner of that file to accept):
+  the data RAM is 8 byte lanes of 128K x 8, so one read gives the whole 64-bit group: `rdata_o`
+  (the addressed word; lane registered on `clk_i`) and `rdata48_o` (the three following words in
+  SDRAM burst order, wrapping inside the group = Denise's `chip48`).  Port B moves 64 bits per beat
+  (8 beats per 64-byte line).  `long_i` / `wdata2_i` (default '0'): a 68EC020 32-bit write puts
+  its second word into the next lane in the same cycle.  `sim/tb_chip_cache.vhd` checks `rdata48`
+  against its reference and makes a third of its even-address writes 32-bit: PASS at identity and
+  shrink 0/2/3, 40,000 accesses each.  (The cache owner took both onto `a1200-ddr3` as `df85fa6` and
+  `90ec55f`, with a correction `12a5f16`: the second word of a 32-bit write only at an even word
+  address.  This branch still has the pre-correction version until its next rebase; the 68EC020's
+  32-bit writes are long-aligned, so the bench results are not affected.)
+- `main.vhd`: `chip48_hold` loaded at the clk7_en edge from the cache's `rdata48` and held to the
+  next one (Denise copies {data, chip48} at clk7n_en); `dout2_hold` the same for the second word of
+  a 32-bit CPU read.  **AGA is the machine configuration's third chipset radio** ("AGA Chipset",
+  line 78 of the RAM submenu, which was an empty line: no OSM size change, the menu heap keeps 59
+  words headroom; a change cold-boots the Amiga like the other topology radios) -> `amiga_config`
+  0xF3 bit 4.  It takes effect only with 2 MB chip RAM through the cache (stall controller r7 b2,
+  `stallmon.py cache on 0 chip2m`, still a debug setting) and gives ECS otherwise.  (A first version
+  used stall-controller register 7 bit 0, which is the statistics-clear toggle: replaced; no stall
+  register is used for AGA, the controller files are as on `a1200-ddr3` again.)
+- Bench: the real `chip_cache` (GHDL -> Verilog) with its three clocks (source 31.31 MHz, MIG ui_clk
+  100 MHz, the machine clock = the source clock gated by the cache's combinational miss, as the
+  BUFGCE) and a line-port model with random latency; a shadow memory checks every chip read (word and
+  chip48) at its clk7_en edge.
+
+**Result:** every AGA test (`mk_agatest.py`, 11 tests, 10-17 frames each) gives frame-for-frame
+identical md5 lists with ideal memory and with the cache at shrink 0 (1 MB), 2 and 3 (2 KB: 2-33 % of
+the source edges stalled, up to 125,914 line fills per run), with 0 wrong words and 0 wrong chip48
+words in 177,000-270,000 checked reads per test.  The same holds with the 68EC020 of package 3
+(`--stock`, shrink 3).  The A500 determinism workload gives the board's values on the bench
+(27dbf6f3 / 0c253188, entry $407E, mismatch 0; ECS the same with VPOSR $A000).
+
+**How much cache AGA needs** (the study's cache model over this bench's TG68K traces, DDR3 latency B,
+hit cost 1/31): `aga8cpu` (8 planes FMODE 3 + CPU) at 1 MB without prefetch 0.78 % of machine time
+stalled, longest lag 57 us; 1.5 MB 0.27 % / 3.5 us.  `worst` (all DMA at once): 1 MB 1.95 % / 61 us,
+1.5 MB 0.91 % / 38 us.  Correctness does not depend on the size (proved down to 2 KB); the built 1 MB
+costs up to ~2 % of machine time in 60-us lumps in the worst case.  1.5 MB, or bitplane/sprite
+prefetch on 1 MB, brings both cases under 1 %.  These numbers assume ~1 us per line fill; the owner's
+faster fill (0.42 us, `d03ee47`) and the coming 1.5 MB 3-way arrangement need a re-run of the model.
+
+## Package 2: MiSTer upstream since `eb7a26e`, all 90 commits
+
+All 90 commits of MiSTer-devel/Minimig-AGA_MiSTer master from `eb7a26e` (our submodule base) to
+`7d5d3c2` (2026-11-10), oldest first.  Class: **a** AGA-only (OCS/ECS bit-identical by construction:
+the change is gated by `aga` or sits in AGA-only registers), **b** changes OCS/ECS behaviour
+(chipset, CIA, Paula, floppy, blitter, copper, CPU bus), **c** MiSTer platform only (HPS, SDRAM/DDR
+controllers, CD32/CDTV/Akiko, A2065, RTG, real floppy drives, menus, releases, README), **d** 68EC020
+/ 68030 work.  "Patch" = our file in `patches/Minimig_MiSTerMEGA65/` (one per upstream commit, the
+upstream commit in its header); merges are listed with what they add beyond their parents.
+
+| upstream | class | what it does | upstream's motivation / evidence | here |
+|---|---|---|---|---|
+| d5f541e | c | README: HDF formats (#213) | docs | - |
+| 88ab8c6 | c | MiSTerFileSystem DosAllocMem size (#216) | host file system | - |
+| 809b955 | c | A2065 Ethernet card (#215) | new MiSTer feature | - |
+| 2a600e4 | c | CD32 and CDTV machines | new machine types (gated by cd32/cdtv mode) | - |
+| d39b26f | c | sys update | MiSTer framework | - |
+| bc4b31c | c | README | docs | - |
+| b265a3b | c | release 20260823 | binary | - |
+| b013ce3 | b | CIA: CNT pin and Timer A/B INMODE count sources (#230) | Crystal Kingdom Dizzy (crack sets INMODE by accident; the timer must never underflow) | 0016 |
+| c26772a | c | Akiko PIO command register (#229) | CD32 | - |
+| d16cd84 | b | Agnus: `field1` only with LACE ("false interlace") | LOF toggled by software without LACE was reported as interlace (video output only, no Amiga-visible change) | 0017 |
+| 7ce2980 | b | Agnus: DMA slot grid one CCK earlier (#232) | Hybris; reverted by 0bf2182 / 002eef2 (broke Rampage) | net zero, not ported |
+| 148931d | d | stock-speed throttle at half A1200 speed (#233) | 68020 speed | in 0013 (MiSTer's cpu_wrapper) |
+| 67af318 | d | cpucfg/cachecfg bits re-arranged | 68020 options | in 0013, main.vhd maps the bits |
+| 27acb14 | d | Gayle fast IDE for the throttled 68020 | IDE (not built here) | - |
+| 06f30af | b | Agnus: VHPOSR reads one CCK lower (#234) | vAmigaTS VPOS suite measured on an A500 ECS: every horizontal probe read +1 | 0018 |
+| 74d6ce0 | b | Gary: custom registers only at $DFxxxx (#235) | WhichAmiga 1.4 probing $DD0000 hit a real register; measured on hardware | 0019 |
+| 5578afd | b | blitter freezes when BLTCON1 turns fill off during a D-only fill blit (#236) | Absolute Inebriation (Virtual Dreams) | 0020 |
+| d760626 | c | release 20260907 | binary | - |
+| 0bf2182 | b | restore the pre-#232 DMA grid | Rampage | net zero with 7ce2980 |
+| 2764b51 | b | Agnus: vertical beam readback one CCK later | Hybris (MiSTer #237); WinUAE 683311be as reference | 0021 |
+| 002eef2 | b | merge: #232 reverted + 2764b51 | - | = 0021 |
+| da7632e | c | OS3 Mountlist (#244) | host file system | - |
+| c1134ac | c | real floppy drives on the user port (#245) | MiSTer hardware | - |
+| e6d9262 | c | zero-floppy-drives mode | MiSTer menu option; changes the HPS floppy status word (our adf_track_engine would need it too) | - |
+| 5fea457 | c | chipdma_arb timing | MiSTer's DDR arbiter (file not in AExp) | - |
+| a527fbb | c | DSKBYTR legacy value without flux media | undoes c1134ac's change for emulated drives; our base already has the legacy value | - |
+| 16934d3 | c | merge #249 (zero drives) | - | - |
+| 8325735 | c | README A2065 (#250) | docs | - |
+| 7f93ed1 | b | Denise: OCS/ECS BPLCON1 writes act on the live scroll state | Absolute Inebriation | 0022 |
+| cfcc0dc | b | Agnus: export bitplane fetch provenance to Denise | Absolute Inebriation (with 3c8a0ed) | 0023 |
+| 3c8a0ed | b | Denise: OCS LORES off-grid fetch ownership | Absolute Inebriation | 0024 |
+| c5ffbf9 | b | merge "Fix Absolute Inebriation" | adds nothing beyond its parents | - |
+| 3c5d2ea | b | Denise: simplify the OCS LORES fetch state (#252) | refactor of 3c8a0ed, same behaviour | 0025 |
+| 2bddf21 | b | CIA timers start two E-clock stages after START (#253) | Risky Woods sound effects (OCS/ECS, 68000), as WinUAE | 0026 |
+| 56ba962 | b | Gary: custom register mirror at $C00000-$D7FFFF again (#254) | Kickstart 1.2 found 1.75 MB phantom slow RAM after #235 | 0027 |
+| 691c2b7 | c | ddram_ctrl: DMA must not overtake a posted CPU write (#255) | MiSTer DDR controller | - |
+| d241338 | c | A2065 CSR0 (#256) | - | - |
+| 83ea662 | c | ddram_ctrl read beat (#258) | - | - |
+| 61d3f02 | a | Denise: DIWHIGH 70/35 ns bits (#259) | AGA fine window | 0004 |
+| 16227ac | a | Denise: SPRxCTL 70/35 ns bits (#260) | AGA sprites | 0005 |
+| 430209e | a | Agnus: HBSTRT/HBSTOP fine bits (#261) | AGA | 0006 |
+| 6b82678 | c | cdtv_bridge / toccata declare before use (#264) | - | - |
+| e187420 | b | Agnus: a BPLxPT write right before its fetch goes nowhere (#262) | TLC PowerTrax (hint by Toni Wilen); not chipset-gated | 0007 (ported with the AGA set; OCS determinism unchanged) |
+| cbf17d2 | c | Akiko unknown command length (#263) | CD32 | - |
+| c9502ba | c | A2065 CSR0 (#274) | - | - |
+| c55ecd9 | d | cycle-exact 68EC020 (#276) | A1200 speed | 0013-0015 |
+| 6c66eb1 | c | floppy drive sounds (#275) | MiSTer feature (paula_floppy select decode rewritten, same function) | - |
+| f3ab2c1 | a | Denise: FMODE fetch start (#278) | Turrican 2 AGA scrolling | 0008 |
+| ec1353d | d | 68030 with MMU (#277) | - | only TG68K_MMU030.vhd (the kernel needs it to compile) |
+| 6ec821d | c | README 68EC020 (#280) | - | - |
+| 5b93485 | c | RTG with MMU (#281), reverted by 4767064 | - | - |
+| 9194cef | d | 68EC030 | - | - |
+| 9efd296 | d | CPU cache, NetBSD on 030 | fast-RAM cache (not used here) | - |
+| 1631376 | c | README | - | - |
+| 5cd5056 | c | README | - | - |
+| b961d73 | d | merge 68EC030 + cache (#283) | - | - |
+| 4767064 | c | revert #281 | - | - |
+| 4ab0d5f | a | Denise: sprite fine shift | Flink AGA black stripes | 0009 |
+| de795a7 | c | sdram_ctrl | - | - |
+| b988bd0 | a/c | merge Flink + 68EC020 freeze (sdram_ctrl) | - | = 0009 |
+| 8813609 | b | CPU write to a blitter register waits while a BLTPRI blit runs (#287) | Deep Core (CD32): the cached 68EC020 wrote into a running blit | 0028 adapted: 68020 only (a 68000 keeps the idle cycles of a BLTPRI blit); its ddram_ctrl part is c |
+| 5306e18 | c | sdram_ctrl | - | - |
+| cf24493 | d | cpu_wrapper memory word mux | timing | in 0013 |
+| a189426 | d | TG68K long chains | timing | in 0012 |
+| ba5adba | c/d | merge timings (#289) | - | in 0012/0013 |
+| 1abd1fa | c | Akiko | - | - |
+| 3192739 | c | Akiko | - | - |
+| ce1f386 | c | Akiko CD speed | - | - |
+| f1af4fe | d | cpu_wrapper: no chip read where TG68K skips the fetch | 68EC020 | in 0013 |
+| c1f14c3 | a | Denise: BPLAM (bplxor) up to the last pixel | Alien 3 (AGA) | 0010 |
+| 06db70b | a/c/d | merge: CD speed (c), Pierre le Chef CPU fix (d), Alien 3 (a) | - | in 0013 / 0010 |
+| bf5d061 | c | Action Replay cartridge option (#291) | cartridge (gated by ar_on) | - |
+| a2826ce | c | Akiko | - | - |
+| b8a5bbd | c | Akiko DMA delays | - | - |
+| 6e84afe | a | Agnus: the final D write of a blit before the CPU, AGA only | - | 0011 |
+| 09226f7 | d | 68EC020 instruction cache and chip bus fetch | A1200 speed | 0012/0013 |
+| 69fb350 | b | userio: no opposite joystick directions | Deep Core crashed on them; limited to HPS joysticks by c88a6f9 | net c, not ported |
+| 6599190 | c | sdram_ctrl | - | - |
+| 897af79 | d | cpu_wrapper memory ready | timing | in 0013 |
+| e47c345 | a/c/d | merge Akiko / Agnus (= 6e84afe) / CPU / joystick / SDRAM | - | see parents |
+| 0d6bd62 | c | SNAC joystick on the user port | MiSTer hardware | - |
+| 48a35dd | c | Akiko | - | - |
+| 74483cd | c | cpu_cache_new timing | fast-RAM cache | - |
+| 9709669 | c | Akiko | - | - |
+| 7c9517c | c | merge Akiko (#294) | - | - |
+| 3ea7f0e | c | RTG frame buffer as Z3 board (#295) | - | - |
+| c88a6f9 | c | opposite-direction filter only for HPS joysticks (#297) | the filter broke Amiga mice on the MEGA65 DB9 ports (#296) | - |
+| b0349e7 | c | mouse overflow protection (#298) | HPS mouse packets; our mouse is the DB9 quadrature / keyboard path | - |
+| 7821c15 | c | sys update | - | - |
+| 7d5d3c2 | c | warnings | - | - |
+
+Totals (90 commits): **a** 7, all ported (0004-0006, 0008-0011); **b** 19: 14 ported as one patch each
+(0007 = e187420, 0016-0028), 4 are net zero (7ce2980 / 0bf2182 / the merge 002eef2 revert each other
+except for 2764b51 = 0021; the merge c5ffbf9 adds nothing), 69fb350 was narrowed to MiSTer's HPS
+joysticks by c88a6f9 (net c); **c** 47 (+ 4 merges mixing a/c/d); **d** 13, in 0012-0015 where they
+touch cpu_wrapper / TG68K (MiSTer master's files), the 68030 / MMU / fast-RAM cache not ported.
+
+### Class a: OCS/ECS bit-identical
+
+0004-0011 (0007 = e187420 is class b by the definition, ported with this set).  OCS and ECS
+determinism mailbox and frame 159 md5 identical before and after.  ddf3c now moves 64 px (origin
+335), as MiSTer master and FS-UAE.
+
+### Class b: one patch per upstream commit
+
+Own probe `tools/mk_a500probe.py` (A500 configuration, no Kickstart) and the determinism workload,
+each patch alone on top of 0001-0015 (dependent pairs together: 0018+0021, 0016+0026, 0019+0027,
+0020+0028, 0022-0025), and all together (`build_p6`):
+
+| patch (upstream) | behaviour change | own probe, before -> after | determinism workload (A500, fx68k) |
+|---|---|---|---|
+| 0016 (b013ce3) CIA INMODE | a timer with INMODE counts CNT (or underflows gated by CNT), not the E clock | timer A INMODE=1 from $0040 after 2 frames: $0010 (E counted) -> $0040 (CNT idle) | identical |
+| 0017 (d16cd84) false interlace | `field1` (video output, AExp's deinterlacer) only with LACE | - (not readable by the Amiga) | identical |
+| 0018 (06f30af) VHPOSR -1 | VHPOSR returns hpos-1 (htotal at the wrap) | VHPOSR after line $40->$41: $410C/$4127 -> $410B/$4126 | **changes**: checksums 27dbf6f3/0c253188 -> 6b9c877b/2649b948, entry $407E -> $407D, start sync row $00040002 -> $00020001; still single-valued (mismatch 0) |
+| 0019 (74d6ce0) Gary $DFxxxx | $D80000-$DEFFFF no longer reaches the registers | [$D80006]/[$DE1006]: $4139/$4143 -> 0/0; alone it also loses the $C0 mirror ([$C80006] 0) | identical |
+| 0020 (5578afd) blitter freeze | D-only fill blit, fill switched off in BLTCON1 mid-blit: blitter frozen until the next BLTSIZE | DMACONR two frames later: $2240 -> $6240 (BBUSY) | identical |
+| 0021 (2764b51) V readback delay | VPOSR/VHPOSR line through two clk7_en registers | first read with line $41: $410B -> $410F | identical to 0018 alone |
+| 0022-0025 (7f93ed1, cfcc0dc, 3c8a0ed, 3c5d2ea) OCS LORES | live BPLCON1 scroll; off-grid LORES fetch ownership | none (needs a picture check: vAmigaTS BPLCON1 below) | identical (5 lores planes) |
+| 0026 (2bddf21) CIA start delay | an E-clock timer starts two E stages after START | TALO 1/2/3 bus cycles after loading $1000: $FF/$FA/$F5 -> $00/$FB/$F6 | **changes**: E clocks over 50 frames $FFF52890 -> $FFF52892 (two fewer: the delay), so the picture of the result rows changes; checksums unchanged |
+| 0027 (56ba962) Gary mirror | $C00000-$D7FFFF mirror back where no slow RAM is | [$C80006] (no slow RAM): 0 with 0019 alone -> $4153 | identical |
+| 0028 (8813609) BLTPRI write hold, **adapted** | CPU write to a blitter register held while a BLTPRI blit runs -- **68020 only here** | 68000, D-only BLTPRI blit: 16 CCK around a BLTAFWM write; upstream's ungated rule 8206 CCK (to the end of the blit); with the gate the 68000 keeps 16, the 68020 gets $2010 CCK | identical |
+
+Why the two checksum changes are right: 0018 changes only the value VHPOSR returns (the read mux; no
+timing anywhere), and the workload checksums the beam values it reads and syncs its start to the E
+clock through VHPOSR -- so its numbers must change; that VHPOSR read one CCK high was measured on
+an A500 ECS against the vAmigaTS VPOS suite (upstream #234).  0026 makes the CIA count two E clocks
+fewer from START, which is what the 8520 does (WinUAE models it; upstream found it with Risky Woods'
+sound effects); the workload's E-clock count shows exactly those two clocks.  Leaving 0018/0021 and
+0026 out restores the phase-2 values bit for bit.
+
+Why 0028 is gated: upstream applies the hold to every CPU.  A BLTPRI blit only takes the cycles it
+can use; a D-only blit uses every second one, and a 68000 gets the others (HRM's cycle diagrams), so
+on an A500 a write lands mid-blit.  The CD32 case upstream fixed (Deep Core) is a 68EC020.
+
+### vAmigaTS: inventory and a first before/after sample
+
+**Source and licence:** `github.com/dirkwhoffmann/vAmigaTS` (Dirk W. Hoffmann, GPL-3.0), fetched
+read-only (sparse, without the `.raw`/`.tiff`/`.mov` bulk) at commit `24608226` (2026-11-11) into
+`ext/a500_tests/vAmigaTS/` (2.0 GB, write-protected); the `.tiff` references of the sampled tests
+in `ext/a500_tests/refs/`.  Nothing of it is built or run on the PC; only its ADFs run inside the
+bench.  **Content:** 2,158 test disks (boot-block programs, many derived from alpine9000's examples):
+Agnus 655 (blitter 250, copper 125, registers 159, DDF 84, DIW 31), CPU 686 (timing 248, IPL 231,
+68010/68020/MMU 103, exceptions 36), Denise 302 (sprites 130, registers 87, modes 66), FPU 206,
+Paula 137 (interrupts 86, audio 30, drive 19), CIA 93, mainboard 58 (ports, UART), memory 17,
+misc 4.  2,907 regression scripts: A500_ECS_1MB 2,129, A500_OCS_1MB 558, A500+ 109, A1200 111
+(all with Kickstart 1.3, 9 s after power-on, then one screenshot).  **References:** per test a
+`.tiff`, vAmiga's own 716 x 285 screenshot that its regression compares pixel for pixel (1,727 test
+directories), and photos of real machines (A500 OCS/ECS, A500+, A1000, A1200; 1,993 directories have
+an A500-family photo).  The tiffs are emulator output that the author matched against the photos;
+where the two disagree the photo is the evidence (example below).  Older tiffs use another palette
+scaling than newer ones, so the comparison maps colours (`vts_compare.py`, "mapped" count).
+
+**On the bench:** `sim/aga/run_vts.sh`: the A500 machine (fx68k, 512 KB chip + 512 KB slow, OCS or
+ECS as the script says), the user's Kickstart 1.3 read in place, the test ADF in df0 served by the
+core's own `adf_track_engine` (new in the bench: GHDL translation, image words in the board's
+HyperRAM byte order), MiSTer's floppy turbo, started from a state saved at frame 170 (before
+Kickstart's first disk access), picture of frame 320 compared at the bench's crop (144,22).  About
+8-10 minutes per test and thread; the whole A500 part (~2,700 scripts) would take ~400 thread-hours,
+too long for this PC.  **On the board:** the same ADFs through the OSM mount and the HDMI capture
+(`aexp_demo_test.py` style, ~25 s per test including the reset: about a day for the A500 part), after
+a one-time crop/scale calibration of the capture against the bench picture.
+
+Sample (17 tests, different areas; "before" = patches 0001-0015, "after" = all patches 0001-0028;
+mismatching pixels of 204,060 after colour mapping, at the bench crop / best crop near it):
+
+| test (setup) | before | after | note |
+|---|---|---|---|
+| Agnus/Registers/VPOS/vhpos2 (OCS) | 10,104 | **0** | VHPOSR in the VBL handler: exact with 0018/0021 |
+| Agnus/Registers/VPOS/cycle01vh (OCS) | 24,136 | **34** | VHPOSR across line $FF -> $100 |
+| Agnus/Copper/coptim/coptim1 (OCS) | 3,128 | **38** | |
+| Paula/Interrupts/vblank/vblank1 (OCS) | 2,804 | **80** | |
+| CPU/Timing/MOVE1/MOVE1W (ECS, 68000) | 3,132 | **564** | |
+| Agnus/Blitter/cputim/cputim1 (ECS) | 4,900 | 3,792 | |
+| Agnus/Blitter/bbusy/bbusy1 (ECS) | 4,300 | 4,206 | |
+| Agnus/Blitter/fill/fill1 (ECS) | 0 | 0 | exact both |
+| Agnus/DDF/DDF/ddf1 (OCS) | 0 | 0 | exact both |
+| CIA/CIA/ciareg/aprab0 (ECS) | 0 | 0 | exact both (at crop 144,28) |
+| Memory/Rom/mirror/customC2, customD1 (ECS) | 0 | 0 | exact both |
+| Memory/Rom/mirror/customD2 (ECS) | 11,456 | 34,368 | **the tiff is wrong**: the real A500+ photo in the same folder shows no mirror at $D80000-$DDFFFF and a mirror at $DE0000-$DFFFFF; vAmiga (tiff) and our "before" mirror $D80000-$DBFFFF (64 probe lines wrong against the photo), "after" (0019) only misses the $DE0000 block (16 lines) |
+| Memory/Rom/mirror/custC, custD (ECS) | 2,806 / 5,398 | 8,914 / 28,998 | older CPU-timed versions of the above; their README: the references "are recordings of a machine", "still fail in vAmiga today" -- not usable |
+| Denise/Registers/BPLCON1/timing1 (ECS) | 702 | 1,578 | mid-line BPLCON1 writes: the reference shows the scroll change as a staircase, ours shows none before or after 0022 (open) |
+| Denise/Sprites/collision/sprcoll1 (OCS) | 15,752 | 15,752 | unchanged, open |
+
+Of the 17, the (b) set moves seven closer to their references (vhpos2, cycle01vh, coptim1 and
+vblank1 to exact or within 80 pixels), customD2 closer to the real machine's photo, leaves six
+unchanged (five of them exact), and makes three worse: custC/custD (references declared unusable by
+their author) and BPLCON1 timing1 (702 -> 1,578, open, like sprcoll1).  The $DE0000 mirror (0019
+unmaps it, a Gary-based A500+ mirrors it) is a follow-up for 0019.
+
+## Package 3: the 68EC020 (MiSTer #276, 09226f7 and follow-ups)
+
+Patches 0012 (TG68K Kernel/ALU/Pack = MiSTer master), 0013 (cpu_wrapper: MiSTer master's 68EC020
+path transplanted into AExp's wrapper: 32-bit chip cycles, instruction cache, `cpu_cycles.v`
+throttle), 0014 (minimig.v + m68k_bridge, c55ecd9), 0015 (minimig_m65 ports); `K325T/cpu020/`
+(TG68K_MMU030.vhd for the kernel, `cpu_cycles.v` with its tables as `.mem` files).  The 68EC020
+timing is on when the machine is AGA and the CPU config is 68020 (`cpu_ec020` in main.vhd, latched in
+reset); fx68k stays the A500 CPU, unchanged (OCS determinism identical with the 020 patches).
+
+- CPU timing probe (`mk_cputime.py`, new column in the table above): within 1 CCK of MiSTer master's
+  stock 68EC020 in every DMA-off, FMODE 3 and blitter-nasty loop; with 8 planes FMODE 0 (c1) DBRA is
+  7.7 % and MULU 1.6 % slower than MiSTer (cause not found: both stall on the same bitplane slots).
+- Kickstart 3.1 (40.068) with AGA + 2 MB chip + the stock 68EC020 boots to the insert-disk screen
+  (first drawn between frames 200 and 300).
+- The AGA tests pass with it, also through the 2-KB cache.
+
+Remaining differences from a real A1200 CPU (exact / approximate / unknown):
+- exact: the chipset side (which slots the CPU can have), 32-bit chip accesses in one slot.
+- approximate: instruction timing (manual cycle tables with head/tail overlap, MiSTer's debt/credit
+  throttle; register loops within 0-4 % of the manual's cache case), the 256-byte instruction cache
+  (modelled, no data cache -- the 68EC020 has none), interrupt latency and exception timing (TG68K),
+  chip access cost (MiSTer's 9 CPU clocks).
+- unknown: Alice/Budgie wait states and write buffering for CPU chip accesses (not in public
+  documents; WinUAE and MiSTer use measured approximations), the 020's bus phase against the CCK
+  grid.  No real A1200 is available to calibrate against.
+- not modelled: fast RAM timing of a trapdoor card (phase 2's DDR3 fast RAM serves the TG68K with
+  DDR3 latency, not with a card's wait states).
+
+## Package 4: tools for the A1200 demo set
+
+- `tools/mk_bootadf.py` (committed earlier): a bootable FFS ADF from AmigaDOS files with a one-line
+  startup-sequence (ROM-resident commands only) and `setchiprev` first; verified by reading the image
+  back; Mindflow from such a disk runs in FS-UAE.
+- `tools/aexp_demo_test.py`: demo entries are disk lists with swap times (df0 swapped through the
+  OSM: eject, browse, mount); `--set a1200` holds the A1200 set (ADF names on the card, DMS converted,
+  mk_bootadf disks for the executables) and runs the stall controller's AGA setting on the module
+  before every full reset.  Not run on a board (no board in this work); the A1200 swap times are
+  guesses to check against the first recording.  DMS -> ADF needs a converter (`xdms` from apt, not
+  installed: needs the lead's permission).
+- The bench takes `--adf` / `--adf2 FRAME FILE` (one swap) for multi-disk runs in simulation.
+
+## Package 5: baselines, FS-UAE 3.1.66 and WinUAE 6.1.0 beta 10
+
+WinUAE: the user's AppImage, unpacked, run as `squashfs-root/AppRun -f CONFIG` under
+`xvfb-run -a -s "-screen 0 1280x1024x24"` at nice 19 with the same frame-capture library as FS-UAE
+(`tools/fsuae_capture.c`, SDL3 path); `tools/run_winuae.py` writes the configuration.  Accuracy
+options (in every `ext/a1200_demos/ref_winuae/*.uae`): `chipset=aga`, `chipset_compatible=A1200`,
+`cpu_model=68020` + `cpu_24bit_addressing=true` (= 68EC020), `cpu_compatible`, `cpu_cycle_exact`,
+`cpu_memory_cycle_exact`, `blitter_cycle_exact`, `cpu_speed=real`, no JIT, `chipmem_size=4` (2 MB),
+fast RAM as Zorro II `fastmem_size` (`--fast`; WinUAE has no trapdoor-card model), Kickstart 3.1
+read in place, `sound_output=none`.  What did not work headless, or needed care:
+- the window is fixed at 960 x 742 (a status bar at the bottom, the picture scaled 2.54 columns per
+  lores pixel and 2.5 rows per line, filtered); `gfx_*` window options did not change it.  The checks
+  take that scale (`mk_agatest.py check --xscale 2.54 --yscale 2.5 --settle 3`).
+- the Unix port maps the host's x permission to AmigaDOS's e bit: the executables in the
+  hard-disk directories needed `chmod u+x` (Amiga hunk files, never run on the PC); before that,
+  every HD start ended in "file is not executable".
+- `psychedelic_nofast` (directory hard disk, no fast RAM) does not boot from the directory in WinUAE
+  (Kickstart's insert-disk screen); not investigated.
+- input: scripted mouse buttons through the capture library (`CAP_CLICK`, `--click [R]N`), both
+  emulators.
+
+Demo comparison (170 s each, same set-ups as the FS-UAE baselines; stills, contact sheets, video,
+logs in `ext/a1200_demos/ref/` and `ref_winuae/`):
+
+| demo | FS-UAE 3.1.66 | WinUAE 6.1b10 |
+|---|---|---|
+| Nexus 7 | runs (intro, landscape, spheres, Gouraud Pulse) | runs, same parts |
+| Fullmoon (4 MB fast) | runs | runs, loads faster (logo at ~50 s against ~70 s), later parts at other times |
+| Origin | runs (title, credits, mech, cockpit) | runs, same |
+| Motion (4 MB fast) | runs past the logo into the 3D part | same (the old "crashes after the logo" not reproduced in either) |
+| Mindflow (HD, setchiprev, 4 MB fast) | runs; from ~140 s stays in the corridor part | runs further (fractal and end logo by 170 s) |
+| Roots | runs | runs |
+| Roots 2.0 (4 MB fast) | runs | runs |
+| Psychedelic (HD, 4 MB fast) | Software Failure 8000 0006 (CHK), reboot loop | **the same** 8000 0006 loop |
+| Psychedelic, no fast RAM | Software Failure 8000 000B, loop | does not boot from the HD directory |
+| Twisted (4 drives, 4 MB fast) | runs through its parts | **white screen from ~90 s** (after "the man upstairs is angry" and a noise part) to the end |
+| ZiF (HD) | runs | runs |
+| Domination (HD, 4 MB fast) | no picture | **no picture either**; also tried 8 MB fast, 68030 + 68882 non-CE with 8 MB, audio interrupts emulated, mouse clicks: black screen with one grey flash (~40 s) in all |
+| Crazy Sexy Cool | waits at the boot block | see below; with right click + 4 MB fast: runs (Essence, Einstein, objects, texture parts) in both, WinUAE ~10 s earlier |
+| Artificial Paradise | runs, loading screen present | runs, loading screen present |
+
+**Crazy Sexy Cool:** the ADF's boot block is not the demo's: it is an "Action Replay MK III
+AntiVirus-Boot" (added by whoever archived the disk), which reports "SYSTEM NOT OK" on Kickstart 3.1
+and waits: left button = Clear System (WinUAE then: Software Failure 8000 0003), right button =
+Continue.  After Continue the disk's startup-sequence types the group's logo and starts
+`CrazySexyCool.exe`, which returns to the CLI at once without fast RAM and runs with 4 MB.  Both
+baselines now use a scripted right click at frame 1500 and 4 MB fast.
+
+**Domination:** the executable loads (13 hunks: 1.57 MB chip, 1.89 MB fast, 1.78 MB any -- most of a
+2 MB chip machine's free chip RAM) and then shows a black screen in both emulators and every
+configuration tried; the readme asks only for "an aga machine with 6 megs of ram".  Cause not
+determined (candidates: a memory layout it needs that a 2 + 4/8 MB machine does not give, an input
+it waits for, or a broken archive); dropped from the acceptance set unless a working report turns up.
+
+AGA tests and CPU probe, fourth column (WinUAE): pal256, fmode1, fmode3, hires8f3, xor, ham8 (also
+the 1,024 HAM pixels), spr16 all correct; **fmode2 garbled** (FMODE=2 alone, 32-bit fetch by page
+mode: blocks scrambled, wrong border colour; FS-UAE, MiSTer and ours give the documented picture --
+no real A1200 to say who is right); ddf3c moves 64 px like the others; spr32 and spr64: the
+rightmost sprites are cut by WinUAE's fixed window, not wrong.  CPU probe: new column in the CPU
+table above (WinUAE's 68020 CE: DBRA 2,156 CCK against the manual's 3,072, ADD 1,394 against 1,408,
+MULU 11,633 against 14,208, chip reads 4,230).
+
+## Package 6: Vivado
+
+One build of this branch (radxacm3 variant, Vivado 2025.2.1, `VIVADO_JOBS=4`, nice 19, started only
+after the other agent's build had ended; commit `95ce6da` + the PORTING edits), bitstream
+`bin/aexp_k325t_cm4_radxacm3.bit` (not tested on a board).  Two synthesis-only fixes first:
+`cpu_cycles.v` and cpu_wrapper's cache arrays (patch 0029) were in SystemVerilog array form, and
+0010's register was declared inside an unnamed block (patch 0030).
+
+- **Timing met**: WNS +0.025 ns, WHS +0.041 ns, 0 failing endpoints.  Worst setup path: the chip
+  cache's line-port address `b_addr` to a data-RAM lane tile in the MIG ui_clk domain (10 ns, 9.4 ns
+  of it routing: 64 data-RAM tiles fed from one register).  main_clk (the gated 31.31 MHz machine
+  clock) +1.20 ns, on a half-cycle path from TG68K's `micro_state` to cpu_wrapper's `chipdout_i`
+  (the 68EC020 path; stage 1 had ~+8.9 ns in this domain).  Both are the first places to look if a
+  later change breaks timing (register `b_addr` per lane; pipeline the CPU-side write data).
+- **Area**: 69,113 LUTs (33.9 %; the 68020 build of phase 2 had 48.8 k: +20.3 k for AGA Denise/Agnus,
+  the 68EC020 cache and cycle model, the 64-bit cache lanes), of them 17,585 LUT RAM; 41,558
+  registers; 438 / 445 RAMB36 (+2); 74 DSP48.  Block RAM is now the limit: the owner's coming 1.5 MB
+  3-way data RAM has to come out of the same 445 tiles.
