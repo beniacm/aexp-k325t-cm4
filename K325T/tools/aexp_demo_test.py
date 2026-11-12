@@ -56,7 +56,7 @@ DEMOS = {
 DEMOS_A1200 = {
     "nexus7":   (["n7.adf"], [], 180),                         # Andromeda, Nexus 7 (1994), the trackloader ADF
     "fullmoon": (["fullmoon.adf"], [], 180),                   # Virtual Dreams & Fairlight (1993); loads ~50 s
-    "origin":   (["origin1.adf", "origin2.adf"], [120], 300),  # Complex (1993), 2 DMS
+    "origin":   (["origin1.adf", "origin2.adf"], [60], 300),   # Complex (1993), 2 DMS; asks for disk 2 at ~50 s
     "motion":   (["motion1.adf", "motion2.adf"], [120], 300),  # Bomb (1994), 2 DMS, wants fast RAM
     "mindflow": (["mindflow.adf"], [], 150),                   # Stellar (1994), mk_bootadf disk (setchiprev)
     "roots":    (["roots.adf"], [], 180),                      # Sanity (1994), DMS
@@ -67,6 +67,22 @@ DEMOS_A1200 = {
                                                                # mouse click after its system check
     "artparadise": (["artpar1.adf", "artpar2.adf"], [120], 300),  # New Generation Crew (1994)
 }
+
+
+# mouse presses a demo needs (seconds after the first mount, "L"/"R" button): Origin asks "please
+# insert disk 2 (press mouse)" at ~50 s; Crazy Sexy Cool's AntiVirus boot block waits for the right
+# button (= Continue).  First guesses from the board's own recordings; --clicks overrides.
+CLICKS_A1200 = {
+    "origin": [(70, "L"), (75, "L")],
+    "csc":    [(20, "R"), (30, "R"), (40, "R")],
+}
+
+
+def click(host, button):
+    """one mouse button press of 0.3 s through m65d ("mouse dx dy buttons": b0 left, b1 right)"""
+    ctl(host, "mouse 0 0 %d" % (2 if button == "R" else 1))
+    time.sleep(0.3)
+    ctl(host, "mouse 0 0 0")
 
 
 def ctl(host, line, timeout=10):
@@ -201,6 +217,9 @@ def main():
                     help="seconds after boot to insert disk 2 (overrides the table; 0 = never)")
     ap.add_argument("--swaps", default="", help="comma list: seconds to insert disk 2, 3, ... (overrides)")
     ap.add_argument("--set", default="a500", choices=["a500", "a1200"], help="demo set / machine")
+    ap.add_argument("--clicks", default=None,
+                    help="comma list of mouse presses, seconds after the first mount with L/R, e.g. 70L,75L "
+                         "(overrides the table; '' = none)")
     ap.add_argument("--setup", default=None,
                     help="command run on the module (ssh) before every full reset; a1200 default: "
                          "chip RAM through the cache, 2 MB (AGA itself is the menu's chipset radio)")
@@ -255,10 +274,19 @@ def main():
             rec = record(dev, clip, secs + 5)
             t0 = time.time()
             mount(a.host, disks[0], listing)
-            for n, (dn, at) in enumerate(zip(disks[1:], swaps), 2):
+            clicks = CLICKS_A1200.get(name, []) if a.set == "a1200" else []
+            if a.clicks is not None:
+                clicks = [(int(c[:-1]), c[-1].upper()) for c in a.clicks.split(",") if c]
+            events = sorted([(at, "disk", n, dn) for n, (dn, at) in enumerate(zip(disks[1:], swaps), 2)] +
+                            [(at, "click", 0, b) for at, b in clicks])
+            for at, kind, n, what in events:
                 time.sleep(max(0, at - (time.time() - t0)))
-                print("   disk %d at %.0f s" % (n, time.time() - t0), flush=True)
-                mount(a.host, dn, listing, eject_first=True)
+                if kind == "disk":
+                    print("   disk %d at %.0f s" % (n, time.time() - t0), flush=True)
+                    mount(a.host, what, listing, eject_first=True)
+                else:
+                    print("   %s click at %.0f s" % (what, time.time() - t0), flush=True)
+                    click(a.host, what)
             rec.wait()
             for row in frames(clip, os.path.join(a.out, name), a.every, secs):
                 w.writerow((name,) + row)
