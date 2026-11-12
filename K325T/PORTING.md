@@ -2106,6 +2106,8 @@ round (FINDINGS.md).  The final form (this commit, the fix unconditional) is bui
   r7 (chip RAM through the cache, 2 MB chip) not being set: writes in the first seconds after a
   configuration are lost, and r7 is 0 after every configuration, so a flashed stage-3 core comes up
   without AGA until r7 is written and a full reset follows.  See `ext/aexp7_stage3/FINDINGS.md`.
+  (Corrected later: the early writes were not lost, and the memory mode now follows the menu
+  profile; see "Stage 3, round 4" below.)
 - **"Black still" after chiptest2:** 30 resets with probes: the machine always runs, the Kickstart
   3.1 picture (with 4 MB fast) appears 10-20 s after the reset release.  The one "black" still was
   chiptest2's own screen: the 2.2 s `hold_reset` had arrived as a short press (M2M's long press is
@@ -2130,3 +2132,30 @@ round (FINDINGS.md).  The final form (this commit, the fix unconditional) is bui
   reference; WinUAE gives no reference past ~70 s (4 drives: white from ~90 s; one drive: this WinUAE
   build takes no injected key presses, so its disk swapper cannot be driven).  With that, all 11
   demos of the A1200 set run on the board.
+
+# Stage 3, round 4: start-up -- one release, one consistent machine (2026-11-12)
+
+Measured on the Luckfox (`ext/aexp7_stage3/FINDINGS.md` 19:30, `luckfox/exp*.log`): QNICE reads the
+settings file once, 2 s after its start, and silently takes the factory defaults when the card does
+not answer (after a JTAG load or core switch m65io re-probed the bridge only every 2 s: a coin flip);
+the later Kickstart load succeeded, so an A500-default machine ran the A1200 Kickstart.  Separately
+(Radxa), the memory mode lived only in the stall controller's debug register r7, which is 0 after
+every configuration: a flashed core could not come up as an A1200 at all.
+
+- P1 (`CORE/m2m-rom/m2m-rom.asm` START_CARD, first in PREP_START; Kickstart OPTIONAL for the framework's
+  auto-load in `globals.vhd`): unless the settings file and Kickstart both came from the framework's
+  one mount, mount again (333 ms apart, at least 15 s) and load both from that one mount; no card:
+  fatal message, the core stays held; no settings file: factory defaults at once (first use).
+- P2 (`mega65.vhd` p_topo): the machine-topology menu lines follow the menu only while neither M2M
+  reset is set; the loaded profile takes effect at the release (one cold boot).
+- P3 (harness `rockchip/m65io.c`): a lost bridge is probed every 0.1 s for the first 10 s.
+- P4 (`mega65.vhd`, `stall_ctrl.vhd`, `stallmon.py`): the memory mode follows the profile: AGA = chip
+  RAM through the cache with 2 MB chip RAM, OCS/ECS = the identity mode of phase 2 (the menu offers
+  512K, 512K+512K slow and 1 MB chip; there is no "2 MB chip" entry for ECS -- adding one changes
+  OPTM_SIZE and the QNICE heap budget, not done).  chip_cache latches the mode at an M2M reset AND at
+  the cold boot a topology change triggers, so the profile in effect after the release brings its
+  memory mode.  The debug register is an explicit override now (`stallmon cache on|off ...` sets it,
+  `cache auto` clears it, both read back what is in effect; a lost write is an error): shrink levels,
+  the cache for the A500 and 2 MB chip RAM with ECS stay available for tests.  `stallmon cache` with
+  no argument prints the memory mode in effect (lat_meter $FB: stall registers r7..r0, prefetch /
+  audio FIFO / override bits, profile bits, requested and latched mode).

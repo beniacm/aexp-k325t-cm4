@@ -43,6 +43,8 @@ entity clk is
       stall_cache_o   : out std_logic_vector(3 downto 0);    -- chip cache settings (src_clk_o)
       stall_pf_en_o   : out std_logic_vector(6 downto 0);    -- chip cache prefetch enables (src_clk_o)
       stall_afifo_o   : out std_logic;                       -- audio FIFO on (src_clk_o)
+      stall_memovr_o  : out std_logic;                       -- memory mode override (src_clk_o)
+      stall_regs_o    : out std_logic_vector(40 downto 0);   -- register read-back (src_clk_o)
       stall_mach_o    : out unsigned(31 downto 0);           -- machine ticks (src_clk_o)
       stall_lag_o     : out unsigned(31 downto 0);           -- current lag (src_clk_o)
       cache_fills_i   : in  unsigned(31 downto 0) := (others => '0');
@@ -114,7 +116,8 @@ begin
          diag_o  => stall_diag_o,
          mode_o  => stall_mode_o,
          cache_o => stall_cache_o, pf_en_o => stall_pf_en_o,
-         afifo_o => stall_afifo_o, mach_o => stall_mach_o,
+         afifo_o => stall_afifo_o, memovr_o => stall_memovr_o, regs_o => stall_regs_o,
+         mach_o => stall_mach_o,
          fills_i => cache_fills_i,
          wbacks_i => cache_wbacks_i
       );

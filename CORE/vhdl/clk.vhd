@@ -88,6 +88,8 @@ entity clk is
       stall_cache_o   : out std_logic_vector(3 downto 0);
       stall_pf_en_o   : out std_logic_vector(6 downto 0);
       stall_afifo_o   : out std_logic;
+      stall_memovr_o  : out std_logic;
+      stall_regs_o    : out std_logic_vector(40 downto 0);
       stall_mach_o    : out unsigned(31 downto 0);
       stall_lag_o     : out unsigned(31 downto 0);
       miss_i          : in  std_logic := '0';
@@ -271,6 +273,8 @@ begin
    stall_cache_o <= (others => '0');
    stall_pf_en_o <= (others => '0');
    stall_afifo_o <= '0';
+   stall_memovr_o <= '0';
+   stall_regs_o  <= (others => '0');
    stall_mach_o  <= (others => '0');
    stall_lag_o   <= (others => '0');
 

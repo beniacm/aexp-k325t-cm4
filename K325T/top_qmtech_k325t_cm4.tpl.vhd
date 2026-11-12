@@ -199,7 +199,7 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal ad_dbg             : std_logic_vector(191 downto 0);
    signal amiga_mbox         : std_logic_vector(511 downto 0);   -- the core's result mailbox
    signal amiga_pf_stats     : std_logic_vector(671 downto 0);   -- the cache's prefetch counters
-   signal amiga_fast_dbg     : std_logic_vector(191 downto 0);   -- fast RAM path debug (stage 3)
+   signal amiga_fast_dbg     : std_logic_vector(287 downto 0);   -- fast RAM path debug + memory mode (stage 3)
    signal amiga_audio_clk    : std_logic;   -- the core's audio clock (its ungated source clock)
    signal lat_aux           : std_logic_vector(95 downto 0);
    signal diag_out          : std_logic_vector(95 downto 0);

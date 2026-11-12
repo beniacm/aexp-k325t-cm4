@@ -9,7 +9,10 @@ python3-spidev; writes nothing to the module's flash).
     stallmon.py clear                lag max and event counters to 0
     stallmon.py read                 one snapshot, key=value
     stallmon.py log SECS [EVERY]     a snapshot every EVERY seconds (default 10), one line each
-    stallmon.py cache on|off [SHRINK 0..3] [chip2m]   chip RAM through the cache (next full reset)
+    stallmon.py cache on|off [SHRINK 0..3] [chip2m]   chip RAM through the cache (next full reset);
+                                     overrides the machine profile (stage 3 P4)
+    stallmon.py cache auto [SHRINK]  the profile decides (AGA = cache + 2 MB chip, else identity)
+    stallmon.py cache                the memory mode in effect (read-back)
     stallmon.py pf [MASK [afifo]]           chip cache prefetch counters / set the enables (7 bits)
                                             and the audio FIFO
     stallmon.py mbox                        the Amiga's result block at $C0-$FF (16 longwords)
@@ -138,6 +141,50 @@ def rate(b, secs):
               (df, df / frames_real, dw, dw / frames_real, dst / df * T_SRC))
 
 
+def memstate(b):
+    """stage 3 read-back (lat_meter $FB): None for bitstreams without it.  Uses page 7 and registers
+    4/5 as the index (like mbox): leaves the injector's de/dm/j at 0 -- keep the injector off."""
+    b.wr(6, 7)
+    b.wr(4, 0xF)
+    b.wr(5, 0xB)
+    r = b.status()
+    w0, w1, w2 = [int.from_bytes(bytes(r[60 + 4 * k:64 + 4 * k]), "big") for k in range(3)]
+    b.wr(4, 0); b.wr(5, 0); b.wr(6, 0)
+    if w1 >> 9:                                 # unused bits set: an older bitstream (histogram sums)
+        return None
+    return {"r": [w0 >> (4 * i) & 15 for i in range(8)], "pf": w1 >> 2 & 0x7F, "afifo": w1 >> 1 & 1,
+            "ovr": w1 & 1, "topo": w2 >> 16 & 0x1FF, "shrink": w2 >> 8 & 3, "ovr_eff": w2 >> 7 & 1,
+            "ecs": w2 >> 6 & 1, "aga": w2 >> 5 & 1, "chip2m": w2 >> 4 & 1, "cache_mode": w2 >> 3 & 1,
+            "req_2m": w2 >> 2 & 1, "req_cache": w2 >> 1 & 1, "menu_aga": w2 & 1}
+
+
+def memstate_str(m):
+    if m is None:
+        return "no read-back in this bitstream (before stage 3 P4)"
+    return ("memory mode: %s; requested: cache %s, 2 MB chip %s; in effect (latched at the last reset or "
+            "cold boot): cache mode %s, 2 MB chip %s, AGA %s, ECS %s; shrink %d (sets / %d); menu AGA radio %d; "
+            "registers r7..r0 %s" %
+            ("OVERRIDE (stallmon cache on|off)" if m["ovr"] else "follows the menu profile (cache auto)",
+             "on" if m["req_cache"] else "off", "on" if m["req_2m"] else "off",
+             "on" if m["cache_mode"] else "off (identity)", "on" if m["chip2m"] else "off",
+             m["aga"], m["ecs"], m["shrink"], (1, 8, 64, 512)[m["shrink"]], m["menu_aga"],
+             " ".join("%x" % v for v in m["r"][::-1])))
+
+
+def verify(b, want, what):
+    """read back the stall controller and compare: want = {"r7": v, "r0b3": v, "ovr": v, "pf": v,
+    "afifo": v}; a lost write is an error (exit 1), not a silent no-op"""
+    m = memstate(b)
+    if m is None:
+        print("(%s: no read-back in this bitstream, not verified)" % what)
+        return
+    got = {"r7": m["r"][7] & 0xE, "r0b3": m["r"][0] >> 3 & 1, "ovr": m["ovr"], "pf": m["pf"],
+           "afifo": m["afifo"]}
+    bad = {k: (v, got[k]) for k, v in want.items() if got[k] != v}
+    if bad:
+        sys.exit("ERROR: %s: write(s) lost, read back %s (wanted, got)" % (what, bad))
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -149,11 +196,21 @@ def main():
         for k, v in zip(("e", "m", "de", "dm", "j"), p[1:6]):
             b.wr(REG[k], v)
         b.wr(0, p[0])
+        s0 = b.snapshot()                    # read back (page 0 holds registers 0..5)
+        bad = [k for k, v in zip(("e", "m", "de", "dm", "j"), p[1:6]) if s0[k] != v]
+        if bad:
+            sys.exit("ERROR: preset %s: write(s) lost, read back %s" % (sys.argv[2], {k: s0[k] for k in bad}))
         print("preset %s: %s" % (sys.argv[2], p[6]))
     elif cmd == "set":
+        want = {}
         for kv in sys.argv[2:]:
             k, v = kv.split("=")
             b.wr(REG[k], int(v))
+            want[k] = int(v)
+        s0 = b.snapshot()                    # read back (page 0 holds registers 0..5)
+        bad = {k: s0.get(k) for k, v in want.items() if k in s0 and s0[k] != v}
+        if bad:
+            sys.exit("ERROR: set: write(s) lost, read back %s" % bad)
     elif cmd == "clear":
         # every change of register 7 bit 0 clears; its state is unknown here: write 1, then 0
         b.wr(7, 1)
@@ -196,6 +253,7 @@ def main():
             b.wr(3, m & 15)
             b.wr(4, (m >> 4 & 7) | (8 if af else 0))
             b.wr(6, 0)
+            verify(b, {"pf": m & 0x7F, "afifo": 1 if af else 0}, "pf")
             print("prefetch enables %s; audio FIFO %s" %
                   (", ".join(n for i, n in enumerate(names) if m >> i & 1) or "none", "on" if af else "off"))
         else:
@@ -272,14 +330,33 @@ def main():
     elif cmd == "rate":
         rate(b, float(sys.argv[2]))
     elif cmd == "cache":
-        # chip cache settings, taken at the next FULL reset: cache off|on [shrink 0..3] [chip2m]
+        # memory mode, taken at the next FULL reset (or a cold boot of the Amiga):
+        #   cache                               show what is in effect (read-back)
+        #   cache auto [SHRINK]                 stage 3 P4: the machine profile decides (AGA = cache + 2 MB
+        #                                       chip RAM, else identity) -- the state after a configuration
+        #   cache off|on [SHRINK 0..3] [chip2m] override the profile (tests: shrink levels, the cache for
+        #                                       the A500, 2 MB chip RAM with ECS)
+        if len(sys.argv) == 2:
+            print(memstate_str(memstate(b)))
+            return
+        auto = sys.argv[2] == "auto"
         on = sys.argv[2] == "on"
         shrink = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else 0
-        c2 = "chip2m" in sys.argv[3:]
+        c2 = "chip2m" in sys.argv[3:] and not auto
         b.wr(0, (shrink >> 1 & 1) << 3)     # register 0: b3 = shrink bit 1 (injector off)
-        b.wr(7, (shrink & 1) << 3 | (4 if c2 else 0) | (2 if on else 0))
-        print("cache %s, shrink %d (sets / %d), %s -- now a full reset" %
-              ("on" if on else "off", shrink, (1, 8, 64, 512)[shrink], "2 MB chip" if c2 else "chip as in the menu"))
+        r7 = (shrink & 1) << 3 | (4 if c2 else 0) | (2 if on else 0)
+        b.wr(7, r7)
+        b.wr(6, 5)                          # page 5: register 5 b1 = the override (b0 unused)
+        b.wr(5, 0 if auto else 2)
+        b.wr(6, 0)
+        verify(b, {"r7": r7, "r0b3": shrink >> 1 & 1, "ovr": 0 if auto else 1}, "cache")
+        if auto:
+            print("cache auto (the machine profile decides), shrink %d (sets / %d) -- now a full reset" %
+                  (shrink, (1, 8, 64, 512)[shrink]))
+        else:
+            print("cache %s, shrink %d (sets / %d), %s (override) -- now a full reset" %
+                  ("on" if on else "off", shrink, (1, 8, 64, 512)[shrink],
+                   "2 MB chip" if c2 else "chip as in the menu"))
     elif cmd == "lat":
         # line latency meter (lat_meter.vhd, page 7): lat SECS [r|w|rw]
         secs = float(sys.argv[2])
