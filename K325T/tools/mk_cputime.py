@@ -8,6 +8,9 @@ loops take under four bus conditions:
   c2  8 bitplanes lores FMODE 3 (the same picture from 64-bit fetches: 1 slot in 4)
   c3  blitter nasty (BLTPRI): an A -> D copy of 64 x 64 words (every cycle a blitter cycle) started
       right before the loop, all other DMA off
+Before the first measurement the program waits for the frame whose CIA E-clock phase against the
+beam is 0 (as the determinism test; otherwise the first row took two values on the board, the
+real-time floppy load leaving the E clock at any of 5 phases).
 Each measurement starts at the start of line $30 (same beam phase every time); a loop runs N=256
 iterations of 8 copies of one instruction (L0: an empty DBRA loop of 2048 iterations).
 The code runs from chip RAM (no fast RAM: a stock A1200 runs it from chip RAM through the 256-byte
@@ -66,6 +69,30 @@ start:  move.w  #0x2700,%%sr
         move.w  #0,0x1fc(%%a6)              | FMODE 0
         move.w  #0x0c00,0x106(%%a6)
         move.w  #0x0011,0x10c(%%a6)
+        | single-valued start (as mk_stalltest_adf.py): the E clock (CPU / 10) runs free from reset
+        | and a frame is 71051 CCK = 1 mod 5, so its phase against the beam depends on when the
+        | (real-time) loader finished.  Wait for the frame whose E phase at line $10 is 0: touch
+        | CIA-A (the access ends on an E edge), read the beam, phase = (V x 227 + H) mod 5.
+        lea     0xbfe001,%%a2
+es0:    move.w  6(%%a6),%%d0
+        lsr.w   #8,%%d0
+        cmp.w   #0x0f,%%d0
+        bne.s   es0
+es1:    move.w  6(%%a6),%%d0
+        lsr.w   #8,%%d0
+        cmp.w   #0x10,%%d0
+        bne.s   es1
+        tst.b   (%%a2)
+        move.w  6(%%a6),%%d0
+        moveq   #0,%%d1
+        move.b  %%d0,%%d1
+        lsr.w   #8,%%d0
+        mulu    #227,%%d0
+        add.l   %%d1,%%d0
+        divu    #5,%%d0
+        swap    %%d0
+        tst.w   %%d0
+        bne.s   es0
         lea     0x%(res)x,%%a4             | result pointer
         moveq   #0,%%d4                     | condition
 cond:   bsr     setcond
