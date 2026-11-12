@@ -11,6 +11,9 @@ module tb_top (
   // model, instead of the ideal memory
   input  wire        use_cache,
   input  wire        stock020,        // stage 3: 68EC020 stock-speed timing (cpucfg b2) + instruction cache
+  input  wire        kick512,         // 512 KB Kickstart (the cache's kick512_i)
+  input  wire [6:0]  pf_en,           // stage 2b prefetch enables (bpl, spr, aud, dsk, cop, blt, cpu)
+  output wire [671:0] o_pf_stats,     // the cache's prefetch counters (issued / useful / wasted per class)
   input  wire        src_clk,         // ungated source clock (the cache's port A, tags, misses)
   input  wire        ui_clk,          // MIG ui_clk (fill engine, line-port model)
   input  wire        cache_reset,     // the M2M full reset: latches mode and shrink, flushes
@@ -175,6 +178,8 @@ module tb_top (
   wire [17:0] rw18 = ram_addr[18:1];
 
   // ---------------- stage 3: the chip_cache RTL and the line-port model ----------------
+  wire       mm_dma_dbr;              // minimig patch 0002 (stage 2b): Agnus owns the bus, DMA register
+  wire [8:1] mm_dma_reg;
   wire [15:0] cc_rdata;
   wire [47:0] cc_rdata48;
   wire        cc_req, cc_we, lp_busy, lp_rvalid, lp_done;
@@ -184,21 +189,30 @@ module tb_top (
   wire        cc_mode;
   chip_cache i_cache (
     .clk_i(src_clk), .reset_i(cache_reset), .cache_on_i(cache_on), .shrink_i(shrink), .chip1m_i(1'b0),
-    .chip_sel_i(use_cache & is_chip), .slow_sel_i(1'b0), .addr_i(ram_addr[20:1]), .wdata_i(ram_wdata),
+    .chip_sel_i(use_cache & is_chip), .slow_sel_i(1'b0),
+    // stage 2b: the Kickstart lives in DDR3 behind the cache (bank 2 / the kick lines); the bench
+    // preloads it into the DDR3 model where the QNICE load port would put it (backing words 1.25M..)
+    .kick_sel_i(use_cache & is_kick), .kick512_i(kick512),
+    .dbr_i(mm_dma_dbr), .dreg_i(mm_dma_reg), .pf_en_i(pf_en), .pf_stats_o(pf_stats),
+    .addr_i(ram_addr[20:1]), .wdata_i(ram_wdata),
     .we_n_i(ram_we_n), .oe_n_i(ram_oe_n), .bhe_n_i(ram_bhe_n), .ble_n_i(ram_ble_n),
     .long_i(ram_long), .wdata2_i(cpu_din2),
     .rdata_o(cc_rdata), .rdata48_o(cc_rdata48), .miss_o(miss), .fills_o(fills), .wbacks_o(wbacks),
     .mode_o(cc_mode), .ui_clk_i(ui_clk), .lp_req_o(cc_req), .lp_we_o(cc_we), .lp_addr_o(cc_addr),
     .lp_wdata_o(cc_wdata), .lp_busy_i(lp_busy), .lp_rvalid_i(lp_rvalid), .lp_rdata_i(lp_rdata),
     .lp_done_i(lp_done));
-  // DDR3 behind mig_arb's line port: 2 MB chip RAM = backing words 0..1M-1 at G_DDR_BASE ($2000000)
-  reg [15:0] ddr [0:1048575] /*verilator public*/;
+  // DDR3 behind mig_arb's line port (word addresses from G_DDR_BASE $2000000): chip RAM 0..1M-1,
+  // slow RAM 1M..1.25M-1, Kickstart 1.25M..1.5M-1
+  reg [15:0] ddr [0:2097151] /*verilator public*/;
+  wire [671:0] pf_stats;
+  assign o_pf_stats = pf_stats;
   reg        lp_busy_r = 0, lp_rvalid_r = 0, lp_done_r = 0;
   reg [127:0] lp_rdata_r = 0;
   reg [9:0]  lp_cnt = 0;
   reg [2:0]  lp_beat = 0;
   reg        lp_isw = 0;
-  reg [14:0] lp_line = 0;
+  reg [15:0] lp_line = 0;
+  reg [1:0]  lp_crit = 0;
   reg [31:0] lp_rnd = 32'h12345678;
   assign lp_busy = lp_busy_r; assign lp_rvalid = lp_rvalid_r; assign lp_done = lp_done_r;
   assign lp_rdata = lp_rdata_r;
@@ -208,14 +222,15 @@ module tb_top (
     lp_rnd <= {lp_rnd[30:0], lp_rnd[31] ^ lp_rnd[21] ^ lp_rnd[1] ^ lp_rnd[0]};
     if (!lp_busy_r) begin
       if (cc_req) begin
-        lp_busy_r <= 1; lp_isw <= cc_we; lp_line <= cc_addr[19:5]; lp_beat <= 0;
+        // mig_arb: critical word first, the 4 beats are 16-byte words c, c+1, c+2, c+3 (mod 4)
+        lp_busy_r <= 1; lp_isw <= cc_we; lp_line <= cc_addr[20:5]; lp_crit <= cc_addr[4:3]; lp_beat <= 0;
         lp_cnt <= {2'b0, lat_min} + (lat_span == 0 ? 10'd0 : {2'b0, lp_rnd[7:0] % lat_span});
-        if (cc_we) for (k = 0; k < 32; k = k + 1) ddr[{cc_addr[19:5], k[4:0]}] <= cc_wdata[16*k +: 16];
+        if (cc_we) for (k = 0; k < 32; k = k + 1) ddr[{cc_addr[20:5], k[4:0]}] <= cc_wdata[16*k +: 16];
       end
     end else if (lp_cnt != 0) lp_cnt <= lp_cnt - 1;
     else if (lp_isw) begin lp_done_r <= 1; lp_busy_r <= 0; end
     else begin
-      for (k = 0; k < 8; k = k + 1) lp_rdata_r[16*k +: 16] <= ddr[{lp_line, lp_beat[1:0], k[2:0]}];
+      for (k = 0; k < 8; k = k + 1) lp_rdata_r[16*k +: 16] <= ddr[{lp_line, lp_beat[1:0] + lp_crit, k[2:0]}];
       lp_rvalid_r <= 1;
       lp_beat <= lp_beat + 1;
       if (lp_beat == 3) begin lp_done_r <= 1; lp_busy_r <= 0; end
@@ -228,9 +243,14 @@ module tb_top (
     if (cc_rdata != chipmem[cw]) chk_bad <= chk_bad + 1;
     if (cc_rdata48 != {chipmem[{cw[19:2], cw[1:0] + 2'd1}], chipmem[{cw[19:2], cw[1:0] + 2'd2}],
                        chipmem[{cw[19:2], cw[1:0] + 2'd3}]}) chk48_bad <= chk48_bad + 1;
+  end else if (use_cache && clk7_en && !ram_oe_n && is_kick) begin
+    // stage 2b: the Kickstart through the cache, checked against the bench's ROM model
+    chk_n <= chk_n + 1;
+    if (cc_rdata != kickmem[rw18]) chk_bad <= chk_bad + 1;
   end
   reg sel_cache_q = 0;
-  always @(posedge clk) sel_cache_q <= use_cache & is_chip;
+  always @(posedge clk) sel_cache_q <= use_cache & (is_chip | is_kick);
+
   wire [15:0] ramdata_mux = sel_cache_q ? cc_rdata : ram_q;
 
   always @(posedge clk) begin
@@ -285,6 +305,7 @@ module tb_top (
     ._joy1(16'hFFFF), ._joy2(16'hFFFF), ._joy3(16'hFFFF), ._joy4(16'hFFFF),
     .joya1(16'h0), .joya2(16'h0), .mouse_btn(3'b000), .kms_level(1'b0), .kbd_mouse_type(2'b00),
     .kbd_mouse_data(8'h00), .kbd_ack(), .pwr_led(), .fdd_led(), .hdd_led(), .rtc(65'h0),
+    .dma_dbr(mm_dma_dbr), .dma_reg(mm_dma_reg),
     .IO_UIO(io_uio), .IO_FPGA(io_fpga), .IO_STROBE(mm_strobe), .IO_WAIT(io_wait), .IO_DIN(mm_din),
     .IO_DOUT(io_dout),
     ._hsync(hsync_n), ._vsync(vsync_n), ._csync(), .field1(), .lace(), .hblank(hblank),

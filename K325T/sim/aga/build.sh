@@ -57,9 +57,18 @@ PY
 # stage 3: the stage-2 chip_cache (with the AGA 64-bit read) -> Verilog, for --cache
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/M2M/vhdl/tdp_ram.vhd" \
     "$root/K325T/chip_cache.vhd" -e chip_cache > chip_cache.v 2> ghdl_cache.log) || { cat "$OUT/ghdl_cache.log" >&2; exit 1; }
+# VHDL names that are SystemVerilog keywords (stage 2b: chip_cache's signal "tagged")
+sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # the core's floppy service (adf_track_engine) -> Verilog, df0 for --adf
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/CORE/vhdl/adf_track_engine.vhd" \
     "$here/adf_engine_tb.vhd" -e adf_engine_tb > adf_engine.v 2> ghdl_adf.log) || { cat "$OUT/ghdl_adf.log" >&2; exit 1; }
+# FAST_A500=1: the 68020 (TG68K) and the chip cache replaced by stubs -- for A500 runs (fx68k, ideal
+# memory) only; --cpu 3 and --cache do not work in such a build
+if [ -n "${FAST_A500:-}" ]; then
+  /usr/bin/python3 "$here/stubgen.py" "$OUT/tg68k.v" TG68KdotC_Kernel "$OUT/tg68k_stub.v"
+  /usr/bin/python3 "$here/stubgen.py" "$OUT/chip_cache.v" chip_cache "$OUT/chip_cache_stub.v"
+  mv "$OUT/tg68k_stub.v" "$OUT/tg68k.v"; mv "$OUT/chip_cache_stub.v" "$OUT/chip_cache.v"
+fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \

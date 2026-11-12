@@ -96,6 +96,7 @@ extern "C" void trace_tick(int phase, int addr, int oe_n, int we_n, int src, int
   }
 }
 
+static size_t g_rom_bytes = 0;
 static bool load_rom(const char* fn, uint16_t* dst, size_t words) {
   FILE* f = fopen(fn, "rb");
   if (!f) { perror(fn); return false; }
@@ -108,6 +109,7 @@ static bool load_rom(const char* fn, uint16_t* dst, size_t words) {
     dst[i] = (uint16_t)((b[2 * j] << 8) | b[2 * j + 1]);
   }
   fprintf(stderr, "loaded %s: %zu bytes\n", fn, n);
+  g_rom_bytes = n;
   return true;
 }
 
@@ -127,6 +129,7 @@ int main(int argc, char** argv) {
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
   const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
   bool shot_last = false;
+  unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto nx = [&]() { return argv[++i]; };
@@ -162,11 +165,20 @@ int main(int argc, char** argv) {
     else if (a == "--adf2") { adf2_frame = atoi(nx()); adf2_fn = nx(); }
     else if (a == "--floppy-turbo") fturbo = true;
     else if (a == "--shot-last") shot_last = true;
+    else if (a == "--pf") pf_mask = strtoul(nx(), 0, 0);
     else if (a == "--debug") { g_debug_ticks = atoi(nx()); g_debug_from = strtoull(nx(), 0, 0); }
   }
   Vtb_top* top = new Vtb_top;
   auto* r = top->rootp;
-  if (kick) load_rom(kick, (uint16_t*)&r->tb_top->kickmem[0], 262144);
+  if (kick) {
+    load_rom(kick, (uint16_t*)&r->tb_top->kickmem[0], 262144);
+    // stage 2b: the Kickstart in the DDR3 model where the QNICE load port puts it (backing words
+    // 1.25M.., the cache's kick lines); 256 KB images mirrored like the ROM model
+    uint16_t* km = (uint16_t*)&r->tb_top->kickmem[0];
+    uint16_t* dd = (uint16_t*)&r->tb_top->ddr[0];
+    for (size_t i = 0; i < 262144; i++) dd[0x140000 + i] = km[i];
+    top->kick512 = g_rom_bytes > 262144;
+  }
   if (ext)  load_rom(ext,  (uint16_t*)&r->tb_top->extmem[0], 262144);
   if (preload_fn) {   // a program in chip RAM before the machine starts (with a boot ROM that jumps to it)
     FILE* f = fopen(preload_fn, "rb");
@@ -211,6 +223,7 @@ int main(int argc, char** argv) {
     top->rst_ext = 0; cyc0 = 1000;
     fprintf(stderr, "restored %s at frame %u tick %llu\n", restore_fn, g_frame, (unsigned long long)g_tick);
   }
+  top->pf_en = pf_mask;
   top->stock020 = stock020; top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
   top->lat_min = lat_min; top->lat_span = lat_span; top->cache_reset = use_cache;
   // stage 3, --cache: three clocks.  Source clock 31.310345 MHz (stall_clk.vhd), MIG ui_clk 100 MHz;
@@ -341,6 +354,13 @@ int main(int argc, char** argv) {
             "checked chip reads %u, wrong %u, wrong chip48 %u\n", shrink, (unsigned long long)src_edges,
             (unsigned long long)stalled, src_edges ? 100.0 * stalled / src_edges : 0.0, top->fills, top->wbacks,
             top->chk_n, top->chk_bad, top->chk48_bad);
+  if (use_cache && pf_mask) {
+    static const char* cls[7] = {"bpl", "spr", "aud", "dsk", "cop", "blt", "cpu"};
+    for (int c = 0; c < 7; c++) {
+      auto w = [&](int bit) { return (uint32_t)top->o_pf_stats[(96 * c + bit) / 32]; };
+      fprintf(stderr, "prefetch %s: issued %u useful %u wasted %u\n", cls[c], w(64), w(32), w(0));
+    }
+  }
   if (cput) fclose(cput);
   if (dump_fn) {
     uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];
