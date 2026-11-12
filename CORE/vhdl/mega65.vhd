@@ -433,8 +433,7 @@ signal qnice_kick_p_we_l      : std_logic := '0';
 signal qnice_kick_p_addr      : std_logic_vector(18 downto 1) := (others => '0');
 signal qnice_kick_p_data      : std_logic_vector(7 downto 0) := (others => '0');
 signal qnice_kick_512         : std_logic := '0';
-signal qnice_kick_q_u         : std_logic_vector(7 downto 0);
-signal qnice_kick_q_l         : std_logic_vector(7 downto 0);
+signal qnice_kick_wait        : std_logic;   -- stage 2b: the cache's load port holds the QNICE
 
 -- ADF mount buffer device 0x0103 (adf_mount_wrapper)
 signal qnice_adf_ce           : std_logic;
@@ -941,12 +940,10 @@ begin
          when C_DEV_AMIGA_KICK =>
             qnice_kick_we_u <= qnice_dev_ce_i and qnice_dev_we_i and not qnice_dev_addr_i(0);
             qnice_kick_we_l <= qnice_dev_ce_i and qnice_dev_we_i and     qnice_dev_addr_i(0);
-            -- (read data: from the pipelined port B, see qnice_kick_p_*)
-            if qnice_dev_addr_i(0) = '0' then
-               qnice_dev_data_o <= x"00" & qnice_kick_q_u;
-            else
-               qnice_dev_data_o <= x"00" & qnice_kick_q_l;
-            end if;
+            -- (stage 2b: write-only into DDR3 through the cache; the QNICE is held while a byte is
+            --  handed over; reads return 0 -- the Shell only writes)
+            qnice_dev_data_o <= x"0000";
+            qnice_dev_wait_o <= qnice_kick_wait;
 
          when C_DEV_AMIGA_ADF =>
             qnice_adf_ce     <= qnice_dev_ce_i;
@@ -1032,6 +1029,13 @@ begin
          cache_on_i   => main_cache_cfg(1),
          shrink_i     => main_cache_cfg(0) & main_cache_cfg(3),
          chip1m_i     => main_mem_chip1m,
+         kick_sel_i   => main_kick_sel and not amiga_chip_scrub,
+         kick512_i    => main_kick_512,
+         q_clk_i      => qnice_clk_i,
+         q_we_i       => qnice_kick_we_u or qnice_kick_we_l,
+         q_addr_i     => qnice_dev_addr_i(18 downto 0),
+         q_data_i     => qnice_dev_data_i(7 downto 0),
+         q_wait_o     => qnice_kick_wait,
          chip_sel_i   => main_cc_chip_sel,
          slow_sel_i   => main_cc_slow_sel,
          addr_i       => main_cc_addr,
@@ -1062,49 +1066,12 @@ begin
    main_slow_q_u <= main_cache_rdata(15 downto 8);
    main_slow_q_l <= main_cache_rdata(7 downto 0);
 
-   -- Kickstart: read-only from the Amiga side (wren_a fixed '0'); written only
-   -- by the QNICE Shell during the mandatory auto-load (through kick_pipe_proc).
-   -- 512 KB (K325T phase 2); for a 256 KB ROM the core-side address ignores
-   -- bit 18, mirroring it at $F80000 and $FC0000 as before.
-   kick_rom_u : entity work.dualport_2clk_ram
-      generic map (
-         ADDR_WIDTH => 18,
-         DATA_WIDTH => 8,
-         FALLING_B  => true
-      )
-      port map (
-         clock_a   => main_clk,
-         address_a => main_kick_addr,
-         data_a    => (others => '0'),
-         wren_a    => '0',
-         q_a       => main_kick_q_u,
-
-         clock_b   => qnice_clk_i,
-         address_b => qnice_kick_p_addr,
-         data_b    => qnice_kick_p_data,
-         wren_b    => qnice_kick_p_we_u,
-         q_b       => qnice_kick_q_u
-      ); -- kick_rom_u
-
-   kick_rom_l : entity work.dualport_2clk_ram
-      generic map (
-         ADDR_WIDTH => 18,
-         DATA_WIDTH => 8,
-         FALLING_B  => true
-      )
-      port map (
-         clock_a   => main_clk,
-         address_a => main_kick_addr,
-         data_a    => (others => '0'),
-         wren_a    => '0',
-         q_a       => main_kick_q_l,
-
-         clock_b   => qnice_clk_i,
-         address_b => qnice_kick_p_addr,
-         data_b    => qnice_kick_p_data,
-         wren_b    => qnice_kick_p_we_l,
-         q_b       => qnice_kick_q_l
-      ); -- kick_rom_l
+   -- K325T stage 2b: the Kickstart lives in DDR3 (written by QNICE through chip_cache's load port)
+   -- and reaches the Amiga through the cache's bank 2: in identity mode (A500) direct-mapped, each
+   -- 64-byte line fetched at its first use; in cache mode like any other line.  The 128 block-RAM
+   -- tiles of the former Kickstart BRAM are the cache's third way.
+   main_kick_q_u <= main_cache_rdata(15 downto 8);
+   main_kick_q_l <= main_cache_rdata(7 downto 0);
 
    ---------------------------------------------------------------------------------------------
    -- ADF floppy: HyperRAM plumbing

@@ -18,7 +18,9 @@ use ieee.math_real.all;
 
 entity tb_chip_cache is
    generic (G_MODE : natural := 1; G_SHRINK : natural := 0; G_N : natural := 100000;
-            G_WR : natural := 35; G_SLOW : natural := 20);   -- percent
+            G_WR : natural := 35; G_SLOW : natural := 20;    -- percent
+            G_KICK : natural := 15;                           -- percent of the runs: Kickstart reads
+            G_KBYTES : natural := 32768);                     -- Kickstart bytes loaded through QNICE
 end entity;
 
 architecture sim of tb_chip_cache is
@@ -49,9 +51,39 @@ architecture sim of tb_chip_cache is
    signal mig_err : natural;
    signal shrink : std_logic_vector(1 downto 0);
    signal cache_on : std_logic;
+   -- stage 2b: the Kickstart, loaded through the QNICE port into DDR3
+   constant TQ : time := 20 ns;
+   signal q_clk : std_logic := '0';
+   signal kick_sel, q_we, q_wait : std_logic := '0';
+   signal q_addr : std_logic_vector(18 downto 0) := (others => '0');
+   signal q_data : std_logic_vector(7 downto 0) := (others => '0');
+   signal kick_loaded : boolean := false;
+   function kbyte(i : natural) return std_logic_vector is
+   begin
+      return std_logic_vector(to_unsigned((i * 7 + i / 256 + 3) mod 256, 8));
+   end function;
 begin
    clk <= not clk after TS / 2 when not done;
    ui_clk <= not ui_clk after TU / 2 when not done;
+   q_clk <= not q_clk after TQ / 2 when not done;
+
+   -- QNICE: the Shell streams the ROM byte by byte (a write cycle held while q_wait is high)
+   qnice : process
+   begin
+      wait for 2 us;
+      for i in 0 to G_KBYTES - 1 loop
+         wait until rising_edge(q_clk);
+         q_addr <= std_logic_vector(to_unsigned(i, 19)); q_data <= kbyte(i); q_we <= '1';
+         loop
+            wait until rising_edge(q_clk);
+            exit when q_wait = '0';
+         end loop;
+         q_we <= '0';
+         for j in 1 to 3 loop wait until rising_edge(q_clk); end loop;
+      end loop;
+      kick_loaded <= true;
+      wait;
+   end process;
    shrink <= std_logic_vector(to_unsigned(G_SHRINK, 2));
    cache_on <= '1' when G_MODE = 1 else '0';
 
@@ -63,6 +95,8 @@ begin
    dut : entity work.chip_cache
       port map (clk_i => clk, reset_i => reset, cache_on_i => cache_on, shrink_i => shrink,
                 chip1m_i => '1', chip_sel_i => chip_sel, slow_sel_i => slow_sel, addr_i => addr,
+                kick_sel_i => kick_sel, kick512_i => '1',
+                q_clk_i => q_clk, q_we_i => q_we, q_addr_i => q_addr, q_data_i => q_data, q_wait_o => q_wait,
                 wdata_i => wdata, we_n_i => we_n, oe_n_i => oe_n, bhe_n_i => bhe_n, ble_n_i => ble_n,
                 long_i => long, wdata2_i => wdata2,
                 rdata_o => rdata, rdata48_o => rdata48, miss_o => miss, fills_o => fills, wbacks_o => wbacks, mode_o => mode,
@@ -99,7 +133,8 @@ begin
       variable w48 : std_logic_vector(47 downto 0);
       variable d2 : std_logic_vector(15 downto 0);
       variable is_long : boolean;
-      variable is_slow, is_wr : boolean;
+      variable is_slow, is_wr, is_kick : boolean;
+      variable nkick, kwr : natural := 0;
       variable be : std_logic_vector(1 downto 0);
       variable d : std_logic_vector(15 downto 0);
       variable chipw : natural;
@@ -116,37 +151,50 @@ begin
       -- a full reset: the cache latches its mode and flushes
       reset <= '1'; for i in 1 to 20 loop tick; end loop; reset <= '0';
       for i in 1 to 9000 loop tick; end loop;
+      while not kick_loaded loop tick; end loop;          -- (the Amiga is held while QNICE loads)
       while nacc < G_N loop
          uniform(s1, s2, r);
          if run = 0 then
             uniform(s1, s2, r); run := 1 + integer(r * 40.0);   -- a DMA-like run or a single access
             uniform(s1, s2, r); is_slow := r < real(G_SLOW) / 100.0 and G_MODE = 1;   -- identity: 1M chip, no slow RAM
+            uniform(s1, s2, r); is_kick := r < real(G_KICK) / 100.0;
             uniform(s1, s2, r);
-            if is_slow then a := integer(r * real(2**18 - 64)); else a := integer(r * real(chipw - 64)); end if;
+            if is_kick then a := integer(r * real(G_KBYTES / 2 - 64));
+            elsif is_slow then a := integer(r * real(2**18 - 64)); else a := integer(r * real(chipw - 64)); end if;
          else
             a := a + 1;
          end if;
          run := run - 1;
          uniform(s1, s2, r); is_wr := r < real(G_WR) / 100.0;
+         if is_kick then is_wr := r < 0.02; end if;              -- a few writes to the ROM (ignored)
          uniform(s1, s2, r);
          if r < 0.7 then be := "00"; elsif r < 0.85 then be := "01"; else be := "10"; end if;  -- active low
-         if is_slow then ra := 2**20 + a; slow_sel <= '1'; chip_sel <= '0';
+         if is_kick then slow_sel <= '0'; chip_sel <= '0'; kick_sel <= '1';
             addr <= "00" & std_logic_vector(to_unsigned(a, 18));
-         else ra := a; slow_sel <= '0'; chip_sel <= '1';
+         elsif is_slow then ra := 2**20 + a; slow_sel <= '1'; chip_sel <= '0'; kick_sel <= '0';
+            addr <= "00" & std_logic_vector(to_unsigned(a, 18));
+         else ra := a; slow_sel <= '0'; chip_sel <= '1'; kick_sel <= '0';
             addr <= std_logic_vector(to_unsigned(a, 20));
          end if;
          bhe_n <= be(1); ble_n <= be(0);
          uniform(s1, s2, r); d := std_logic_vector(to_unsigned(integer(r * 65535.0), 16));
          wdata <= d;
          -- stage 3: a third of the word writes at even addresses are 32-bit (both words, all bytes)
-         uniform(s1, s2, r); is_long := is_wr and (a mod 2) = 0 and r < 0.33;
+         uniform(s1, s2, r); is_long := is_wr and (a mod 2) = 0 and r < 0.33 and not is_kick;
          uniform(s1, s2, r); d2 := std_logic_vector(to_unsigned(integer(r * 65535.0), 16));
          if is_long then be := "00"; bhe_n <= '0'; ble_n <= '0'; long <= '1'; else long <= '0'; end if;
          wdata2 <= d2;
          if is_wr then we_n <= '0'; oe_n <= '1'; else we_n <= '1'; oe_n <= '0'; end if;
          tick; tick;                     -- ticks 0, 1
          tick;                           -- tick 2: the consumer edge
-         if not is_wr then
+         if is_kick then
+            nkick := nkick + 1;
+            if is_wr then kwr := kwr + 1;
+            elsif rdata /= kbyte(2 * a) & kbyte(2 * a + 1) then
+               bad := bad + 1;
+               if bad < 10 then report "Kickstart word " & integer'image(a) & " wrong" severity error; end if;
+            end if;
+         elsif not is_wr then
             -- stage 3: the AGA chip48 words (A+1, A+2, A+3 inside the aligned group of 4)
             g := ra - (ra mod 4);
             w48 := ref(g + (ra + 1) mod 4) & ref(g + (ra + 2) mod 4) & ref(g + (ra + 3) mod 4);
@@ -169,7 +217,7 @@ begin
             if be(0) = '0' then ref(ra)(7 downto 0) := d(7 downto 0); end if;
             if is_long then ref(ra + 1) := d2; end if;
          end if;
-         we_n <= '1'; oe_n <= '1'; long <= '0';
+         we_n <= '1'; oe_n <= '1'; long <= '0'; kick_sel <= '0';
          tick;                           -- tick 3
          nacc := nacc + 1;
       end loop;
@@ -177,7 +225,8 @@ begin
       report "mode " & integer'image(G_MODE) & " shrink " & integer'image(G_SHRINK) & ": " &
              integer'image(nacc) & " accesses in " & integer'image(ticks) & " machine ticks, wrong reads " &
              integer'image(bad) & ", wrong chip48 " & integer'image(bad48) & ", fills " & integer'image(to_integer(fills)) & ", write-backs " &
-             integer'image(to_integer(wbacks)) & ", MIG errors " & integer'image(mig_err);
+             integer'image(to_integer(wbacks)) & ", MIG errors " & integer'image(mig_err) &
+             ", Kickstart accesses " & integer'image(nkick) & " (writes " & integer'image(kwr) & ")";
       if bad = 0 and bad48 = 0 and mig_err = 0 and (G_MODE = 0 or fills > 0) then
          report "TB_CHIP_CACHE_PASS";
       else

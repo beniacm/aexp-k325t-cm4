@@ -72,3 +72,9 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
 ## and back (stage 2b): the job-done toggle and the Gray-coded beat count
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/done_tgl_reg || NAME =~ CORE/i_chip_cache/bcnt_g_reg*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/done_s1_reg || NAME =~ CORE/i_chip_cache/bc_s1_reg*}]
+## stage 2b: the Kickstart load port of chip_cache.vhd -- QNICE byte (address, data, toggle; held
+## while the toggle is open) to the ui_clk side, and the acknowledge toggle back
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/q_tgl_reg || NAME =~ CORE/i_chip_cache/q_a_reg* || NAME =~ CORE/i_chip_cache/q_d_reg*}] \
+    -to [get_clocks clk_pll_i]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/q_ack_reg}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/qack_s1_reg}]
