@@ -13,6 +13,9 @@
  *   CAP_CLICK=N[,N..] scripted input: a left mouse button press at swap N, released 6 swaps later
  *                     (RN: the right button)
  *                     (SDL_PushEvent into the emulator's own event queue; SDL2 and SDL3 layouts)
+ *   CAP_KEY=N:K[,N:K..] scripted key press (SDL2 only, i.e. FS-UAE): function key F<K> (1..12) at swap
+ *                     N, released 6 swaps later -- with "keyboard_key_f<K> = action_drive_0_insert_floppy_<i>"
+ *                     in the FS-UAE config this swaps disks in a single drive (run_fsuae.py --swap)
  * Build: gcc -O2 -shared -fPIC -o fsuae_capture.so fsuae_capture.c -ldl
  */
 #define _GNU_SOURCE
@@ -90,6 +93,48 @@ static void click(void *win)
     }
 }
 
+/* scripted function key (CAP_KEY), SDL2 layout: type, timestamp, windowID, state, repeat, pad[2],
+   keysym { scancode (Sint32), sym (Sint32), mod (Uint16), unused (Uint32) } */
+static void push_fkey(void *win, int down, int k)
+{
+    static push_fn push = NULL;
+    static winid_fn winid = NULL;
+    if (!push) {
+        push = (push_fn)dlsym(RTLD_NEXT, "SDL_PushEvent");
+        winid = (winid_fn)dlsym(RTLD_NEXT, "SDL_GetWindowID");
+    }
+    if (!sdl2 || !push) return;
+    unsigned char ev[128];
+    memset(ev, 0, sizeof ev);
+    unsigned type = down ? 0x300 : 0x301;    /* SDL_KEYDOWN / SDL_KEYUP */
+    unsigned id = winid ? winid(win) : 0;
+    int scancode = 57 + k;                   /* SDL_SCANCODE_F1 = 58 */
+    int sym = scancode | (1 << 30);          /* SDLK_F1 = SDL_SCANCODE_TO_KEYCODE(58) */
+    memcpy(ev, &type, 4);
+    memcpy(ev + 8, &id, 4);
+    ev[12] = down ? 1 : 0;
+    memcpy(ev + 16, &scancode, 4);
+    memcpy(ev + 20, &sym, 4);
+    int r = push(ev);
+    fprintf(stderr, "[capture] swap %ld: key F%d %s (push %d)\n", frame, k, down ? "down" : "up", r);
+}
+
+static void keys(void *win)
+{
+    const char *c = getenv("CAP_KEY");
+    if (!c) return;
+    while (*c) {
+        long n = strtol(c, (char **)&c, 10);
+        int k = 0;
+        if (*c == ':') { c++; k = (int)strtol(c, (char **)&c, 10); }
+        if (k >= 1 && k <= 12) {
+            if (frame == n) push_fkey(win, 1, k);
+            if (frame == n + 6) push_fkey(win, 0, k);
+        }
+        if (*c == ',') c++; else break;
+    }
+}
+
 void SDL_GL_SwapWindow(void *win)
 {
     static swap_fn real = NULL;
@@ -155,6 +200,7 @@ void SDL_GL_SwapWindow(void *win)
     }
     real(win);
     click(win);
+    keys(win);
     frame++;
     if (maxf && frame == maxf) {
         if (vid) { pclose(vid); vid = NULL; }

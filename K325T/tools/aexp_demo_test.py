@@ -110,8 +110,8 @@ def full_reset(host):
     global BROWSER_POS
     BROWSER_POS = 0
     ctl(host, "hold_reset 1")
-    time.sleep(2.2)
-    ctl(host, "hold_reset 0")
+    time.sleep(3.5)        # M2M long press = 1.5 s; 2.2 s once came out as a short press (core-only
+    ctl(host, "hold_reset 0")   # reset, the disk stayed mounted and the Amiga booted it again)
     time.sleep(15)                                   # QNICE reloads Kickstart, the Amiga boots
 
 

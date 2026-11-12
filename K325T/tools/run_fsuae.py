@@ -33,6 +33,8 @@ def main():
     ap.add_argument("--window", default="1440x1152")
     ap.add_argument("--hd-label")
     ap.add_argument("--click", default="")
+    ap.add_argument("--swap", default="", help="N:I,...: at swap N insert floppy image I (0..) into df0 "
+                    "(a single-drive run: --opt floppy_drive_count=1); keys F6.. bound to the FS-UAE actions")
     a = ap.parse_args()
     if not os.path.exists(CAP):
         subprocess.check_call(["gcc", "-O2", "-shared", "-fPIC", "-o", CAP,
@@ -52,6 +54,9 @@ def main():
         if a.hd_label:
             cfg.append("hard_drive_0_label = " + a.hd_label)
     cfg += a.opt
+    if a.swap:
+        for i in sorted({int(x.split(":")[1]) for x in a.swap.split(",")}):
+            cfg.append("keyboard_key_f%d = action_drive_0_insert_floppy_%d" % (5 + i, i))
     cfn = os.path.join(a.outdir, a.name + ".fs-uae")
     open(cfn, "w").write("\n".join(cfg) + "\n")
     env = dict(os.environ, SDL_VIDEODRIVER="offscreen", LD_PRELOAD=CAP,
@@ -60,6 +65,8 @@ def main():
         env.update(CAP_VIDEO=os.path.join(a.outdir, a.name + ".mkv"), CAP_SKIP="2")
     if a.click:
         env.update(CAP_CLICK=a.click)
+    if a.swap:
+        env.update(CAP_KEY=",".join("%s:%d" % (n, 5 + int(i)) for n, i in (x.split(":") for x in a.swap.split(","))))
     if a.ppm_every:
         env.update(CAP_PPM=os.path.join(a.outdir, a.name), CAP_PPM_EVERY=str(a.ppm_every))
     with open(os.path.join(a.outdir, a.name + ".stdout"), "w") as so:
