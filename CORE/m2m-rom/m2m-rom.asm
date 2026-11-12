@@ -255,6 +255,17 @@ _PREP_LI_BAD    MOVE    1, R8                   ; error: invalid size
 ;   R9: 0=OK, else error code
 PREP_START      INCRB
 
+                ; K325T stage 3, start fix P1: the settings and Kickstart that
+                ; are released with the core come from one SD card session
+                ; (see START_CARD); on failure the core stays held and the
+                ; shell shows R8/R9 as a fatal error.
+                RSUB    START_CARD, 1
+                CMP     0, R8
+                RBRA    _PS_CARD_OK, Z
+                DECRB
+                RET
+
+_PS_CARD_OK
                 ; Apply the saved HDMI Filter selection. At this point the
                 ; framework has already loaded its own default into the
                 ; ascal polyphase RAM (LANCZOS2_12 + SCAN_BR_110_80 via
@@ -277,6 +288,224 @@ PREP_START      INCRB
                 XOR     R8, R8
                 XOR     R9, R9
                 DECRB
+                RET
+
+; ----------------------------------------------------------------------------
+; START_CARD (K325T stage 3, start fix P1), called first by PREP_START
+;
+; The settings and Kickstart released with the core must come from one
+; successful SD card session.  The framework reads the settings file exactly
+; once, 2 s after QNICE starts (options.asm HELP_MENU_INIT), and takes the
+; factory defaults on any failure; the card is served by the m65io of the module,
+; which may answer only later (after a JTAG load, a core switch, a power-up).
+; Measured on the board: the core then started with the defaults (A500) and
+; the A1200 Kickstart, or, with the card back later still, the framework
+; mandatory ROM load failed and the core stayed held without a word.
+; Kickstart is therefore declared OPTIONAL in globals.vhd (C_CRTROMS_AUTO): the
+; auto-load of the framework no longer stops at a missing card, and this routine
+; treats it as mandatory:
+;   - settings from the file (CONFIG_FILE open) and Kickstart loaded: nothing
+;     to do (both came from the one framework mount);
+;   - else mount again, every 333 ms for at least 15 s while the card does not
+;     answer (then a fatal message, the core stays held), and read the settings
+;     file and Kickstart again, both from this one mount: no settings file =
+;     first use = factory defaults at once; no Kickstart = fatal, as before.
+; M2M-UPSTREAM home (comment only, nothing goes upstream): options.asm
+; HELP_MENU_INIT (retry a failed mount before taking the factory defaults) and
+; crts-and-roms.asm CRTROM_AUTOLOAD (retry the mount of a mandatory ROM).
+;
+; Output: R8 = 0 OK, else error message; R9 = 0 or error code
+; ----------------------------------------------------------------------------
+
+START_CARD      SYSCALL(enter, 1)
+
+                MOVE    CONFIG_FILE, R0
+                CMP     0, @R0
+                RBRA    _SC_RETRY, Z            ; settings not from the file
+                MOVE    CRTROM_AUT_LDF, R0
+                CMP     0, @R0
+                RBRA    _SC_RETRY, Z            ; Kickstart not loaded
+                XOR     R8, R8                  ; both from the framework
+                XOR     R9, R9                  ; one mount: nothing to do
+                RBRA    _SC_RET, 1
+
+_SC_RETRY       MOVE    LOG_SC_RETRY, R8
+                SYSCALL(puts, 1)
+                MOVE    SC_TRIES, R4            ; R4: mount attempts left
+_SC_MOUNT       MOVE    CONFIG_DEVH, R8
+                MOVE    1, R9                   ; partition #1 (framework-wide)
+                SYSCALL(f32_mnt_sd, 1)
+                CMP     0, R9
+                RBRA    _SC_MOUNTED, Z
+                MOVE    R9, R5                  ; R5: last mount error
+                SUB     1, R4
+                RBRA    _SC_NOCARD, Z
+                RSUB    WAIT333MS, 1
+                RBRA    _SC_MOUNT, 1
+
+_SC_NOCARD      MOVE    CONFIG_FILE, R0         ; nothing from the card
+                MOVE    0, @R0
+                MOVE    ERR_SC_NOCARD, R8
+                MOVE    R5, R9
+                RBRA    _SC_RET, 1
+
+                ; settings: the file name (config.vhd CFG_FILE) onto the stack
+_SC_MOUNTED     MOVE    LOG_SC_MOUNT, R8
+                SYSCALL(puts, 1)
+                MOVE    SP, R7                  ; R7: stack pointer to restore
+                MOVE    M2M$RAMROM_DEV, R0
+                MOVE    M2M$CONFIG, @R0
+                MOVE    M2M$RAMROM_4KWIN, R0
+                MOVE    M2M$CFG_CFG_FILE, @R0
+                MOVE    M2M$RAMROM_DATA, R8
+                SYSCALL(strlen, 1)
+                SUB     R9, SP
+                SUB     1, SP
+                MOVE    SP, R9
+                SYSCALL(strcpy, 1)
+                MOVE    R9, R10                 ; R10: file name
+                MOVE    CONFIG_DEVH, R8
+                MOVE    CONFIG_FILE, R9
+                XOR     R11, R11                ; "/" as the path separator
+                SYSCALL(f32_fopen, 1)
+                MOVE    R7, SP
+                CMP     0, R10
+                RBRA    _SC_CFGOPEN, Z
+                MOVE    CONFIG_FILE, R0         ; no settings file: first use,
+                MOVE    0, @R0                  ; factory defaults, no waiting
+                MOVE    LOG_SC_NOCFG, R8
+                SYSCALL(puts, 1)
+                RBRA    _SC_ROM, 1
+
+_SC_CFGOPEN     MOVE    CONFIG_FILE, R8         ; size = OPTM_ICOUNT bytes?
+                ADD     FAT32$FDH_SIZE_HI, R8
+                CMP     0, @R8
+                RBRA    _SC_CFGBAD, !Z
+                MOVE    CONFIG_FILE, R8
+                ADD     FAT32$FDH_SIZE_LO, R8
+                MOVE    OPTM_ICOUNT, R0
+                MOVE    @R0, R0
+                CMP     R0, @R8
+                RBRA    _SC_CFGBAD, !Z
+                MOVE    CONFIG_FILE, R8         ; first byte $FF = new file
+                SYSCALL(f32_fread, 1)
+                CMP     0, R10
+                RBRA    _SC_CFGBAD, !Z
+                CMP     0xFF, R9
+                RBRA    _SC_CFGLOAD, !Z
+                MOVE    LOG_SC_CFGNEW, R8       ; factory defaults; the file
+                SYSCALL(puts, 1)                ; stays open for saving
+                RBRA    _SC_ROM, 1
+
+_SC_CFGBAD      MOVE    CONFIG_FILE, R0
+                MOVE    0, @R0
+                MOVE    LOG_SC_CFGBAD, R8
+                SYSCALL(puts, 1)
+                RBRA    _SC_ROM, 1
+
+                ; as HELP_MENU_INIT: byte n of the file = bit n of M2M$CFM_DATA
+_SC_CFGLOAD     MOVE    CONFIG_FILE, R8
+                XOR     R9, R9
+                XOR     R10, R10
+                SYSCALL(f32_fseek, 1)
+                CMP     0, R9
+                RBRA    _SC_CFGBAD, !Z
+                MOVE    M2M$CFM_ADDR, R0        ; R0: "bank" register
+                MOVE    M2M$CFM_DATA, R1        ; R1: the settings register
+                XOR     R2, R2                  ; R2: current bank
+                MOVE    OPTM_ICOUNT, R3
+                MOVE    @R3, R3                 ; R3: bits to go
+_SC_CFG_B       MOVE    R2, @R0
+                MOVE    1, R4                   ; R4: bit mask
+_SC_CFG_N       MOVE    CONFIG_FILE, R8
+                SYSCALL(f32_fread, 1)
+                CMP     0, R10
+                RBRA    _SC_CFGBAD, !Z
+                CMP     0, R9
+                RBRA    _SC_CFG_0, Z
+                OR      R4, @R1
+                RBRA    _SC_CFG_X, 1
+_SC_CFG_0       MOVE    R4, R5
+                NOT     R5, R5
+                AND     R5, @R1
+_SC_CFG_X       SUB     1, R3
+                RBRA    _SC_CFG_D, Z
+                AND     0xFFFD, SR              ; clear X
+                SHL     1, R4
+                RBRA    _SC_CFG_N, !Z
+                ADD     1, R2                   ; next bank
+                RBRA    _SC_CFG_B, 1
+_SC_CFG_D       MOVE    LOG_SC_CFGOK, R8
+                SYSCALL(puts, 1)
+
+                ; Kickstart (auto-load ROM #0) from the same mount, as
+                ; crts-and-roms.asm CRTROM_AUTOLOAD does it
+_SC_ROM         MOVE    SP, R7
+                MOVE    M2M$RAMROM_DEV, R3
+                MOVE    M2M$SYS_INFO, @R3
+                MOVE    M2M$RAMROM_4KWIN, R3
+                MOVE    M2M$SYS_CRTSANDROMS, @R3
+                MOVE    CRTROM_AUT_FILES, R3
+                MOVE    CRTROM_AUT_NAM, R4      ; ROM #0 = Kickstart
+                ADD     @R4, R3
+                MOVE    R3, R8
+                SYSCALL(strlen, 1)
+                SUB     R9, SP
+                SUB     1, SP
+                MOVE    SP, R9
+                SYSCALL(strcpy, 1)
+                MOVE    R9, R10                 ; R10: file name
+                MOVE    CONFIG_DEVH, R8
+                MOVE    CRTROM_AUT_FILE, R9
+                XOR     R11, R11
+                SYSCALL(f32_fopen, 1)
+                MOVE    R7, SP
+                CMP     0, R10
+                RBRA    _SC_ROMLOAD, Z
+                MOVE    CRTROM_AUT_LDF, R0
+                MOVE    0, @R0
+                MOVE    ERR_SC_NOROM, R8
+                MOVE    R10, R9
+                RBRA    _SC_RET, 1
+
+_SC_ROMLOAD     MOVE    CRTROM_AUT_DEV, R2
+                MOVE    @R2, R2                 ; R2: target device
+                MOVE    CRTROM_AUT_4KS, R3
+                MOVE    @R3, R3                 ; R3: 4k window
+                MOVE    M2M$RAMROM_DATA, R4
+                ADD     0x1000, R4              ; R4: end of a window
+                MOVE    M2M$RAMROM_DATA, R5     ; R5: target address
+_SC_ROM_N       MOVE    CRTROM_AUT_FILE, R8
+                SYSCALL(f32_fread, 1)
+                CMP     FAT32$EOF, R10
+                RBRA    _SC_ROMEOF, Z
+                CMP     0, R10
+                RBRA    _SC_ROMERR, !Z
+                MOVE    M2M$RAMROM_DEV, R8
+                MOVE    R2, @R8
+                MOVE    M2M$RAMROM_4KWIN, R8
+                MOVE    R3, @R8
+                MOVE    R9, @R5++
+                CMP     R4, R5
+                RBRA    _SC_ROM_N, !Z
+                MOVE    M2M$RAMROM_DATA, R5     ; next 4k window
+                ADD     1, R3
+                RBRA    _SC_ROM_N, 1
+
+_SC_ROMERR      MOVE    CRTROM_AUT_LDF, R0
+                MOVE    0, @R0
+                MOVE    ERR_SC_ROMRD, R8
+                MOVE    R10, R9
+                RBRA    _SC_RET, 1
+
+_SC_ROMEOF      MOVE    CRTROM_AUT_LDF, R0
+                MOVE    1, @R0
+                MOVE    LOG_SC_ROMOK, R8
+                SYSCALL(puts, 1)
+                XOR     R8, R8
+                XOR     R9, R9
+
+_SC_RET         SYSCALL(leave, 1)
                 RET
 
 ; OSM_SEL_POST callback function:
@@ -1645,6 +1874,21 @@ OPTM_G_ADF      .EQU    1
 
 ; ADF file extension (needs to be upper case)
 ADF_FILE_EXT    .ASCII_W ".ADF"
+
+; K325T stage 3, start fix P1 (START_CARD)
+SC_TRIES        .EQU    45                  ; mount attempts, 333 ms apart (>= 15 s)
+LOG_SC_RETRY    .ASCII_W "Start check: settings or Kickstart not from the SD card yet: mounting again\n"
+LOG_SC_MOUNT    .ASCII_W "Start check: SD card mounted: settings and Kickstart from this mount\n"
+LOG_SC_NOCFG    .ASCII_W "Start check: no settings file: factory defaults (first use)\n"
+LOG_SC_CFGNEW   .ASCII_W "Start check: empty settings file: factory defaults\n"
+LOG_SC_CFGBAD   .ASCII_W "Start check: settings file corrupt: factory defaults\n"
+LOG_SC_CFGOK    .ASCII_W "Start check: settings loaded from the file\n"
+LOG_SC_ROMOK    .ASCII_W "Start check: Kickstart loaded\n"
+ERR_SC_NOCARD   .ASCII_P "The SD card did not answer for 15 s:\n"
+                .ASCII_P "settings and Kickstart not loaded.\n"
+                .ASCII_W "The Amiga stays in reset.\nReset to try again.\n"
+ERR_SC_NOROM    .ASCII_W "Kickstart /amiga/kick.rom not found.\n"
+ERR_SC_ROMRD    .ASCII_W "Reading Kickstart from the SD card\nfailed.\n"
 
 ; ADF write-back CSR (WBC): device AEXP_DEV_ADF (autogenerated into
 ; osm_const.asm from globals.vhd), 4k window 0xFFFE - register map defined

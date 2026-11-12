@@ -308,6 +308,10 @@ signal main_mem_chip1m        : std_logic;  -- 1 MB chip RAM (forces ECS)
 signal main_chip_ecs          : std_logic;  -- ECS chipset (Agnus 8372A + Denise 8373)
 signal main_kick_512          : std_logic;  -- 512 KB Kickstart loaded (from the QNICE side)
 signal main_fast_size         : std_logic_vector(1 downto 0);  -- fast RAM: 00 none, 01 2 MB, 10 4 MB, 11 8 MB
+-- start fix P2: the topology lines of the menu, held while QNICE restarts (see p_topo):
+-- 8 MEM_CHIP512, 7 MEM_CHIP1M, 6 CHIPSET_ECS, 5 CHIPSET_AGA, 4 FAST_2M, 3 FAST_4M, 2 FAST_8M,
+-- 1 FAST_Z3, 0 CPU_68020 (all 0 = the menu defaults' machine until the first release)
+signal main_topo              : std_logic_vector(8 downto 0) := (others => '0');
 signal main_fast_z3           : std_logic;  -- K325T: Zorro III 128 MB (68020; size bits "10")
 signal main_cpu               : std_logic_vector(1 downto 0);  -- K325T: "00" 68000, "11" 68020
 
@@ -714,23 +718,42 @@ begin
    -- either M2M reset: the menu, QNICE and the framework remain alive.
    -- Amiga hardware options (OSM radios; a radio always has exactly one line set; the
    -- defaults are the AExp V1 machine: 512K chip + 512K slow, OCS)
-   main_mem_chip1m <= main_osm_control_i(C_MENU_MEM_CHIP1M);
-   main_mem_slow   <= not main_osm_control_i(C_MENU_MEM_CHIP512) and
-                      not main_osm_control_i(C_MENU_MEM_CHIP1M) and not main_mem_chip2m;
+   -- K325T stage 3 (start fix P2): the machine-topology lines of the menu reach the core through
+   -- main_topo, which follows the menu only while neither M2M reset is set.  During an M2M reset
+   -- QNICE restarts and the menu bits read their reset values until the firmware has reloaded the
+   -- settings file (measured: ~7 s, while the core is held); the core keeps the last applied
+   -- topology meanwhile and takes the loaded one at the release (amiga_cold_boot then cold-boots
+   -- once, as for a menu change).  While the core runs the register follows the menu as before.
+   -- (This also keeps hr_fast_on steady across a same-profile reset: the entry of the fast RAM
+   -- deadlock fixed in amiga_fastram / p_fast_sel, which stays as the safety net.)
+   p_topo : process (main_clk)
+   begin
+      if rising_edge(main_clk) then
+         if main_reset_m2m_i = '0' and main_reset_core_i = '0' then
+            main_topo <= main_osm_control_i(C_MENU_MEM_CHIP512) & main_osm_control_i(C_MENU_MEM_CHIP1M) &
+                         main_osm_control_i(C_MENU_CHIPSET_ECS) & main_osm_control_i(C_MENU_CHIPSET_AGA) &
+                         main_osm_control_i(C_MENU_FAST_2M) & main_osm_control_i(C_MENU_FAST_4M) &
+                         main_osm_control_i(C_MENU_FAST_8M) & main_osm_control_i(C_MENU_FAST_Z3) &
+                         main_osm_control_i(C_MENU_CPU_68020);
+         end if;
+      end if;
+   end process p_topo;
+   main_mem_chip1m <= main_topo(7);
+   main_mem_slow   <= not main_topo(8) and not main_topo(7) and not main_mem_chip2m;
    -- stage 2: 2 MB chip RAM only with chip RAM in the cache (r7 b2 of the stall controller)
    main_mem_chip2m <= main_cache_cfg(2) and main_cache_on;
-   main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m or main_mem_chip2m;
+   main_chip_ecs   <= main_topo(6) or main_mem_chip1m or main_mem_chip2m;
    -- stage 3: AGA is a machine configuration (chipset radio, line 78); it needs the 2 MB chip RAM of
    -- the cache (stall controller r7 b2, still a debug setting) and falls back to ECS without it
-   main_chip_aga   <= main_osm_control_i(C_MENU_CHIPSET_AGA) and main_mem_chip2m;
-   main_fast_size  <= "11" when main_osm_control_i(C_MENU_FAST_8M) = '1' else
-                      "10" when main_osm_control_i(C_MENU_FAST_4M) = '1' else
-                      "10" when main_osm_control_i(C_MENU_FAST_Z3) = '1' else
-                      "01" when main_osm_control_i(C_MENU_FAST_2M) = '1' else "00";
+   main_chip_aga   <= main_topo(5) and main_mem_chip2m;
+   main_fast_size  <= "11" when main_topo(2) = '1' else
+                      "10" when main_topo(3) = '1' else
+                      "10" when main_topo(1) = '1' else
+                      "01" when main_topo(4) = '1' else "00";
    -- Zorro III: cpu_wrapper's fastramcfg "110" (MiSTer: 128 MB Z3 board with a 68020, 8 MB Z2
    -- with the 68000)
-   main_fast_z3    <= main_osm_control_i(C_MENU_FAST_Z3);
-   main_cpu        <= "11" when main_osm_control_i(C_MENU_CPU_68020) = '1' else "00";
+   main_fast_z3    <= main_topo(1);
+   main_cpu        <= "11" when main_topo(0) = '1' else "00";
 
    i_amiga_cold_boot : entity work.amiga_cold_boot
       port map (
