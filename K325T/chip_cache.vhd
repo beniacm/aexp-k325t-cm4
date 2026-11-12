@@ -544,8 +544,11 @@ begin
          -- dirty lines are dropped; the Amiga clears its memory after a cold boot anyway)
          -- (once per reset, and only with the fill engine idle: a fill must not write into the data
          --  RAM after a switch to identity mode)
+         -- stage 3 (P4): also when the requested mode changes while reset_i stays high -- the
+         -- profile applies at the release of the M2M reset, often while amiga_cold_boot's own reset
+         -- (which then follows the topology change) keeps reset_i high without a gap
          if reset_i = '0' then rlatch <= '0'; end if;
-         if reset_i = '1' and rlatch = '0' and eng_idle = '1' and fill_act = '0' then
+         if reset_i = '1' and (rlatch = '0' or cache_on_i /= mode) and eng_idle = '1' and fill_act = '0' then
             rlatch <= '1';
             mode <= cache_on_i;
             case shrink_i is
