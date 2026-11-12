@@ -6,6 +6,7 @@ boots without any file from the disk's own filesystem (the ROM FFS, dostype DOS\
 FFS).  The same file is a "hardfile with RDB" for FS-UAE / WinUAE (the emulator reference).
 
   mk_hdf.py OUT.hdf [--size 512M] [--dh0-mb 64] [--dh0 DIR] [--dh1 DIR] [--run NAME] [--stack N]
+                    [--dh0-adf ADF[:DIR]]... [--dh1-adf ADF[:DIR]]...
                     [--label0 NAME] [--label1 NAME] [--sparse]
   mk_hdf.py --verify IMG.hdf [--dh0 DIR] [--dh1 DIR]     read back: RDB, partitions, every directory,
                                                        file contents (against DIR), checksums, bitmap
@@ -194,6 +195,26 @@ class FFS:
             else:
                 self.addfile(parent, name, open(p, "rb").read())
 
+    def find(self, parent, name):
+        h = self.blocks[parent][6 + hashname(name)]
+        while h:
+            if get_name(self.blocks[h]).upper() == name.upper():
+                return h
+            h = self.blocks[h][124]
+        return 0
+
+    def adddict(self, parent, tree):
+        """tree: {name: (bytes, protect) | dict} (from adf_tree); merges into existing directories"""
+        for name in sorted(tree, key=str.upper):
+            v = tree[name]
+            if isinstance(v, dict):
+                d = self.find(parent, name)
+                if not d:
+                    d = self.mkdir(parent, name)
+                self.adddict(d, v)
+            elif not self.find(parent, name):
+                self.addfile(parent, name, v[0], v[1])
+
     def write(self):
         img, o = self.img, self.base * BS
         img[o:o + 4] = struct.pack(">I", DOS3)               # boot block 0: the dostype
@@ -225,6 +246,37 @@ class FFS:
             img[o + b * BS:o + (b + 1) * BS] = blk
         for b, d in self.data.items():
             img[o + b * BS:o + (b + 1) * BS] = d
+
+
+def adf_tree(path):
+    """the files of an ADF (OFS or FFS, 880 KB or 1.76 MB) as {name: (bytes, protect) | dict}"""
+    img = open(path, "rb").read()
+    nblk = len(img) // BS
+    ffs = img[3] & 1
+    def l(b):
+        return longs(img[b * BS:(b + 1) * BS])
+    def walk(d):
+        out = {}
+        for h in l(d)[6:78]:
+            while h:
+                x = l(h)
+                nm = get_name(x)
+                if x[127] == ST_USERDIR:
+                    out[nm] = walk(h)
+                elif x[127] == ST_FILE:
+                    size, data, y = x[81], [], x
+                    while True:
+                        for i in range(y[2]):
+                            db = y[77 - i]
+                            blk = img[db * BS:(db + 1) * BS]
+                            data.append(blk if ffs else blk[24:24 + struct.unpack(">I", blk[12:16])[0]])
+                        if not y[126]:
+                            break
+                        y = l(y[126])
+                    out[nm] = (b"".join(data)[:size], x[80])
+                h = x[124]
+        return out
+    return walk(nblk // 2)
 
 
 def rdb(img, cyls, parts):
@@ -274,6 +326,13 @@ def build(a):
         src = (a.dh0, a.dh1)[i]
         if src:
             fs.addtree(fs.root, src)
+        for spec in ((a.dh0_adf or []) if i == 0 else (a.dh1_adf or [])):
+            adf, _, sub = spec.partition(":")
+            tree = adf_tree(adf)
+            target = fs.root
+            for part in [x for x in sub.split("/") if x]:
+                target = fs.find(target, part) or fs.mkdir(target, part)
+            fs.adddict(target, tree)
         if i == 0 and a.run:
             s = fs.mkdir(fs.root, "s") if not (src and os.path.isdir(os.path.join(src, "s"))) else None
             if s is None:
@@ -392,6 +451,9 @@ def main():
     ap.add_argument("--size", default="512M")
     ap.add_argument("--dh0-mb", type=int, default=64)
     ap.add_argument("--dh0"); ap.add_argument("--dh1")
+    ap.add_argument("--dh0-adf", action="append", help="ADF[:DIR]: copy an ADF's files into DH0 (DIR, default the root); "
+                    "existing files win, directories merge")
+    ap.add_argument("--dh1-adf", action="append")
     ap.add_argument("--run"); ap.add_argument("--stack", type=int, default=16384)
     ap.add_argument("--label0", default="AExpHD0"); ap.add_argument("--label1", default="AExpHD1")
     ap.add_argument("--sparse", action="store_true")
