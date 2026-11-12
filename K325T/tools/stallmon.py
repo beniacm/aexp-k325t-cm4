@@ -10,7 +10,8 @@ python3-spidev; writes nothing to the module's flash).
     stallmon.py read                 one snapshot, key=value
     stallmon.py log SECS [EVERY]     a snapshot every EVERY seconds (default 10), one line each
     stallmon.py cache on|off [SHRINK 0..3] [chip2m]   chip RAM through the cache (next full reset)
-    stallmon.py pf [MASK]                   chip cache prefetch counters / set the enables (7 bits)
+    stallmon.py pf [MASK [afifo]]           chip cache prefetch counters / set the enables (7 bits)
+                                            and the audio FIFO
     stallmon.py mbox                        the Amiga's result block at $C0-$FF (16 longwords)
     stallmon.py avm                         Avalon debug: the write burst avm_mig waits in
     stallmon.py lat SECS [r|w|rw]    line latency meter (64-byte reads / writes on the MIG line port)
@@ -189,11 +190,13 @@ def main():
         names = ["bitplane", "sprite", "audio", "disk", "copper", "blitter", "CPU"]
         if len(sys.argv) > 2:
             m = int(sys.argv[2], 0)
+            af = "afifo" in sys.argv[3:]          # register 4 bit 3: the audio FIFO (audio_fifo.vhd)
             b.wr(6, 5)
             b.wr(3, m & 15)
-            b.wr(4, m >> 4 & 7)
+            b.wr(4, (m >> 4 & 7) | (8 if af else 0))
             b.wr(6, 0)
-            print("prefetch enables %s" % (", ".join(n for i, n in enumerate(names) if m >> i & 1) or "none"))
+            print("prefetch enables %s; audio FIFO %s" %
+                  (", ".join(n for i, n in enumerate(names) if m >> i & 1) or "none", "on" if af else "off"))
         else:
             b.wr(6, 7)
             for c, n in enumerate(names):
