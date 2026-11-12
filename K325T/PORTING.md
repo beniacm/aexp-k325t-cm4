@@ -1902,3 +1902,110 @@ clock ratio, as in stage 2.)
 - `tools/demo_sheets.py`: after `aexp_demo_test.py --set a1200`, one contact sheet per demo with the
   board's stills every 10 s next to the FS-UAE and WinUAE stills.
 - DMS images converted to ADF with `xdms` (installed from apt): `ext/a1200_demos/<demo>/adf/`.
+
+# Stage 3 on the board: first session on the Radxa rig (2026-11-12)
+
+**Builds** (Vivado 2025.2.1, 4 jobs, `K325T/build.sh [radxacm3]`; bitstreams and logs in
+`ext/aexp7_stage3/`, not in the repository):
+
+| build | content | variant | WNS / WHS (ns) | LUTs / registers / BRAM |
+|---|---|---|---|---|
+| 1 | rebased stage 3 (before the mailbox fix) | Radxa | +0.055 / +0.011 | 90,941 / 44,073 / 437 of 445 |
+| 2 | + mailbox snoop of 32-bit writes (1fded3e) | Luckfox | +0.080 / +0.051 | 91,670 / - / 437 |
+| 3 | build 2 with the 68EC020 instruction cache off (diagnosis only, reverted) | Radxa | +0.028 / +0.050 | - |
+| 4 | + patch 0132 (68ceab2) | Radxa | +0.054 / +0.051 | 91,654 / 44,097 / 437 |
+| 4 | the same | Luckfox | +0.070 / +0.011 | 91,709 / - / 437 |
+
+The Luckfox build of 4 ran in a copy of the tree (`ext/aexp7_stage3/tree_b4`, its submodule
+`.git` files pointing to the absolute git directories, `ext/aexp7_stage3/mega65-core` a link for
+`gen_sources.py`), so that both variants could be built at the same time.
+
+**A500 gate** (A500 profile: OCS, 68000, Kickstart 1.3, chip RAM in identity mode; `stalltest3.adf`):
+the board's result mailbox reads `ffffffff <frames> 6b9c877b 2649b948 00000000 407d0000 8000c6d1
+fff52892 6b9c877b 8000c6d1 8000414d 8000412c ...` on builds 1 and 4 (and on the Luckfox with builds 2
+and 4): the bench's checksums, 0 mismatches, E-clock count $FFF52892.
+
+**First light:** Kickstart 3.1 40.068 (A1200), AGA, 68EC020, 2 MB chip RAM through the cache: the
+insert-disk screen.  With build 4, `si020.adf` reads exec 40.10, AttnFlags $0003 (68020), VPOSR $A3xx
+(AGA PAL), DENISEID $F8 (Lisa), MaxLocMem $200000.
+
+## The 68EC020 reset vectors (patch 0132)
+
+The A1200 profile reached the insert-disk screen after a JTAG load but was dead after the next full
+reset: every disk showed one colour, Kickstart's vectors stayed in $C0-$FF.  The cache owner found the
+cause on the Luckfox rig (proof: a boot block that leaves {$60FE, VALUE} as the last 32-bit read before
+the reset: $0000 and $00D2 boot, $1234 hangs).  After a reset the 68EC020 reads SSP ($0) and PC ($4)
+under the Kickstart overlay as 32-bit cycles (minimig's `chip32_en` does not look at OVL; its `~ovr` is
+the NMI-vector override), and `cpu_wrapper` takes the second word of a 32-bit read from `chip_dout2`.
+But minimig's `ram_long` only marked chip-bank slots, so the glue never captured word A+1 of these ROM
+reads: the initial PC was $00F8:<second word of the last 32-bit chip read before the reset>.  A held 0
+(power-up and every bench run) gives $F80000, whose code jumps on, so the fault hid until a reset
+followed 32-bit activity.  Patch 0132 adds the Kickstart bank to `ram_long`; the cache's `rdata48`
+carries ROM words like chip words (Kickstart lines are cached lines), so the CPU now gets the real word
+A+1, as from the A1200's 32-bit ROM.  Long writes stay chip-only (`chip_cache` blocks every write lane,
+the second word's included, when `kick_sel_i` is set).  MiSTer master has the same `ram_long`, and its
+`sdram_ctrl` loads `chipRD2` only for `chip32` (= `ram_long`) slots, so it looks equally exposed.
+
+Bench test `sim/aga/reset_long_test.sh TB KICK [OUT] [--full]` (tb `+dout2init=HEX`, `--reset-at
+FRAME`):
+- case A, a stale held word $1234 at power-up: before the fix the CPU runs off at $901938 (ExecBase 0
+  after 40 frames), after it ExecBase is $00000758 as with a held 0;
+- case B (`--full`), an Amiga reset at frame 60 after 32-bit activity: the insert-disk screen again at
+  frame 310 (without a reset it appears between frames 200 and 250), cache reads 0 wrong.
+After the fix: A500 determinism unchanged (6b9c877b / 2649b948, E $FFF52892, frame md5 568884d8...),
+the CPU timing probe 44 of 44 rows as before, Kickstart 3.1 + `agapal256` through the cache 256/256.
+On the Radxa with build 4: 18 consecutive full resets in the A1200 profile without fast RAM, all good.
+
+## AGA tests on the board
+
+HDMI stills (1280x720, YUV 4:2:2, the capture's colours range-converted) cannot be checked colour for
+colour as the bench does; `ext/aexp7_stage3/blockcmp.py` maps the bench's block grid onto the capture
+(one affine map of the video pipeline, calibrated on `pal256`), fits a linear colour map over the
+blocks whose capture is not clipped, and calls a block wrong when it is more than 24 off in a channel.
+Build 4, A1200 profile without fast RAM, one full reset per test: pal256, fmode1, fmode2, fmode3,
+hires8f3, xor, ham8: 0 blocks wrong; spr16, spr32, spr64: the bench's sprites (compared side by side).
+**ddf3c** differs: the picture starts 56 lores pixels (one 32-CCK FMODE 3 fetch block) later than in
+the boot-ROM bench and is clipped at DIWSTOP.  The bench run the board's way (Kickstart 3.1 loading
+`agaddf3c.adf`, 68EC020 with its instruction cache) gives exactly the board's picture, and build 3 on
+the board (instruction cache off) gave the boot-ROM position: the same RTL settles in one of two fetch
+phases depending on when the program's register writes land.  Not a board fault but an accuracy item of
+the AGA fetch logic (`agnus_bitplanedma.v`, identical in MiSTer master): see the open list.
+
+## CPU timing probe on the board
+
+The cache owner's Luckfox run of `cputime.adf` (check 3 of `LUCKFOX_VALIDATION.md`) differed from the
+stage-3 bench values in three rows by ~1.5 % (c1 L3 / L10 14733 instead of 14513 / 14509, c3 L8 15435
+instead of 15189).  The bench run the board's way (Kickstart 3.1 loading `cputime.adf`, through the
+cache) gives exactly these values and the same 22 equal rows: board = bench for the same setup; the
+difference is the start state (load address, beam phase against the 8-plane fetch and the nasty
+blitter), not the board.  Reference for board runs: `ext/aga_groundwork/r2fix/cptadf.json`.
+
+## Fast RAM in the A1200 profile (open)
+
+With 4 MB Zorro II fast RAM the machine can hang on its first fast RAM access (probe: chip-bus address
+$200000, no RAM traffic, video running) and then stays hung over every full reset, in every CPU mode,
+until a JTAG load; the A500 profile with fast RAM and AGA + 68000 with fast RAM work after a JTAG load.
+The cache owner narrowed it to `amiga_fastram.vhd` (no reset on its core side; a pending request or a
+toggle desync survives the Amiga reset); the fix is being proven on the Luckfox.  The bench has no
+fast RAM model (cpu_wrapper's `fastramcfg` = 000, `ramready` = 0).
+
+## Board tooling notes
+
+- Right after a JTAG load the first full reset can run with the menu defaults (A500) although the card
+  holds another `aexp020.cfg`; do one full reset after copying the .cfg and check `stallmon.py probe`
+  (`ecs`, `fast`, `slow`) before measuring.
+- The HDMI dongle's own v4l2 timestamps made every ffmpeg `-t` recording empty after it had run for
+  hours; the tools now use `-use_wallclock_as_timestamps 1` (b690063).
+
+## Demos (A1200 profile without fast RAM, build 4)
+
+Contact sheets (board | FS-UAE | WinUAE every 10 s) in `ext/aexp7_stage3/shots/demos_b4/`.  Nexus 7,
+Full Moon and Roots run through the same parts as the emulators; Art Paradise runs (its "insert disk 2"
+comes at ~40 s); Origin stays in its loader animation, Mindflow at the grey CLI window of its boot
+disk, Twisted never starts.  The emulator baselines ran with fast RAM and all disks inserted, so these
+three are to be redone once fast RAM works in the A1200 profile before they count as faults.
+
+Cache traffic, Nexus 7 two minutes in (`stallmon.py rate 30`): 0.4 line fills per 20 ms, 0.0008 % of
+real time stalled, 0.42 us per fill; with all prefetchers on 0.3 fills per 20 ms, prefetch hits
+bitplane 61/61, copper 6/6, CPU 675 of 758 (89 %).  In its loading phase: 18.6 fills per 20 ms,
+0.040 % stalled.
