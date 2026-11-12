@@ -69,5 +69,6 @@ set_max_delay -datapath_only 13.400 \
 ## handshake is open) to the fill engine (MIG ui_clk) and the acknowledge toggle back
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/r_* || NAME =~ CORE/i_chip_cache/req_tgl_reg}] \
     -to [get_clocks clk_pll_i]
-set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/ack_tgl_reg}] \
-    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/ack_s1_reg}]
+## and back (stage 2b): the job-done toggle and the Gray-coded beat count
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/done_tgl_reg || NAME =~ CORE/i_chip_cache/bcnt_g_reg*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/done_s1_reg || NAME =~ CORE/i_chip_cache/bc_s1_reg*}]
