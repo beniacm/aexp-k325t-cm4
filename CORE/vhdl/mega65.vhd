@@ -377,7 +377,7 @@ signal amiga_chip_scrub_addr  : std_logic_vector(17 downto 0);
 signal main_chip_addr         : std_logic_vector(17 downto 0);
 -- K325T stage 2: chip / slow RAM through chip_cache.vhd (identity mode = phase 2's layout)
 signal main_src_clk           : std_logic;
-signal main_cache_cfg         : std_logic_vector(4 downto 0);   -- b4 AGA (stage 3)
+signal main_cache_cfg         : std_logic_vector(3 downto 0);
 signal main_chip_aga          : std_logic;   -- AGA chipset (stage 3: with 2 MB chip RAM in the cache)
 signal main_cache_on          : std_logic;   -- the cache's latched mode
 signal main_cache_miss        : std_logic;
@@ -566,6 +566,7 @@ constant C_MENU_MEM_CHIP512   : natural := 73;   -- 512K chip only
 constant C_MENU_MEM_CHIP1M    : natural := 74;   -- 1M chip (ECS Agnus)
 constant C_MENU_CHIPSET_OCS   : natural := 76;   -- OCS (default)
 constant C_MENU_CHIPSET_ECS   : natural := 77;   -- ECS
+constant C_MENU_CHIPSET_AGA   : natural := 78;   -- AGA (stage 3; only with 2 MB chip RAM in the cache, else ECS)
 constant C_MENU_FAST_NONE     : natural := 79;   -- no fast RAM (default)
 constant C_MENU_FAST_2M       : natural := 80;   -- 2 MB Zorro II fast RAM (DDR3)
 constant C_MENU_FAST_4M       : natural := 81;   -- 4 MB
@@ -710,8 +711,9 @@ begin
    -- stage 2: 2 MB chip RAM only with chip RAM in the cache (r7 b2 of the stall controller)
    main_mem_chip2m <= main_cache_cfg(2) and main_cache_on;
    main_chip_ecs   <= main_osm_control_i(C_MENU_CHIPSET_ECS) or main_mem_chip1m or main_mem_chip2m;
-   -- stage 3: AGA (register 7 b0 of the stall controller, like stage 2's 2 MB chip; no menu item yet)
-   main_chip_aga   <= main_cache_cfg(4) and main_mem_chip2m;
+   -- stage 3: AGA is a machine configuration (chipset radio, line 78); it needs the 2 MB chip RAM of
+   -- the cache (stall controller r7 b2, still a debug setting) and falls back to ECS without it
+   main_chip_aga   <= main_osm_control_i(C_MENU_CHIPSET_AGA) and main_mem_chip2m;
    main_fast_size  <= "11" when main_osm_control_i(C_MENU_FAST_8M) = '1' else
                       "10" when main_osm_control_i(C_MENU_FAST_4M) = '1' else
                       "10" when main_osm_control_i(C_MENU_FAST_Z3) = '1' else
@@ -724,7 +726,7 @@ begin
    i_amiga_cold_boot : entity work.amiga_cold_boot
       port map (
          clk_i             => main_clk,
-         topology_i        => main_cpu(1) & main_fast_z3 & main_fast_size & main_chip_ecs &
+         topology_i        => main_chip_aga & main_cpu(1) & main_fast_z3 & main_fast_size & main_chip_ecs &
                               (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
          cold_req_i        => main_reset_m2m_i,
          amiga_reset_o     => amiga_cold_reset,

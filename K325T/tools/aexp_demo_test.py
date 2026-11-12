@@ -17,9 +17,10 @@ black picture shows as identical md5s / few colours).
     tools/aexp_demo_test.py --set a1200 [--only nexus7,origin] [--swaps 120,240]
 
 --set a1200: the A1200 demo set (stage 3).  Needs the AGA bitstream, Kickstart 3.1 (40.068, the
-user's own A1200 ROM) as /amiga/kick.rom on the card instead of 1.3, and the AGA configuration of
-the stall controller before every full reset (--setup, run over ssh on the module; default
-"python3 $STALLMON cache on 0 aga", STALLMON = path of K325T/tools/stallmon.py on the module,
+user's own A1200 ROM) as /amiga/kick.rom on the card instead of 1.3, "AGA Chipset" and "68020"
+chosen in the RAM submenu (saved in the core's settings file), and chip RAM through the cache with
+2 MB before every full reset (--setup, run over ssh on the module; default
+"python3 $STALLMON cache on 0 chip2m", STALLMON = path of K325T/tools/stallmon.py on the module,
 default /root/m65/stallmon.py).  File-based releases need a bootable ADF made with
 tools/mk_bootadf.py (Mindflow, Domination, the Nexus 7 executable); DMS images need converting
 to ADF first.  Swap times of the A1200 set are first guesses (the FS-UAE baselines ran with all
@@ -200,7 +201,7 @@ def main():
     ap.add_argument("--set", default="a500", choices=["a500", "a1200"], help="demo set / machine")
     ap.add_argument("--setup", default=None,
                     help="command run on the module (ssh) before every full reset; a1200 default: "
-                         "the stall controller's AGA configuration")
+                         "chip RAM through the cache, 2 MB (AGA itself is the menu's chipset radio)")
     ap.add_argument("--reset-only", action="store_true", help="just the full reset (eject, menu closed)")
     ap.add_argument("--mount", default="", help="full reset, mount this ADF from /amiga, exit")
     a = ap.parse_args()
@@ -226,7 +227,7 @@ def main():
     table = DEMOS_A1200 if a.set == "a1200" else DEMOS
     setup = a.setup
     if setup is None and a.set == "a1200":
-        setup = "python3 %s cache on 0 aga" % os.environ.get("STALLMON", "/root/m65/stallmon.py")
+        setup = "python3 %s cache on 0 chip2m" % os.environ.get("STALLMON", "/root/m65/stallmon.py")
     sel = [d for d in table if not a.only or d in a.only.split(",")]
     with open(os.path.join(a.out, "results.csv"), "w", newline="") as f:
         w = csv.writer(f)

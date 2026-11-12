@@ -520,7 +520,7 @@ constant OPTM_DY           : natural := 24;
 --                 F13 / MEGA+Run-Stop -> m2m_keyb's menu-open key (qnice_keys bit 7)
 --   lines 69..84: "RAM: %s" submenu (K325T phase 2, replaces the Slow RAM (A501) toggle
 --            of issue #20): memory radio 72 512K chip + 512K slow (default) / 73 512K
---            chip only / 74 1M chip (ECS), chipset radio 76 OCS (default) / 77 ECS,
+--            chip only / 74 1M chip (ECS), chipset radio 76 OCS (default) / 77 ECS / 78 AGA,
 --            fast RAM radio 79 none (default) / 80 2 MB / 81 4 MB / 82 8 MB (Zorro II
 --            in DDR3) / 83 128 MB Zorro III (68020), CPU radio 85 68000 (default) / 86
 --            68020 (C_MENU_MEM_* / C_MENU_CHIPSET_* / C_MENU_FAST_* / C_MENU_CPU_*). The HDL cold-boots only the emulated
@@ -624,7 +624,7 @@ constant OPTM_ITEMS        : string :=
    "\n"                     &    -- 75: line
    " OCS Chipset\n"         &    -- 76: chipset radio: OCS; default
    " ECS Chipset\n"         &    -- 77: chipset radio: ECS
-   "\n"                     &    -- 78: line
+   " AGA Chipset\n"         &    -- 78: chipset radio: AGA (K325T stage 3: with 2 MB chip in the cache, else ECS)
    " No Fast RAM\n"         &    -- 79: fast RAM radio: none; default
    " 2 MB Fast RAM\n"       &    -- 80: fast RAM radio: 2 MB Zorro II (DDR3)
    " 4 MB Fast RAM\n"       &    -- 81: fast RAM radio: 4 MB
@@ -656,7 +656,7 @@ constant OPTM_G_KBD        : integer := 8;   -- keyboard mapping mode radio (iss
 constant OPTM_G_OSMKEY     : integer := 9;   -- OSM-open key radio (issue #8): Help / F11 / F13 / MEGA+Run-Stop; read in HDL (mega65.vhd)
 constant OPTM_G_OSM_MODE   : integer := 10;  -- OSM Scaling radio; read in HDL (mega65.vhd)
 constant OPTM_G_MEM        : integer := 11;  -- memory radio (K325T; was the Slow RAM toggle of issues #20/#21); read and locally cold-booted in mega65.vhd
-constant OPTM_G_CHIPSET    : integer := 12;  -- chipset radio OCS / ECS (K325T); read and locally cold-booted in mega65.vhd
+constant OPTM_G_CHIPSET    : integer := 12;  -- chipset radio OCS / ECS / AGA (K325T); read and locally cold-booted in mega65.vhd
 constant OPTM_G_FAST       : integer := 13;  -- fast RAM radio none / 2 / 4 / 8 MB (K325T); read and locally cold-booted in mega65.vhd
 constant OPTM_G_CPU        : integer := 14;  -- CPU radio 68000 / 68020 (K325T); read and locally cold-booted in mega65.vhd
 
@@ -758,7 +758,7 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_LINE,                              -- 75: Line
                                              OPTM_G_CHIPSET + OPTM_G_STDSEL,           -- 76: OCS (default)
                                              OPTM_G_CHIPSET,                           -- 77: ECS
-                                             OPTM_G_LINE,                              -- 78: Line
+                                             OPTM_G_CHIPSET,                           -- 78: AGA (stage 3)
                                              OPTM_G_FAST + OPTM_G_STDSEL,              -- 79: no fast RAM (default)
                                              OPTM_G_FAST,                              -- 80: 2 MB
                                              OPTM_G_FAST,                              -- 81: 4 MB
