@@ -1,0 +1,34 @@
+K325T: 32-bit CPU reads of the Kickstart under the overlay deliver word A+1 (68EC020 reset vectors)
+With OVL=1 after a reset the 68EC020 (AGA + 68020) reads SSP ($0) and PC ($4) as 32-bit cycles:
+minimig's chip32_en = cpucfg[1] & aga & ~ovr & ~cpuhlt (ovr is the NMI-vector override, not the
+overlay) and the address is below 2 MB, so cpu_wrapper makes them chip-bus long reads and takes the
+second word from chip_dout2 (r32_lo).  But ram_long = cpu_long_en & ~dbr & |bank[3:0] is 0 for them
+(the overlay selects the Kickstart bank, not a chip bank), so the K325T glue (main.vhd p_chip48) did
+not capture word A+1: the initial PC was $00F8:<second word of the last 32-bit chip read before the
+reset>.  0 (power-up, every simulation) gives $F80000, whose code jumps to $F800D2 and boots; any
+other value runs into the ROM: the board's A1200 profile was dead after the next full reset.  Found
+on the Luckfox rig by the cache owner (proof: a boot block that leaves {$60FE, VALUE} as the last
+long read; $0000/$00D2 boot, $1234 hangs).  Fix: ram_long also for the Kickstart bank (bank[7]); the
+cache's rdata48 carries the ROM words like chip words (Kickstart lines are cached lines), and the
+ROM is never written (chip_cache: kick_sel_i blocks every write lane, a_we_2 included).  MiSTer
+master has the same ram_long; its SDRAM chipRD2 is only loaded for chip32 slots too.  Bench test:
+K325T/sim/aga/reset_long_test.sh (+dout2init / --reset-at).
+--- a/rtl/minimig.v
++++ b/rtl/minimig.v
+@@ -666,7 +666,15 @@
+ 
+ wire cpu_long_en;
+ assign chip32_en = cpucfg[1] & chipset_config[4] & ~ovr & ~cpuhlt;
+-assign ram_long  = cpu_long_en & ~dbr & |bank[3:0];
++// K325T (2026-11-12): also the Kickstart bank.  Under the overlay (OVL=1) the 68EC020 reads its reset
++// vectors (SSP at $0, PC at $4) as 32-bit cycles (chip32_en does not look at OVL, the address is below
++// 2 MB), but the ROM answers them; without the Kickstart bank here the slot was no "ram_long" slot, the
++// glue did not capture word A+1 and cpu_wrapper took the PC's low word from the last 32-bit chip read
++// before the reset (0 after power-up = $F80000 = boots by luck; anything else = dead after a reset).
++// The A1200's ROM is 32 bits wide, so the vector read is a real 32-bit ROM read; long writes still go
++// to chip RAM only (the ROM bank is read-only, the cache never writes it).
++//assign ram_long  = cpu_long_en & ~dbr & |bank[3:0];
++assign ram_long  = cpu_long_en & ~dbr & (|bank[3:0] | bank[7]);
+ 
+ //instantiate cpu bridge
+ minimig_m68k_bridge CPU1 

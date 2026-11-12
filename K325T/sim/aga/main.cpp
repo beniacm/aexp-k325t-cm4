@@ -10,8 +10,11 @@
 // Floppy: --adf FILE (df0, served by the core's adf_track_engine), --adf2 FRAME FILE (eject at FRAME,
 // insert FILE 25 frames later: multi-disk demos), --floppy-turbo (0xF7 bit 0, MiSTer's fast floppy).
 // --shot-last: always write the picture of the last frame (also when --stop ends the run).
+// --reset-at FRAME: an Amiga reset (the M2M reset line, 200 ticks) at the end of FRAME; the cache and
+// the DDR3 model keep their contents, the CPU's held word A+1 (dout2_hold) keeps its value.
 // Plusargs of tb_top.sv: +flpdbg (floppy-channel frames and image reads), +dskdbg (every disk DMA
-// write to chip RAM, address and data: decode them as MFM to check what Paula received).
+// write to chip RAM, address and data: decode them as MFM to check what Paula received),
+// +dout2init=HEX (start with that stale word A+1 of a 32-bit read, as after a reset on the board).
 #include "Vtb_top.h"
 #include "Vtb_top___024root.h"
 #include "Vtb_top_tb_top.h"
@@ -129,6 +132,7 @@ int main(int argc, char** argv) {
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
   const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
   bool shot_last = false;
+  int reset_at = -1; uint64_t reset_cyc = 0;   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -165,6 +169,7 @@ int main(int argc, char** argv) {
     else if (a == "--adf2") { adf2_frame = atoi(nx()); adf2_fn = nx(); }
     else if (a == "--floppy-turbo") fturbo = true;
     else if (a == "--shot-last") shot_last = true;
+    else if (a == "--reset-at") reset_at = atoi(nx());
     else if (a == "--pf") pf_mask = strtoul(nx(), 0, 0);
     else if (a == "--debug") { g_debug_ticks = atoi(nx()); g_debug_from = strtoull(nx(), 0, 0); }
   }
@@ -251,6 +256,7 @@ int main(int argc, char** argv) {
     machine_edge();
     g_tick++;
     if (cyc == 200) top->rst_ext = 0;
+    if (reset_cyc && cyc == reset_cyc + 200) { top->rst_ext = 0; reset_cyc = 0; }
     int vpos = top->o_vpos;
     if (cput && (int)g_frame >= cput_from && (int)g_frame <= cput_to) {
       // one line per CPU request: start tick, ack tick, state, address, beam position at start
@@ -296,6 +302,10 @@ int main(int argc, char** argv) {
           g_out = fopen(out, "wb");
           fprintf(stderr, "trace starts at frame %u tick %llu\n", g_frame,
                   (unsigned long long)g_tick);
+        }
+        if ((int)g_frame == reset_at) {
+          top->rst_ext = 1; reset_cyc = cyc;
+          fprintf(stderr, "reset at frame %u (rst_ext 200 ticks; the cache and the DDR3 model keep their state)\n", g_frame);
         }
         if (adf2_fn && (int)g_frame == adf2_frame) { top->disk_mounted = 0; fprintf(stderr, "df0 ejected (frame %u)\n", g_frame); }
         if (adf2_fn && (int)g_frame == adf2_frame + 25) { top->disk_tracks = load_adf(adf2_fn); top->disk_mounted = 1; }

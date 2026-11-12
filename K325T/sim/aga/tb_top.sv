@@ -139,7 +139,14 @@ module tb_top (
   wire [1:0] mm_cpucfg;
   wire chip32_en, cpu_long, ram_long;
   wire [15:0] cpu_din2;
+  reg  [15:0] kick2_n = 0; reg kick_q = 0;   // ideal memory: word A+1 of a Kickstart read
   reg  [15:0] dout2_hold = 0;   // word A+1 of a 32-bit CPU read, held from its slot's clk7_en edge
+  // +dout2init=HEX: start with a stale word A+1 (the board after a reset: the second word of the last
+  // 32-bit read before it; 0 at power-up hid the reset-vector bug, see reset_long_test.sh)
+  initial begin : dout2_init
+    reg [31:0] v;
+    if ($value$plusargs("dout2init=%h", v)) dout2_hold = v[15:0];
+  end
   wire [1:0] cpustate;
   cpu_wrapper i_cpu (
     .reset(cpu_reset_n), .reset_out(cpu_reset_out_n), .clk(clk), .ph1(cpu_ph1), .ph2(cpu_ph2),
@@ -247,6 +254,8 @@ module tb_top (
     // stage 2b: the Kickstart through the cache, checked against the bench's ROM model
     chk_n <= chk_n + 1;
     if (cc_rdata != kickmem[rw18]) chk_bad <= chk_bad + 1;
+    // stage 3: word A+1 of a 32-bit ROM read (the overlay reset vectors)
+    if (ram_long && cc_rdata48[47:32] != kickmem[{rw18[17:2], rw18[1:0] + 2'd1}]) chk48_bad <= chk48_bad + 1;
   end
   reg sel_cache_q = 0;
   always @(posedge clk) sel_cache_q <= use_cache & (is_chip | is_kick);
@@ -271,7 +280,10 @@ module tb_top (
     // with the cache: the same holding register, loaded from the cache's 64-bit read
     if (clk7_en) chip48_q <= use_cache ? cc_rdata48 : chip48_n;
     // stage 3: the second word of a 68EC020 32-bit read (MiSTer's chipRD2), held like chip48
-    if (clk7_en && ram_long && !ram_oe_n) dout2_hold <= use_cache ? cc_rdata48[47:32] : chip48_n[47:32];
+    kick2_n <= kickmem[{rw18[17:2], rw18[1:0] + 2'd1}];
+    kick_q  <= is_kick;
+    if (clk7_en && ram_long && !ram_oe_n)
+      dout2_hold <= use_cache ? cc_rdata48[47:32] : kick_q ? kick2_n : chip48_n[47:32];   // ROM: overlay reset vectors
     if (!ram_we_n) begin
       if (is_chip) begin
         if (!ram_bhe_n) chipmem[cw][15:8] <= ram_wdata[15:8];
