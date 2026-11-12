@@ -270,7 +270,15 @@ port (
    -- K325T stage 3 experiment: fast RAM path debug (amiga_fastram + the hr_core select), any clock
    k325t_fast_dbg_o        : out std_logic_vector(287 downto 0);
    -- K325T stage 2b: the clock of main_audio_left_o / _right_o (the ungated source clock)
-   k325t_audio_clk_o       : out std_logic
+   k325t_audio_clk_o       : out std_logic;
+   -- K325T a1200-ide: the hard disk's own SPI to the Linux module (K325T/hdd_spi.vhd)
+   k325t_hd_sck_i          : in  std_logic := '0';
+   k325t_hd_mosi_i         : in  std_logic := '0';
+   k325t_hd_cs_n_i         : in  std_logic := '1';
+   k325t_hd_miso_o         : out std_logic;
+   k325t_hd_miso_oe_o      : out std_logic;
+   k325t_hd_att_o          : out std_logic;
+   k325t_hd_en_o           : out std_logic                       -- the menu's IDE bit (att/MISO drivers)
 );
 end entity MEGA65_Core;
 
@@ -326,6 +334,13 @@ signal main_fast_lds_n        : std_logic;
 signal main_fast_wdata        : std_logic_vector(15 downto 0);
 signal main_fast_rdata        : std_logic_vector(15 downto 0);
 signal main_fast_ready        : std_logic;
+-- K325T a1200-ide: Gayle IDE host port (ide.v mgmt bus) <-> hdd_spi
+signal main_ide_req           : std_logic_vector(2 downto 0);
+signal main_ide_address       : std_logic_vector(3 downto 0);
+signal main_ide_write         : std_logic;
+signal main_ide_writedata     : std_logic_vector(15 downto 0);
+signal main_ide_read          : std_logic;
+signal main_ide_readdata      : std_logic_vector(15 downto 0);
 signal hr_fast_avm_write         : std_logic;
 signal hr_fast_avm_read          : std_logic;
 signal hr_fast_avm_address       : std_logic_vector(31 downto 0);
@@ -591,6 +606,7 @@ constant C_MENU_FAST_2M       : natural := 80;   -- 2 MB Zorro II fast RAM (DDR3
 constant C_MENU_FAST_4M       : natural := 81;   -- 4 MB
 constant C_MENU_FAST_8M       : natural := 82;   -- 8 MB
 constant C_MENU_FAST_Z3       : natural := 83;   -- K325T: 128 MB Zorro III (68020; 8 MB Zorro II with the 68000)
+constant C_MENU_IDE           : natural := 87;   -- K325T a1200-ide: Gayle IDE port + master drive (hddsrv)
 constant C_MENU_CPU_68020     : natural := 86;   -- K325T: CPU radio 85 68000 (default) / 86 68020
 
 begin
@@ -888,6 +904,13 @@ begin
          fast_wdata_o         => main_fast_wdata,
          fast_rdata_i         => main_fast_rdata,
          fast_ready_i         => main_fast_ready,
+         ide_i                => main_osm_control_i(C_MENU_IDE),
+         ide_req_o            => main_ide_req,
+         ide_address_i        => main_ide_address,
+         ide_write_i          => main_ide_write,
+         ide_writedata_i      => main_ide_writedata,
+         ide_read_i           => main_ide_read,
+         ide_readdata_o       => main_ide_readdata,
 
          -- MEGA65 joysticks and paddles/mouse/potentiometers
          joy_1_up_n_i         => main_joy_1_up_n_i ,
@@ -1573,5 +1596,32 @@ begin
          m_avm_readdatavalid_i  => hr_core_readdatavalid_i and hr_fast_sel,
          m_avm_waitrequest_i    => hr_arb_waitrequest
       ); -- i_avm_arbit_fast
+
+   ---------------------------------------------------------------------------------------------
+   -- K325T a1200-ide: the hard disk link (Gayle's IDE unit <-> hddsrv on the Linux module over a
+   -- second SPI).  Off (menu line 87 clear): Gayle is not configured (userio 0xF8 = 0), the SPI
+   -- slave is held idle and drives nothing.
+   ---------------------------------------------------------------------------------------------
+   i_hdd_spi : entity work.hdd_spi
+      port map (
+         fclk_i          => hr_clk_i,
+         frst_i          => hr_rst_i,
+         enable_i        => main_osm_control_i(C_MENU_IDE),
+         spi_sck_i       => k325t_hd_sck_i,
+         spi_mosi_i      => k325t_hd_mosi_i,
+         spi_cs_n_i      => k325t_hd_cs_n_i,
+         spi_miso_o      => k325t_hd_miso_o,
+         spi_miso_oe_o   => k325t_hd_miso_oe_o,
+         att_o           => k325t_hd_att_o,
+         mclk_i          => main_clk,
+         mrst_i          => main_reset_core_i or main_reset_m2m_i,
+         ide_req_i       => main_ide_req,
+         ide_address_o   => main_ide_address,
+         ide_write_o     => main_ide_write,
+         ide_writedata_o => main_ide_writedata,
+         ide_read_o      => main_ide_read,
+         ide_readdata_i  => main_ide_readdata
+      ); -- i_hdd_spi
+   k325t_hd_en_o <= main_osm_control_i(C_MENU_IDE);
 
 end architecture synthesis;

@@ -147,6 +147,16 @@ entity main is
       fast_rdata_i            : in  std_logic_vector(15 downto 0) := x"0000";
       fast_ready_i            : in  std_logic := '0';
 
+      -- K325T a1200-ide: Gayle IDE (menu bit: userio 0xF8 = Gayle + master, Gayle path also for the
+      -- 68020); ide.v's host (mgmt) port, served by hdd_spi in mega65.vhd
+      ide_i                   : in  std_logic := '0';
+      ide_req_o               : out std_logic_vector(2 downto 0);
+      ide_address_i           : in  std_logic_vector(3 downto 0) := x"0";
+      ide_write_i             : in  std_logic := '0';
+      ide_writedata_i         : in  std_logic_vector(15 downto 0) := x"0000";
+      ide_read_i              : in  std_logic := '0';
+      ide_readdata_o          : out std_logic_vector(15 downto 0);
+
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
       joy_1_down_n_i          : in  std_logic;
@@ -244,6 +254,12 @@ architecture synthesis of main is
          pwr_led        : out std_logic;
          fdd_led        : out std_logic;
          hdd_led        : out std_logic;
+         ide_req        : out std_logic_vector(2 downto 0);
+         ide_address    : in  std_logic_vector(3 downto 0);
+         ide_write      : in  std_logic;
+         ide_writedata  : in  std_logic_vector(15 downto 0);
+         ide_read       : in  std_logic;
+         ide_readdata   : out std_logic_vector(15 downto 0);
 
          rtc            : in  std_logic_vector(64 downto 0);
 
@@ -634,6 +650,7 @@ begin
          aga_i            => aga_i,
          fast_size_i      => fast_size_i,
          cpu_i            => cpu_i,
+         ide_i            => ide_i,
          io_uio_o         => io_uio,
          io_strobe_o      => cfg_strobe,
          io_din_o         => cfg_din,
@@ -902,6 +919,12 @@ begin
          pwr_led        => pwr_led_o,
          fdd_led        => fdd_led_o,
          hdd_led        => open,
+         ide_req        => ide_req_o,
+         ide_address    => ide_address_i,
+         ide_write      => ide_write_i,
+         ide_writedata  => ide_writedata_i,
+         ide_read       => ide_read_i,
+         ide_readdata   => ide_readdata_o,
          rtc            => rtc_i,
 
          io_uio         => io_uio,

@@ -163,6 +163,7 @@ entity amiga_config is
       aga_i            : in  std_logic := '0';               -- K325T stage 3: AGA chipset (0xF3 bit 4)
       fast_size_i      : in  std_logic_vector(1 downto 0) := "00"; -- K325T: Zorro II fast RAM (0xF5 FF)
       cpu_i            : in  std_logic_vector(1 downto 0) := "00"; -- K325T: CPU type (0xF4 TT; 11 = 68020)
+      ide_i            : in  std_logic := '0';               -- K325T a1200-ide: Gayle IDE + master drive (0xF8)
 
       -- Minimig host/userio port (minimig.v:214-218)
       io_uio_o         : out std_logic;                     -- minimig IO_UIO  (userio IO_ENA)
@@ -232,6 +233,7 @@ architecture synthesis of amiga_config is
    -- index of the 0xF5 memory-config entry in C_SEQ: its payload bit 2 (SS[0] = 512KB
    -- slow RAM) is not taken from the constant but from slow_ram_q (OSM toggle, issue #20)
    constant C_IDX_MEMCFG : natural := 3;
+   constant C_IDX_IDECFG : natural := 6;
    constant C_IDX_CHIPCFG : natural := 1;
    constant C_IDX_CPUCFG  : natural := 2;
 
@@ -247,6 +249,7 @@ architecture synthesis of amiga_config is
    signal aga_q      : std_logic := '0';
    signal fast_q     : std_logic_vector(1 downto 0) := "00";
    signal cpu_q      : std_logic_vector(1 downto 0) := "00";
+   signal ide_q      : std_logic := '0';
 
 begin
 
@@ -274,6 +277,7 @@ begin
                aga_q            <= aga_i;
                fast_q           <= fast_size_i;
                cpu_q            <= cpu_i;
+               ide_q            <= ide_i;
                if reset_i = '0' then
                   state <= ST_START_WAIT;
                end if;
@@ -326,6 +330,12 @@ begin
                if idx = C_IDX_CHIPCFG then
                   io_din_o(3) <= ecs_q;                       -- E: ECS chipset (K325T)
                   io_din_o(4) <= aga_q;                       -- G: AGA chipset (K325T stage 3)
+               end if;
+               if idx = C_IDX_IDECFG and ide_q = '1' then
+                  io_din_o(5 downto 0) <= "100011";           -- K325T a1200-ide: Gayle (C), master
+                                                              -- drive (M), bit 5: no MiSTer "fast IDE"
+                                                              -- (the 68020 reaches Gayle over the chip
+                                                              -- bus, as on a real A1200)
                end if;
                if idx = C_IDX_CPUCFG then
                   io_din_o(1 downto 0) <= cpu_q;              -- TT: CPU type (K325T; minimig uses it

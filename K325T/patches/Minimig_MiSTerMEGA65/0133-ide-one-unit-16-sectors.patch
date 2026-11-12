@@ -1,0 +1,75 @@
+K325T: Gayle with one IDE unit and a 16-sector buffer (A1200 hard disk, branch a1200-ide)
+The A1200 has one IDE port; MiSTer's gayle.v builds a second unit at $DA1000 whose 2 x 4096 x 16
+buffer would cost 4 more block RAM tiles (437 of 445 are in use).  The second unit is not built and
+answers like a unit without drives (all ones, no request, no interrupt).  ide.v's buffer is halved
+to 2 x 2048 x 16 = 16 sectors: the host (hddsrv) announces READ/WRITE MULTIPLE up to 16 sectors.
+--- a/rtl/ide.v
++++ b/rtl/ide.v
+@@ -282,31 +282,35 @@
+ wire [31:0] buf_readdata;
+ wire [31:0] buf_q;
+ 
+-dpram #(12,16) io_buf0
++// K325T (2026-11-12): 2 x 2048 x 16 = 16 sectors (the host announces READ/WRITE MULTIPLE up to 16;
++// MiSTer: 2 x 4096 = 32 sectors); 2 block RAM tiles instead of 4
++//dpram #(12,16) io_buf0
++dpram #(11,16) io_buf0
+ (
+ 	.clock(clk),
+ 
+-	.address_a(mgmt_cnt[12:1]),
++	.address_a(mgmt_cnt[11:1]),
+ 	.data_a(mgmt_writedata),
+ 	.wren_a(mgmt_write & &mgmt_address & ~mgmt_cnt[0]),
+ 	.q_a(buf_readdata[15:0]),
+ 
+-	.address_b(io_cnt[12:1]),
++	.address_b(io_cnt[11:1]),
+ 	.data_b(io_writedata[15:0]),
+ 	.wren_b(write_data_io & (io_32 | ~io_cnt[0])),
+ 	.q_b(buf_q[15:0])
+ );
+ 
+-dpram #(12,16) io_buf1
++//dpram #(12,16) io_buf1
++dpram #(11,16) io_buf1
+ (
+ 	.clock(clk),
+ 
+-	.address_a(mgmt_cnt[12:1]),
++	.address_a(mgmt_cnt[11:1]),
+ 	.data_a(mgmt_writedata),
+ 	.wren_a(mgmt_write & &mgmt_address & mgmt_cnt[0]),
+ 	.q_a(buf_readdata[31:16]),
+ 
+-	.address_b(io_cnt[12:1]),
++	.address_b(io_cnt[11:1]),
+ 	.data_b(io_32 ? io_writedata[31:16] : io_writedata[15:0]),
+ 	.wren_b(write_data_io & (io_32 | io_cnt[0])),
+ 	.q_b(buf_q[31:16])
+--- a/rtl/gayle.v
++++ b/rtl/gayle.v
+@@ -173,6 +173,15 @@
+ wire [15:0] ide1_readdata;
+ wire        ide1_intreq, ide1_drq, ide1_nodata;
+ 
++// K325T (2026-11-12): one IDE port (the A1200's): the second unit at $DA1000 is not built (its
++// buffer would cost 4 block RAM tiles); it answers like an ide unit without drives (all ones)
++assign ide1_data     = 32'hFFFFFFFF;
++assign ide1_readdata = 16'h0000;
++assign ide1_intreq   = 1'b0;
++assign ide1_drq      = 1'b0;
++assign ide1_nodata   = 1'b0;
++assign ide_req[5:3]  = 3'b000;
++/*
+ ide ide1
+ (
+ 	.clk(clk),
+@@ -198,6 +207,7 @@
+ 	.mgmt_read(ide_read & ide_address[4]),
+ 	.mgmt_readdata(ide1_readdata)
+ );
++*/
+ 
+ wire   intreq  = ide0_intreq | ide1_intreq;
+ wire   gayleid = ~gayleid_cnt[1] | gayleid_cnt[0];

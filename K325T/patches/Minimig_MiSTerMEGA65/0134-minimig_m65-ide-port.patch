@@ -1,0 +1,49 @@
+K325T: minimig_m65 passes Gayle's IDE host port (ide0's mgmt bus and request) through
+For the A1200 hard disk (branch a1200-ide): hdd_spi.vhd serves ide.v's mgmt port; before, the
+shim tied it off.  With ide_config = 0 (userio 0xF8 = 0, the default) Gayle is not decoded and the
+port is idle: the machine is unchanged.
+--- a/rtl/minimig_m65.v
++++ b/rtl/minimig_m65.v
+@@ -82,6 +82,15 @@
+ 	output        fdd_led,
+ 	output        hdd_led,
+ 
++	// K325T (2026-11-12, a1200-ide): Gayle IDE host port (ide.v's mgmt bus, served by hdd_spi.vhd);
++	// the unit exists only with ide_config bit 0 (userio command 0xF8)
++	output  [2:0] ide_req,        // ide0 request: 100 command, 101 data block done, 110 reset
++	input   [3:0] ide_address,    // mgmt register (15 = the sector buffer, auto-increment)
++	input         ide_write,
++	input  [15:0] ide_writedata,
++	input         ide_read,
++	output [15:0] ide_readdata,
++
+ 	// MEGA65 battery-backed RTC (issue #13): MiSTer-format 65-bit conduit,
+ 	// [63:0] = MSM6242B BCD nibbles, [64] = "new value" toggle. Driven by the
+ 	// M2M framework from the board RTC; decoded by minimig.v at $DC0000.
+@@ -242,15 +251,19 @@
+ 	.bootrom       (             ), // stays 0: we never host-write $F80000
+ 	.ide_ena       (             ),
+ 
+-	// IDE/Gayle: disabled (cmd 0xF8 = 0)
++	// IDE/Gayle: the A1200 IDE port when cmd 0xF8 enables it (K325T a1200-ide; MiSTer's
++	// "fast IDE" stays off: 0xF8 bit 5 keeps the Gayle path with the 68020)
+ 	.ide_fast      (             ),
+ 	.ide_ext_irq   (1'b0         ),
+-	.ide_req       (             ),
+-	.ide_address   (5'b0         ),
+-	.ide_write     (1'b0         ),
+-	.ide_writedata (16'h0000     ),
+-	.ide_read      (1'b0         ),
+-	.ide_readdata  (             )
++	.ide_req       (ide_req_w    ),
++	.ide_address   ({1'b0, ide_address}),
++	.ide_write     (ide_write    ),
++	.ide_writedata (ide_writedata),
++	.ide_read      (ide_read     ),
++	.ide_readdata  (ide_readdata )
+ );
+ 
++wire [5:0] ide_req_w;
++assign ide_req = ide_req_w[2:0];
++
+ endmodule

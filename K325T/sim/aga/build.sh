@@ -62,6 +62,9 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # the core's floppy service (adf_track_engine) -> Verilog, df0 for --adf
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/CORE/vhdl/adf_track_engine.vhd" \
     "$here/adf_engine_tb.vhd" -e adf_engine_tb > adf_engine.v 2> ghdl_adf.log) || { cat "$OUT/ghdl_adf.log" >&2; exit 1; }
+# a1200-ide: the hard disk SPI slave + engine -> Verilog
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/hdd_spi.vhd" \
+    -e hdd_spi > hdd_spi.v 2> ghdl_hdd.log) || { cat "$OUT/ghdl_hdd.log" >&2; exit 1; }
 # FAST_A500=1: the 68020 (TG68K) and the chip cache replaced by stubs -- for A500 runs (fx68k, ideal
 # memory) only; --cpu 3 and --cache do not work in such a build
 if [ -n "${FAST_A500:-}" ]; then
@@ -72,13 +75,14 @@ fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/adf_engine.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/adf_engine.v $OUT/hdd_spi.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \
   -Wno-TIMESCALEMOD -Wno-PINMISSING -Wno-IMPLICIT -Wno-SELRANGE -Wno-LATCH -Wno-BLKANDNBLK \
   --no-timing --no-assert-case --x-assign 0 --x-initial 0 -I$R -I$R/fx68k \
-  -CFLAGS "-O2" "$here/tb_top.sv" $SRCS "$here/stubs.v" "$here/main.cpp" -o tb > verilator.log 2>&1 \
+  -CFLAGS "-O2 -I$root/K325T/hddsrv" -LDFLAGS "-lpthread" "$here/tb_top.sv" $SRCS "$here/stubs.v" \
+  "$here/main.cpp" "$root/K325T/hddsrv/hddsrv_core.c" -o tb > verilator.log 2>&1 \
   || { grep -E "%Error" verilator.log | head -30 >&2; exit 1; }
 # fx68k loads its microcode with a relative path (../../Minimig_MiSTerMEGA65/...): run from $OUT/run/a
 mkdir -p "$OUT/run/a" "$OUT/Minimig_MiSTerMEGA65/rtl/fx68k"

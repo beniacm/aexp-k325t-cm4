@@ -20,6 +20,8 @@ create_ip -name mig_7series -vendor xilinx.com -library ip -module_name mig_ddr3
 set_property CONFIG.XML_INPUT_FILE [file normalize $here/mig_ddr3.prj] [get_ips mig_ddr3]
 generate_target {instantiation_template synthesis implementation} [get_ips mig_ddr3]
 set_property top qmtech_k325t_cm4 [current_fileset]
+# a1200-ide: the hard disk SPI pins are driven only on the Radxa CM3 (SPI0 M0 + BCM7)
+if {$suffix eq "_radxacm3"} { set_property generic {G_HDD=true} [current_fileset] }
 # run settings as in CORE-R6.xpr
 set_property STEPS.SYNTH_DESIGN.ARGS.FLATTEN_HIERARCHY none [get_runs synth_1]
 set_property strategy Performance_ExtraTimingOpt [get_runs impl_1]

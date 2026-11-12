@@ -39,6 +39,18 @@ set_property -dict {PACKAGE_PIN B15 IOSTANDARD LVCMOS33 PULLUP TRUE}   [get_port
 set_property -dict {PACKAGE_PIN B9  IOSTANDARD LVCMOS33 DRIVE 8}       [get_ports rk_miso]
 ## <<< CM bus
 
+## a1200-ide: the hard disk's SPI + attention line on the CM4 connector (the same FPGA pins for every
+## module; only the Radxa CM3 variant drives them: top generic G_HDD, set in build.tcl).  Radxa CM3:
+## SPI0 M0 CLK BCM3 (GPIO0_B5), MOSI BCM2 (GPIO0_B6), MISO BCM6 (GPIO0_C5), CS0 BCM13 (GPIO0_C6);
+## attention BCM7 (GPIO4_C5).  MISO and att are high-impedance unless enabled (and MISO unless CS).
+set_property -dict {PACKAGE_PIN D18 IOSTANDARD LVCMOS33 PULLDOWN TRUE} [get_ports hd_sck]
+set_property -dict {PACKAGE_PIN C18 IOSTANDARD LVCMOS33 PULLDOWN TRUE} [get_ports hd_mosi]
+set_property -dict {PACKAGE_PIN E10 IOSTANDARD LVCMOS33 PULLUP TRUE}   [get_ports hd_cs_n]
+set_property -dict {PACKAGE_PIN D10 IOSTANDARD LVCMOS33 DRIVE 8}       [get_ports hd_miso]
+set_property -dict {PACKAGE_PIN B12 IOSTANDARD LVCMOS33 DRIVE 4}       [get_ports hd_att]
+set_false_path -from [get_ports {hd_sck hd_mosi hd_cs_n}]
+set_false_path -to   [get_ports {hd_miso hd_att}]
+
 ## ---------------------------------------------------------------- clocks
 create_clock -period 20.000 -name clk_in [get_ports clk_in]
 ## "clk" = the 100 MHz clk_i of framework and core (the name M2M's constraints use)

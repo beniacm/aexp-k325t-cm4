@@ -31,6 +31,11 @@ module tb_top (
   input  wire [15:0] cfg_mem,       // 0xF5 payload  (CC=11: 2 MB chip)
   output wire        cfg_done,
   input  wire [15:0] cfg_floppy,    // 0xF7 payload  (bit 0: floppy turbo)
+  // a1200-ide: Gayle IDE (0xF8 = 0x23 when ide_on) and the hard disk SPI of hdd_spi.vhd (main.cpp's
+  // SPI master + the shared server core hddsrv_core.c on the other side)
+  input  wire        ide_on,
+  input  wire        hd_sck, hd_mosi, hd_cs_n,
+  output wire        hd_miso, hd_miso_oe, hd_att,
   // df0: the core's adf_track_engine, image words served by the C++ driver (DPI adf_rd)
   input  wire        disk_mounted,
   input  wire [7:0]  disk_tracks,
@@ -80,7 +85,8 @@ module tb_top (
   endfunction
   function [15:0] seq_pl(input [3:0] i);
     case (i) 0: seq_pl=16'h0007; 1: seq_pl=cfg_chipset; 2: seq_pl=cfg_cpu; 3: seq_pl=cfg_mem;
-             5: seq_pl=cfg_floppy; 7: seq_pl=16'h0008; default: seq_pl=16'h0000; endcase
+             5: seq_pl=cfg_floppy; 6: seq_pl=ide_on ? 16'h0023 : 16'h0000; 7: seq_pl=16'h0008;
+             default: seq_pl=16'h0000; endcase
   endfunction
   always @(posedge clk) begin
     io_strobe <= 0;
@@ -344,9 +350,23 @@ module tb_top (
     .ldata(ldata), .rdata(rdata), .ldata_okk(), .rdata_okk(), .aud_mix(),
     .toccata_ena(1'b0), .toccata_base(8'h00), .toccata_aud_left(), .toccata_aud_right(),
     .cpucfg(mm_cpucfg), .cachecfg(), .memcfg(), .bootrom(), .ide_ena(),
-    .ide_fast(), .ide_ext_irq(1'b0), .ide_req(), .ide_address(5'b0), .ide_write(1'b0),
-    .ide_writedata(16'h0), .ide_read(1'b0), .ide_readdata()
+    .ide_fast(), .ide_ext_irq(1'b0), .ide_req(ide_req6), .ide_address({1'b0, ide_address}),
+    .ide_write(ide_write), .ide_writedata(ide_writedata), .ide_read(ide_read), .ide_readdata(ide_readdata)
   );
+
+  // a1200-ide: the hard disk link (fclk = ui_clk with --cache, else the machine clock)
+  wire [5:0]  ide_req6;
+  wire [3:0]  ide_address;
+  wire        ide_write, ide_read;
+  wire [15:0] ide_writedata, ide_readdata;
+  wire        hdd_fclk = use_cache ? ui_clk : clk;
+  hdd_spi i_hdd_spi (
+    .fclk_i(hdd_fclk), .frst_i(rst_ext), .enable_i(ide_on),
+    .spi_sck_i(hd_sck), .spi_mosi_i(hd_mosi), .spi_cs_n_i(hd_cs_n), .spi_miso_o(hd_miso),
+    .spi_miso_oe_o(hd_miso_oe), .att_o(hd_att),
+    .mclk_i(clk), .mrst_i(rst_ext), .ide_req_i(ide_req6[2:0]), .ide_address_o(ide_address),
+    .ide_write_o(ide_write), .ide_writedata_o(ide_writedata), .ide_read_o(ide_read),
+    .ide_readdata_i(ide_readdata));
 
   // ---------------- trace hook ----------------
   // source code: 0 none, 1 cpu, 2 bitplane, 3 sprite, 4 copper, 5 audio, 6 disk, 7 blitter, 8 refresh

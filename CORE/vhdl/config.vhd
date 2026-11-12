@@ -493,7 +493,7 @@ constant OPTM_S_SAVING     : string := "<Saving>";          -- the internal writ
 --             Do use a lower case \n. If you forget one of them or if you use upper case, you will run into undefined behavior.
 --          2. Start each line that contains an actual menu item (multi- or single-select) with a Space character,
 --             otherwise you will experience visual glitches.
-constant OPTM_SIZE         : natural := 93;  -- amount of items including empty lines:
+constant OPTM_SIZE         : natural := 94;  -- amount of items including empty lines:
                                              -- needs to be equal to the number of lines in OPTM_ITEMS and amount of items in OPTM_GROUPS
                                              -- IMPORTANT: If SAVE_SETTINGS is true and OPTM_SIZE changes: Make sure to re-generate and
                                              -- and re-distribute the config file. You can make a new one using M2M/tools/make_config.sh
@@ -633,12 +633,13 @@ constant OPTM_ITEMS        : string :=
    "\n"                     &    -- 84: line
    " 68000 CPU\n"           &    -- 85: CPU radio: 68000 (fx68k); default (K325T)
    " 68020 CPU\n"           &    -- 86: CPU radio: 68020 (TG68K) (K325T)
-   "\n"                     &    -- 87: line
-   " Back to main menu\n"   &    -- 88: close submenu
-   "\n"                     &    -- 89: line
-   " About & Help\n"        &    -- 90: help
-   "\n"                     &    -- 91: line
-   " Close Menu\n";              -- 92: close
+   " IDE Hard Disk\n"       &    -- 87: Gayle IDE port + master drive (K325T a1200-ide, hddsrv)
+   "\n"                     &    -- 88: line
+   " Back to main menu\n"   &    -- 89: close submenu
+   "\n"                     &    -- 90: line
+   " About & Help\n"        &    -- 91: help
+   "\n"                     &    -- 92: line
+   " Close Menu\n";              -- 93: close
 
 -- define your own constants here and choose meaningful names
 -- make sure that your first group uses the value 1 (0 means "no menu item", such as text and line),
@@ -658,6 +659,7 @@ constant OPTM_G_OSM_MODE   : integer := 10;  -- OSM Scaling radio; read in HDL (
 constant OPTM_G_MEM        : integer := 11;  -- memory radio (K325T; was the Slow RAM toggle of issues #20/#21); read and locally cold-booted in mega65.vhd
 constant OPTM_G_CHIPSET    : integer := 12;  -- chipset radio OCS / ECS / AGA (K325T); read and locally cold-booted in mega65.vhd
 constant OPTM_G_FAST       : integer := 13;  -- fast RAM radio none / 2 / 4 / 8 MB (K325T); read and locally cold-booted in mega65.vhd
+constant OPTM_G_IDE        : integer := 15;  -- IDE hard disk toggle (K325T a1200-ide); read in mega65.vhd, takes effect at the next reset
 constant OPTM_G_CPU        : integer := 14;  -- CPU radio 68000 / 68020 (K325T); read and locally cold-booted in mega65.vhd
 
 -- !!! DO NOT TOUCH !!!
@@ -767,12 +769,13 @@ constant OPTM_GROUPS       : OPTM_GTYPE := ( OPTM_G_TEXT + OPTM_G_HEADLINE,     
                                              OPTM_G_LINE,                              -- 84: Line
                                              OPTM_G_CPU + OPTM_G_STDSEL,               -- 85: 68000 (default, K325T)
                                              OPTM_G_CPU,                               -- 86: 68020 (K325T)
-                                             OPTM_G_LINE,                              -- 87: Line
-                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 88: Close submenu / back to main menu
-                                             OPTM_G_LINE,                              -- 89: Line
-                                             OPTM_G_About   + OPTM_G_HELP,             -- 90: About & Help (WHS(1))
-                                             OPTM_G_LINE,                              -- 91: Line
-                                             OPTM_G_CLOSE                              -- 92: Close Menu
+                                             OPTM_G_IDE + OPTM_G_SINGLESEL,            -- 87: IDE hard disk (K325T a1200-ide)
+                                             OPTM_G_LINE,                              -- 88: Line
+                                             OPTM_G_CLOSE + OPTM_G_SUBMENU,            -- 89: Close submenu / back to main menu
+                                             OPTM_G_LINE,                              -- 90: Line
+                                             OPTM_G_About   + OPTM_G_HELP,             -- 91: About & Help (WHS(1))
+                                             OPTM_G_LINE,                              -- 92: Line
+                                             OPTM_G_CLOSE                              -- 93: Close Menu
                                            );
 
 --------------------------------------------------------------------------------------------------------------------

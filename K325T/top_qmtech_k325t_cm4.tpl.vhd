@@ -33,6 +33,11 @@ library work;
 use work.video_modes_pkg.all;
 
 entity qmtech_k325t_cm4 is
+generic (
+   -- a1200-ide: the hard disk's SPI (Radxa CM3: SPI0 M0 on BCM2/3/6/13, attention on BCM7); build.tcl
+   -- sets it for the radxacm3 variant only, elsewhere the hd_* pins stay inputs / high-impedance
+   G_HDD        : boolean := false
+);
 port (
    clk_in       : in    std_logic;                     -- 50 MHz, F22
    reset_button : in    std_logic;                     -- SW3, active low
@@ -48,6 +53,12 @@ port (
    rk_cs_n      : in    std_logic;
    rk_mosi      : in    std_logic;
    rk_miso      : out   std_logic;
+   -- a1200-ide: hard disk SPI (slave; the module's spi0-m0 is the master) + attention line
+   hd_sck       : in    std_logic;
+   hd_mosi      : in    std_logic;
+   hd_cs_n      : in    std_logic;
+   hd_miso      : out   std_logic;
+   hd_att       : out   std_logic;
    -- QSPI configuration flash (S25FL128L), CCLK via STARTUPE2; the Rockchip writes it
    qspi_csn     : out   std_logic;
    qspi_db      : inout std_logic_vector(3 downto 0);
@@ -201,6 +212,8 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal amiga_pf_stats     : std_logic_vector(671 downto 0);   -- the cache's prefetch counters
    signal amiga_fast_dbg     : std_logic_vector(287 downto 0);   -- fast RAM path debug + memory mode (stage 3)
    signal amiga_audio_clk    : std_logic;   -- the core's audio clock (its ungated source clock)
+   signal hd_sck_c, hd_mosi_c, hd_cs_n_c : std_logic;
+   signal hd_miso_s, hd_miso_oe, hd_att_s, hd_en : std_logic;
    signal lat_aux           : std_logic_vector(95 downto 0);
    signal diag_out          : std_logic_vector(95 downto 0);
    signal stall_mode        : std_logic_vector(3 downto 0);    -- stall controller register 0
@@ -539,5 +552,12 @@ begin
 --@FRAMEWORK@
 
 --@CORE@
+
+   -- a1200-ide: the hard disk pins (outputs only with G_HDD, the menu's IDE bit and, for MISO, CS)
+   hd_sck_c  <= hd_sck  when G_HDD else '0';
+   hd_mosi_c <= hd_mosi when G_HDD else '0';
+   hd_cs_n_c <= hd_cs_n when G_HDD else '1';
+   hd_miso   <= hd_miso_s when G_HDD and hd_miso_oe = '1' else 'Z';
+   hd_att    <= hd_att_s  when G_HDD and hd_en = '1' else 'Z';
 
 end architecture synthesis;

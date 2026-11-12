@@ -27,6 +27,14 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <chrono>
+#include <unistd.h>
+#include <fcntl.h>
+#include "hddsrv_core.h"
 
 struct Rec {               // 16 bytes
   uint32_t tick;           // 28 MHz tick of the first active tick
@@ -40,6 +48,84 @@ struct Rec {               // 16 bytes
 
 static FILE* g_out = nullptr;
 static uint64_t g_tick = 0;
+
+// ---------------------------------------------------------------- a1200-ide: hard disk
+// The server core (K325T/hddsrv/hddsrv_core.c, the same file as on the module) runs in its own thread;
+// its SPI transactions are clocked out here, on the rising edges of hdd_spi's fclk (ui_clk with --cache,
+// else the machine clock), SPI_H fclk cycles per half bit.
+static const int SPI_H = 4;
+struct SpiMaster {
+  std::mutex m; std::condition_variable cv, att_cv;
+  const uint8_t* tx = nullptr; uint8_t* rx = nullptr; int len = 0;
+  std::atomic<int> pending{0}; int done = 0;
+  int state = 0, byte = 0, bit = 0, cnt = 0; uint8_t inb = 0;
+  std::atomic<int> att{0};
+  uint64_t xfers = 0, bytes = 0;
+} g_spi;
+static int g_hdd_fd = -1;
+static std::atomic<int> g_hdd_stop{0};
+
+static void spi_step(Vtb_top* top) {
+  SpiMaster& s = g_spi;
+  int a = top->hd_att;
+  if (a != s.att.load()) { s.att = a; if (a) { std::lock_guard<std::mutex> l(s.m); s.att_cv.notify_all(); } }
+  switch (s.state) {
+    case 0:
+      if (s.pending.load()) { top->hd_cs_n = 0; top->hd_sck = 0; s.cnt = 2 * SPI_H; s.byte = 0; s.bit = 0; s.state = 1; }
+      break;
+    case 1:
+      if (--s.cnt == 0) { top->hd_mosi = (s.tx[0] >> 7) & 1; s.cnt = SPI_H; s.state = 2; }
+      break;
+    case 2:                                     // SCK low: sample MISO, then the rising edge
+      if (--s.cnt == 0) { s.inb = (uint8_t)(s.inb << 1 | (top->hd_miso & 1)); top->hd_sck = 1; s.cnt = SPI_H; s.state = 3; }
+      break;
+    case 3:
+      if (--s.cnt == 0) {
+        top->hd_sck = 0;
+        if (++s.bit == 8) { s.rx[s.byte] = s.inb; s.bit = 0; s.byte++; }
+        if (s.byte == s.len) { s.cnt = SPI_H; s.state = 4; }
+        else { top->hd_mosi = (s.tx[s.byte] >> (7 - s.bit)) & 1; s.cnt = SPI_H; s.state = 2; }
+      }
+      break;
+    case 4:
+      if (--s.cnt == 0) { top->hd_cs_n = 1; s.cnt = 4 * SPI_H; s.state = 5; }
+      break;
+    case 5:
+      if (--s.cnt == 0) {
+        s.state = 0; s.xfers++; s.bytes += s.len;
+        std::lock_guard<std::mutex> l(s.m); s.pending = 0; s.done = 1; s.cv.notify_all();
+      }
+      break;
+  }
+}
+static int b_xfer(void*, const uint8_t* tx, uint8_t* rx, int len) {
+  std::unique_lock<std::mutex> l(g_spi.m);
+  g_spi.tx = tx; g_spi.rx = rx; g_spi.len = len; g_spi.done = 0; g_spi.pending = 1;
+  g_spi.cv.wait(l, [] { return g_spi.done || g_hdd_stop.load(); });
+  return g_hdd_stop.load() ? -1 : 0;
+}
+static int b_wait_att(void*, int ms) {
+  std::unique_lock<std::mutex> l(g_spi.m);
+  if (g_spi.att.load()) return 1;
+  g_spi.att_cv.wait_for(l, std::chrono::milliseconds(ms), [] { return g_spi.att.load() || g_hdd_stop.load(); });
+  return g_hdd_stop.load() ? -1 : (g_spi.att.load() ? 1 : 0);
+}
+static int b_rd(void*, uint64_t lba, unsigned n, uint8_t* b) {
+  return pread(g_hdd_fd, b, 512 * n, (off_t)(lba * 512)) == (ssize_t)(512 * n) ? 0 : -1;
+}
+static int b_wr(void*, uint64_t lba, unsigned n, const uint8_t* b) {
+  return pwrite(g_hdd_fd, b, 512 * n, (off_t)(lba * 512)) == (ssize_t)(512 * n) ? 0 : -1;
+}
+static void b_log(void*, const char* m) { fprintf(stderr, "hddsrv: %s (tick %llu)\n", m, (unsigned long long)g_tick); }
+static struct hdd g_hdd;
+static void hdd_thread() {
+  int r;
+  while ((r = hdd_init(&g_hdd)) != 0 && !g_hdd_stop.load())
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));      // until the Amiga's reset is over
+  fprintf(stderr, "hddsrv: drive ready, %llu sectors, %u/%u/%u (tick %llu)\n", (unsigned long long)g_hdd.nblk,
+          g_hdd.cyls, g_hdd.heads, g_hdd.spt, (unsigned long long)g_tick);
+  hdd_serve(&g_hdd, (volatile int*)&g_hdd_stop);
+}
 static bool g_active = false;
 static Rec g_cur;
 static uint64_t g_nrec = 0;
@@ -132,7 +218,8 @@ int main(int argc, char** argv) {
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
   const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
   bool shot_last = false;
-  int reset_at = -1; uint64_t reset_cyc = 0;   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
+  int reset_at = -1; uint64_t reset_cyc = 0;
+  const char* hdf_fn = nullptr; bool hdf_ro = false, ide_only = false, hdd_verbose = false;   // a1200-ide   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -168,6 +255,10 @@ int main(int argc, char** argv) {
     else if (a == "--adf") adf_fn = nx();
     else if (a == "--adf2") { adf2_frame = atoi(nx()); adf2_fn = nx(); }
     else if (a == "--floppy-turbo") fturbo = true;
+    else if (a == "--hdf") hdf_fn = nx();
+    else if (a == "--hdf-ro") hdf_ro = true;
+    else if (a == "--ide") ide_only = true;
+    else if (a == "--hdd-verbose") hdd_verbose = true;
     else if (a == "--shot-last") shot_last = true;
     else if (a == "--reset-at") reset_at = atoi(nx());
     else if (a == "--pf") pf_mask = strtoul(nx(), 0, 0);
@@ -202,6 +293,19 @@ int main(int argc, char** argv) {
   top->disk_mounted = 0; top->disk_tracks = 0;
   if (adf_fn) { top->disk_tracks = load_adf(adf_fn); top->disk_mounted = 1; }
   top->rst_ext = 1; top->bd_we = 0;
+  // a1200-ide: Gayle on with --hdf (a drive) or --ide (the port without a drive)
+  top->ide_on = (hdf_fn || ide_only) ? 1 : 0; top->hd_cs_n = 1; top->hd_sck = 0; top->hd_mosi = 0;
+  std::thread hdd_th;
+  if (hdf_fn) {
+    g_hdd_fd = open(hdf_fn, hdf_ro ? O_RDONLY : O_RDWR);
+    if (g_hdd_fd < 0) { fprintf(stderr, "cannot open %s\n", hdf_fn); return 1; }
+    memset(&g_hdd, 0, sizeof g_hdd);
+    g_hdd.io.xfer = b_xfer; g_hdd.io.wait_att = b_wait_att; g_hdd.io.rd = b_rd; g_hdd.io.wr = b_wr;
+    g_hdd.io.log = b_log;
+    g_hdd.nblk = (uint64_t)lseek(g_hdd_fd, 0, SEEK_END) / 512; g_hdd.ro = hdf_ro; g_hdd.verbose = hdd_verbose;
+    hdd_th = std::thread(hdd_thread);
+    fprintf(stderr, "hdf: %s, %llu sectors%s\n", hdf_fn, (unsigned long long)g_hdd.nblk, hdf_ro ? " (read-only)" : "");
+  }
   std::vector<uint8_t> prog;
   if (inj) {
     FILE* f = fopen(inj, "rb");
@@ -239,9 +343,13 @@ int main(int argc, char** argv) {
   uint64_t t_src = SRC_H, t_ui = UI_H, src_edges = 0, stalled = 0;
   bool src_lvl = false, ui_lvl = false;
   auto machine_edge = [&]() {
-    if (!use_cache) { top->clk = 0; top->eval(); top->clk = 1; top->eval(); return; }
+    if (!use_cache) { top->clk = 0; top->eval(); top->clk = 1; top->eval(); if (hdf_fn) spi_step(top); return; }
     for (;;) {
-      if (t_ui <= t_src) { ui_lvl = !ui_lvl; top->ui_clk = ui_lvl; top->eval(); t_ui += UI_H; continue; }
+      if (t_ui <= t_src) {
+        ui_lvl = !ui_lvl; top->ui_clk = ui_lvl; top->eval(); t_ui += UI_H;
+        if (ui_lvl && hdf_fn) spi_step(top);
+        continue;
+      }
       src_lvl = !src_lvl; t_src += SRC_H;
       if (!src_lvl) { top->src_clk = 0; top->clk = 0; top->eval(); continue; }
       src_edges++;
@@ -385,6 +493,15 @@ int main(int argc, char** argv) {
   fprintf(stderr, "done: %llu ticks, %llu records\n", (unsigned long long)g_tick,
           (unsigned long long)g_nrec);
   top->final();
+  if (hdf_fn) {
+    fprintf(stderr, "hddsrv: %llu commands, %llu sectors read, %llu written, %llu errors, %llu resets, "
+            "%llu timeouts; SPI %llu transactions %llu bytes\n", (unsigned long long)g_hdd.cmds,
+            (unsigned long long)g_hdd.rd_sect, (unsigned long long)g_hdd.wr_sect, (unsigned long long)g_hdd.errors,
+            (unsigned long long)g_hdd.resets, (unsigned long long)g_hdd.timeouts,
+            (unsigned long long)g_spi.xfers, (unsigned long long)g_spi.bytes);
+    g_hdd_stop = 1; { std::lock_guard<std::mutex> l(g_spi.m); g_spi.cv.notify_all(); g_spi.att_cv.notify_all(); }
+    hdd_th.join();
+  }
   delete top;
   return 0;
 }

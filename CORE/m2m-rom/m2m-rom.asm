@@ -2106,7 +2106,8 @@ RTC_LAST_MIN    .BLOCK 1                        ; last internal minute seen by
 ; 125 words headroom.  K325T 68020: 93 items (+ Zorro III and the CPU radio,
 ; 42 more characters): 19 + 965 + 1 + 3 x 93 + 1 + 200 = 1465 words, still
 ; inside 1536 (71 words headroom).  K325T stage 3: line 78 (an empty line before) is the chipset
-; radio's "AGA Chipset", 12 more characters: 1477 words, 59 words headroom.  Do not reserve a
+; radio's "AGA Chipset", 12 more characters: 1477 words, 59 words headroom.  K325T a1200-ide: line
+; 87 "IDE Hard Disk" (16 characters + 3 array words): 1496 words, 40 words headroom.  Do not reserve a
 ; large safety margin here: every word is taken directly from the file-browser
 ; heap. Whenever OPTM_SIZE, OPTM_ITEMS, OPTM_DX, or the submenu/drive/manual-ROM
 ; counts grow, recalculate both budgets and rebalance the HEAP_SIZE constants

@@ -97,7 +97,14 @@ core.insert(last + 1, '''         k325t_stall_cfg_i       => rk_vid_sel,
          k325t_mbox_o            => amiga_mbox,
          k325t_pf_stats_o        => amiga_pf_stats,
          k325t_fast_dbg_o        => amiga_fast_dbg,
-         k325t_audio_clk_o       => amiga_audio_clk''')
+         k325t_audio_clk_o       => amiga_audio_clk,
+         k325t_hd_sck_i          => hd_sck_c,
+         k325t_hd_mosi_i         => hd_mosi_c,
+         k325t_hd_cs_n_i         => hd_cs_n_c,
+         k325t_hd_miso_o         => hd_miso_s,
+         k325t_hd_miso_oe_o      => hd_miso_oe,
+         k325t_hd_att_o          => hd_att_s,
+         k325t_hd_en_o           => hd_en''')
 
 tpl = open(sys.argv[3]).read()
 tpl = tpl.replace('--@R6_DECLARATIONS@', '\n'.join(decl))
