@@ -169,7 +169,10 @@ begin
    -- writes: identity mode as phase 2; cache mode only on a hit (a miss is filled first)
    a_we_u <= '1' when acc = '1' and we_n_i = '0' and bhe_n_i = '0' and (mode = '0' or miss = '0') else '0';
    a_we_l <= '1' when acc = '1' and we_n_i = '0' and ble_n_i = '0' and (mode = '0' or miss = '0') else '0';
-   a_we_2 <= '1' when acc = '1' and we_n_i = '0' and long_i = '1' and (mode = '0' or miss = '0') else '0';
+   -- (only for an even word address: word A+1 must be in the same 64-bit group; the 68EC020's 32-bit
+   --  chip cycles are long-aligned, a misaligned one would otherwise write lane 0 of the same group)
+   a_we_2 <= '1' when acc = '1' and we_n_i = '0' and long_i = '1' and a_addr(0) = '0' and
+                      (mode = '0' or miss = '0') else '0';
 
    -- tdp_ram directly (dualport_2clk_ram passes its clocks through an expression: one delta of
    -- delay that races the registers feeding it in simulation).  8 byte lanes: lane k (word k of
@@ -179,7 +182,7 @@ begin
       signal d : std_logic_vector(15 downto 0);
    begin
       -- sec: this lane is word A+1 of a 32-bit write
-      sec  <= '1' when long_i = '1' and unsigned(a_addr(1 downto 0)) + 1 = k else '0';
+      sec  <= '1' when long_i = '1' and a_addr(0) = '0' and unsigned(a_addr(1 downto 0)) + 1 = k else '0';
       we_u <= a_we_u when unsigned(a_addr(1 downto 0)) = k else a_we_2 when sec = '1' else '0';
       we_l <= a_we_l when unsigned(a_addr(1 downto 0)) = k else a_we_2 when sec = '1' else '0';
       d    <= wdata2_i when sec = '1' else a_wdata;
