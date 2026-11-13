@@ -14,6 +14,17 @@ set_property target_language VHDL [current_project]
 source $here/sources.tcl
 # core constraints: K325T/core_k325t.xdc = CORE/CORE.xdc with the stoppable clock (stall_clk.vhd)
 add_files -fileset constrs_1 -norecurse [list $xdc $here/core_k325t.xdc]
+# constraints of parts that a build flag leaves out are in their own files, added only when the part
+# is built (check_build_log.py fails a build in which any timing constraint matches nothing):
+#   qnice_local.xdc  the menu processor on the FPGA (not with LXSHELL=1)
+#   hdd.xdc          the hard disk link (G_HDD, the Radxa variant)
+#   prefetch.xdc     the cache prefetchers (PREFETCH=1)
+set part_xdc {}
+if {!([info exists env(LXSHELL)] && $env(LXSHELL) eq "1")} { lappend part_xdc $here/qnice_local.xdc }
+if {$suffix eq "_radxacm3"} { lappend part_xdc $here/hdd.xdc }
+if {[info exists env(PREFETCH)] && $env(PREFETCH) eq "1"} { lappend part_xdc $here/prefetch.xdc }
+if {[llength $part_xdc]} { add_files -fileset constrs_1 -norecurse $part_xdc }
+puts "PART CONSTRAINTS: $part_xdc"
 # DDR3: MIG 7-series, the board's proven MT41K128M16 setup (DDR3-800, 4:1, 200 MHz system
 # clock, no XADC) -- the same .prj as the MEGA65 core port
 create_ip -name mig_7series -vendor xilinx.com -library ip -module_name mig_ddr3

@@ -77,3 +77,6 @@ fi
 source "$VIVADODIR/settings64.sh"
 cd "$here"
 vivado -mode batch -nojournal -log "$here/build$suffix.log" -source "$here/build.tcl" -tclargs "$xdc" "$suffix"
+# the gate: every timing constraint matched something, no unexpected critical warning, timing met
+python3 -I "$here/check_build_log.py" "$here/build$suffix.log" "$here/timing$suffix.txt" \
+    || { echo "ERROR: build gate failed (bitstream bin/aexp_k325t_cm4$suffix.bit is NOT a candidate)" >&2; exit 1; }

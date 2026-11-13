@@ -66,19 +66,14 @@ create_generated_clock -name hdmi_clk        [get_pins i_framework/i_video_out_c
 create_generated_clock -name div_clk -source [get_pins i_mmcm/CLKOUT1] -divide_by 2 [get_pins i_framework/i_video_out_clock/clki_div_reg/Q]
 set_case_analysis 1 [get_pins i_framework/i_video_out_clock/clk_mux_reg/Q]
 
-create_generated_clock -name sdcard_clk -source [get_pins i_framework/i_clk_m2m/i_clk_qnice/CLKOUT0] -divide_by 2 \
-   [get_pins i_framework/i_qnice_wrapper/QNICE_SOC/sd_card/Slow_Clock_25MHz_reg/Q]
+## sdcard_clk (QNICE's SD controller), QNICE's EAE multicycle and the sd_emu paths exist only with
+## the menu processor on the FPGA: qnice_local.xdc, added by build.tcl unless LXSHELL=1
 
 ## ---------------------------------------------------------------- M2M (from common.xdc)
 set_false_path -from [get_pins i_framework/i_reset_manager/reset_m2m_n_o_reg/C]
 set_false_path -from [get_pins i_framework/i_reset_manager/reset_core_n_o_reg/C]
 set_max_delay 8 -datapath_only -from [get_generated_clocks] -to [get_pins -hierarchical "*cdc_stable_gen.dst_*_d_reg[*]/D"]
 set_max_delay 8 -datapath_only -from [get_clocks clk] -to [get_pins -hierarchical "*cdc_stable_gen.dst_*_d_reg[*]/D"]
-
-set_multicycle_path -from [get_cells -include_replicated {i_framework/i_qnice_wrapper/QNICE_SOC/eae_inst/op*_reg[*]}] \
-   -to [get_cells -include_replicated {i_framework/i_qnice_wrapper/QNICE_SOC/eae_inst/res_reg[*]}] -setup 3
-set_multicycle_path -from [get_cells -include_replicated {i_framework/i_qnice_wrapper/QNICE_SOC/eae_inst/op*_reg[*]}] \
-   -to [get_cells -include_replicated {i_framework/i_qnice_wrapper/QNICE_SOC/eae_inst/res_reg[*]}] -hold 2
 
 set_false_path -quiet -from [get_pins -hierarchical -regexp ".*/i_ascal/i_.*_reg.*/C"]   -to [get_pins -hierarchical -regexp ".*/i_ascal/avl_.*_reg.*/D"]
 set_false_path -quiet -from [get_pins -hierarchical -regexp ".*/i_ascal/i_.*_reg.*/C"]   -to [get_pins -hierarchical -regexp ".*/i_ascal/o_.*_reg.*/D"]
@@ -96,10 +91,6 @@ set_false_path -through [get_pins i_framework/i_av_pipeline/i_digital_pipeline/i
 ## synchronisers / dual-clock RAMs.
 set_clock_groups -asynchronous -group [get_clocks clk162] -group [get_clocks -include_generated_clocks clk]
 
-## sd_emu (clk) <-> SimpleSDHC (25 MHz sdcard_clk): 2-FF synchronised inputs; MISO
-## changes >= 50 ns before SimpleSDHC samples it.
-set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_sd_emu/*in_s1_reg*}]
-set_false_path -from [get_cells i_sd_emu/miso_r_reg]
 ## keyboard link (kio8 from the core clock domain, kio10 back; ~1.6 us per half bit)
 set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_kbd_emu/kio8_s_reg*}]
 set_false_path -from [get_cells i_kbd_emu/kio10_reg]
@@ -161,6 +152,4 @@ set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fast
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/hr_blocked_reg* || NAME =~ CORE/hr_nsel_reg* || NAME =~ CORE/hr_non_fall_reg* || NAME =~ CORE/hr_quiet_cnt_reg* || NAME =~ CORE/hr_fast_sel_reg* || NAME =~ CORE/i_cdc_fast_on/*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
-## the cache's prefetch counters (source clock) read by lat_meter (quasi-static, read twice)
-set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/i_chip_cache/pf_iss_reg* || NAME =~ CORE/i_chip_cache/pf_use_reg* || NAME =~ CORE/i_chip_cache/pf_wst_reg*}] \
-               -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
+## the cache's prefetch counters: prefetch.xdc, added by build.tcl with PREFETCH=1
