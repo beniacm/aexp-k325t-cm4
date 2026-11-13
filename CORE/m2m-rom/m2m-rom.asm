@@ -333,6 +333,12 @@ START_CARD      SYSCALL(enter, 1)
 
 _SC_RETRY       MOVE    LOG_SC_RETRY, R8
                 SYSCALL(puts, 1)
+                ; hold the core: the framework's RP_SYSTEM_START has released it
+                ; already (gencfg.asm), and the Amiga must not run on the factory
+                ; defaults or a half-written Kickstart while we wait and reload;
+                ; START_CONNECT releases it again, a fatal error leaves it held
+                MOVE    M2M$CSR, R0
+                OR      M2M$CSR_RESET, @R0
                 MOVE    IO$CYC_MID, R6          ; R6: start (cycle counter, 763 Hz)
                 MOVE    @R6, R6
                 XOR     R4, R4                  ; R4: message shown (0 = no)
