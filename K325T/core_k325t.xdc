@@ -84,3 +84,10 @@ set_max_delay 32 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_audio_fifo/wp_s1_reg*}]
 
 ## a1200-ide: the hdd_spi crossings are in hdd.xdc (build.tcl adds it with G_HDD, the Radxa variant)
+
+## a1200-fastclk: the fast 68020's clock (CLKOUT1 of the machine-clock MMCM, not gated) is asynchronous
+## to main_clk: every crossing is a toggle handshake with stable fields, a 2-flop synchroniser or a
+## quasi-static word (fc_cpu.vhd, fc_mbox.vhd, main.vhd fc_status_sync); bound the data paths only
+set fc_clk [get_clocks -of_objects [get_pins CORE/clk_gen/i_clk_main/CLKOUT1]]
+set_max_delay 15 -datapath_only -from [get_clocks main_clk] -to $fc_clk
+set_max_delay 15 -datapath_only -from $fc_clk -to [get_clocks main_clk]

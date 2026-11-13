@@ -125,6 +125,20 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_ack_d_reg*}]
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/dram_*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_rdata_reg*}]
+## a1200-fastcpu F2 (amiga_fastram 617c77a): the write queue's read pointer (Gray) back to the core clock
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_ack_rpg*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_ack_rpg_d_reg*}]
+## a1200-fastclk: the fast 68020's own amiga_fastram (core side in the CPU clock): the same crossings
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/m_req_*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/hr_* || NAME =~ CORE/i_fc_fastram/FSM_*hr_state* || NAME =~ CORE/i_fc_fastram/avm_* || NAME =~ CORE/i_fc_fastram/dram_*}]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/hr_ack_tgl*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/m_ack_d_reg*}]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/dram_*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/m_rdata_reg*}]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/hr_ack_rpg*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/m_ack_rpg_d_reg*}]
+## a1200-fastclk: the fast-RAM master select follows the fast setting (machine clock -> memory clock)
+set_max_delay 10 -datapath_only -to [get_cells -hierarchical -filter {NAME =~ CORE/hr_fc_s_reg[0]}]
 
 ## ---------------------------------------------------------------- configuration flash / multiboot
 ## QSPI flash (S25FL128L), written by the Rockchip through rk_bridge; CCLK via STARTUPE2.

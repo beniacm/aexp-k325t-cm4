@@ -79,6 +79,7 @@ entity clk is
       -- K325T stall machinery (K325T/stall_clk.vhd); unused here: the source clock is main_clk,
       -- no stalls, no diagnostics
       src_clk_o       : out std_logic;
+      cpu_clk_o       : out std_logic;   -- K325T a1200-fastclk (stall_clk.vhd); a dummy here
       stall_cfg_i     : in  std_logic_vector(7 downto 0) := (others => '0');
       stall_i         : in  std_logic := '0';
       vsync_i         : in  std_logic := '0';
@@ -268,6 +269,7 @@ begin
 
    main_clk_o   <= main_clk;
    src_clk_o    <= main_clk;
+   cpu_clk_o    <= main_clk;
    stall_diag_o <= (others => '0');
    stall_mode_o <= (others => '0');
    stall_cache_o <= (others => '0');

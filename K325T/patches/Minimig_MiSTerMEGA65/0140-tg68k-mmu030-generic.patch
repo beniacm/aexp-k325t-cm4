@@ -1,0 +1,47 @@
+diff --git a/rtl/tg68k/TG68KdotC_Kernel.vhd b/rtl/tg68k/TG68KdotC_Kernel.vhd
+index 72b32ee..81534df 100644
+--- a/rtl/tg68k/TG68KdotC_Kernel.vhd
++++ b/rtl/tg68k/TG68KdotC_Kernel.vhd
+@@ -114,7 +114,8 @@ entity TG68KdotC_Kernel is
+ 		BitField : integer := 2;			--0=>no,			1=>yes,				2=>switchable with CPU(1) 
+ 		
+ 		BarrelShifter : integer := 1;		--0=>no,			1=>yes,				2=>switchable with CPU(1)  
+-		MUL_Hardware : integer := 1		--0=>no,			1=>yes,  
++		MUL_Hardware : integer := 1;		--0=>no,			1=>yes,  
++		MMU030_Present : integer := 1	-- K325T fastclk: 0 = no TG68K_MMU030 (addresses and bus signals pass through)
+ 		);
+ 	port(clk						: in std_logic;
+ 		nReset					: in std_logic;			--low active
+@@ -561,7 +562,8 @@ ALU: TG68K_ALU
+ 		ALUout => ALUout						--: buffer std_logic_vector(31 downto 0)
+ 	);
+ 
+-	pmmu: entity work.TG68K_MMU030
++	g_mmu: IF MMU030_Present/=0 GENERATE
++		pmmu: entity work.TG68K_MMU030
+ 	port map(
+ 		clk => clk, reset => Reset, k_ena => clkena_lw, cfg_wr => mmu_cfg_wr,
+ 		tc => MMU_TC, crp => MMU_CRP, srp => MMU_SRP, tt0 => MMU_TT0, tt1 => MMU_TT1,
+@@ -572,6 +574,22 @@ ALU: TG68K_ALU
+ 		cmd_go => mmu_cmd_go, cmd_op => mmu_cmd_op, cmd_ea => addr, cmd_fc => mmu_cmd_fc,
+ 		cmd_mask => pmmu_ext(7 downto 5), cmd_rd => pmmu_ext(9), cmd_level => pmmu_ext(12 downto 10),
+ 		mmusr => mmu_sr_in, mmusr_we => mmu_sr_we, desc_addr => mmu_desc, fault => mmu_fault, f_ack => mmu_f_ack);
++	END GENERATE;
++	-- K325T fastclk: without the MMU the bus signals are the logical ones (TG68K_MMU030 with TC.E = 0
++	-- and no table walk passes them through the same way: TG68K_MMU030.vhd, st = S_IDLE, need = 0)
++	g_nommu: IF MMU030_Present=0 GENERATE
++		addr_out <= addr;
++		mmu_pstate <= state_bus;
++		nUDS <= memmaskmux(5);
++		nLDS <= memmaskmux(4);
++		data_write <= data_write_i;
++		longword <= longword_i;
++		mmu_stall <= '0';
++		mmu_fault <= '0';
++		mmu_sr_in <= (OTHERS => '0');
++		mmu_sr_we <= '0';
++		mmu_desc <= (OTHERS => '0');
++	END GENERATE;
+ 
+ 	clk_hold <= (mmu_stall AND NOT pf_defer AND NOT sk_drop) OR (pf_bad AND NOT pf_wait);
+ 	mmu_busy <= clk_hold;

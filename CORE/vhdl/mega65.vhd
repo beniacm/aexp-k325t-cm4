@@ -413,6 +413,23 @@ signal amiga_chip_scrub_addr  : std_logic_vector(17 downto 0);
 signal main_chip_addr         : std_logic_vector(17 downto 0);
 -- K325T stage 2: chip / slow RAM through chip_cache.vhd (identity mode = phase 2's layout)
 signal main_src_clk           : std_logic;
+-- K325T a1200-fastclk: the fast 68020's clock, its fast RAM port and the Avalon select
+signal main_cpu_clk           : std_logic;
+signal main_fc_en             : std_logic;
+signal fc_fr_sel, fc_fr_we, fc_fr_uds_n, fc_fr_lds_n, fc_fr_ready : std_logic;
+signal fc_fr_addr             : std_logic_vector(26 downto 0);
+signal fc_fr_wdata, fc_fr_rdata : std_logic_vector(15 downto 0);
+signal hr_fs_write, hr_fs_read, hr_ff_write, hr_ff_read : std_logic;
+signal hr_fs_address, hr_ff_address : std_logic_vector(31 downto 0);
+signal hr_fs_writedata, hr_ff_writedata : std_logic_vector(15 downto 0);
+signal hr_fs_byteenable, hr_ff_byteenable : std_logic_vector(1 downto 0);
+signal hr_fs_burstcount, hr_ff_burstcount : std_logic_vector(7 downto 0);
+signal hr_fs_waitrequest, hr_fs_readdatavalid, hr_ff_waitrequest, hr_ff_readdatavalid : std_logic;
+signal hr_fc_s                : std_logic_vector(1 downto 0) := "00";
+signal hr_fcsel               : std_logic := '0';
+signal hr_fc_out              : unsigned(9 downto 0) := (others => '0');
+attribute ASYNC_REG : string;
+attribute ASYNC_REG of hr_fc_s : signal is "TRUE";
 signal main_cache_cfg         : std_logic_vector(3 downto 0);
 signal main_chip_aga          : std_logic;   -- AGA chipset (stage 3: with 2 MB chip RAM in the cache)
 signal main_cache_on          : std_logic;   -- the cache's latched mode
@@ -703,6 +720,7 @@ begin
          main_rst_o        => main_rst,        -- CORE's reset, synchronized
          -- K325T: stoppable clock (stall_clk.vhd); the R3..R6 clk.vhd ignores these
          src_clk_o         => main_src_clk,
+         cpu_clk_o         => main_cpu_clk,      -- a1200-fastclk
          stall_cfg_i       => k325t_stall_cfg_i,
          stall_i           => '0',
          vsync_i           => video_vs_o,
@@ -938,6 +956,17 @@ begin
          fast_wdata_o         => main_fast_wdata,
          fast_rdata_i         => main_fast_rdata,
          fast_ready_i         => main_fast_ready,
+         -- a1200-fastclk: the fast 68020 and its own fast RAM port
+         cpu_clk_i            => main_cpu_clk,
+         fc_en_o              => main_fc_en,
+         fcr_sel_o            => fc_fr_sel,
+         fcr_addr_o           => fc_fr_addr,
+         fcr_we_o             => fc_fr_we,
+         fcr_uds_n_o          => fc_fr_uds_n,
+         fcr_lds_n_o          => fc_fr_lds_n,
+         fcr_wdata_o          => fc_fr_wdata,
+         fcr_rdata_i          => fc_fr_rdata,
+         fcr_ready_i          => fc_fr_ready,
          ide_i                => main_ide,
          ide_req_o            => main_ide_req,
          ide_address_i        => main_ide_address,
@@ -1518,16 +1547,79 @@ begin
          dbg_o               => main_fast_dbg,
          hr_clk_i            => hr_clk_i,
          hr_rst_i            => hr_rst_i,
-         avm_write_o         => hr_fast_avm_write,
-         avm_read_o          => hr_fast_avm_read,
-         avm_address_o       => hr_fast_avm_address,
-         avm_writedata_o     => hr_fast_avm_writedata,
-         avm_byteenable_o    => hr_fast_avm_byteenable,
-         avm_burstcount_o    => hr_fast_avm_burstcount,
+         avm_write_o         => hr_fs_write,
+         avm_read_o          => hr_fs_read,
+         avm_address_o       => hr_fs_address,
+         avm_writedata_o     => hr_fs_writedata,
+         avm_byteenable_o    => hr_fs_byteenable,
+         avm_burstcount_o    => hr_fs_burstcount,
          avm_readdata_i      => hr_fast_avm_readdata,
-         avm_readdatavalid_i => hr_fast_avm_readdatavalid,
-         avm_waitrequest_i   => hr_fast_avm_waitrequest
+         avm_readdatavalid_i => hr_fs_readdatavalid,
+         avm_waitrequest_i   => hr_fs_waitrequest
       ); -- i_amiga_fastram
+
+   -- K325T a1200-fastclk: the fast 68020's own amiga_fastram (core side in its clock; read hits in 2
+   -- clocks, the 8-entry write queue of a1200-fastcpu F2), the same DDR3 windows as the stock one
+   i_fc_fastram : entity work.amiga_fastram
+      port map (
+         clk_i               => main_cpu_clk,
+         sel_i               => fc_fr_sel,
+         pulse_i             => '1',
+         quick_i             => '1',
+         wq_i                => '1',
+         addr_i              => fc_fr_addr,
+         we_i                => fc_fr_we,
+         uds_n_i             => fc_fr_uds_n,
+         lds_n_i             => fc_fr_lds_n,
+         wdata_i             => fc_fr_wdata,
+         rdata_o             => fc_fr_rdata,
+         ready_o             => fc_fr_ready,
+         rst_i               => '0',               -- accepted accesses always complete (fc_cpu)
+         dbg_o               => open,
+         hr_clk_i            => hr_clk_i,
+         hr_rst_i            => hr_rst_i,
+         avm_write_o         => hr_ff_write,
+         avm_read_o          => hr_ff_read,
+         avm_address_o       => hr_ff_address,
+         avm_writedata_o     => hr_ff_writedata,
+         avm_byteenable_o    => hr_ff_byteenable,
+         avm_burstcount_o    => hr_ff_burstcount,
+         avm_readdata_i      => hr_fast_avm_readdata,
+         avm_readdatavalid_i => hr_ff_readdatavalid,
+         avm_waitrequest_i   => hr_ff_waitrequest
+      ); -- i_fc_fastram
+
+   -- which of the two drives the fast RAM master: follows the fast setting (main_fc_en, static while
+   -- the machine runs), switched only while the master is quiet (no request, no beats outstanding)
+   p_fc_sel : process (hr_clk_i)
+   begin
+      if rising_edge(hr_clk_i) then
+         hr_fc_s <= hr_fc_s(0) & main_fc_en;
+         if hr_fast_avm_read = '1' and hr_fast_avm_waitrequest = '0' then
+            if hr_fast_avm_readdatavalid = '1' then
+               hr_fc_out <= hr_fc_out + unsigned(hr_fast_avm_burstcount) - 1;
+            else
+               hr_fc_out <= hr_fc_out + unsigned(hr_fast_avm_burstcount);
+            end if;
+         elsif hr_fast_avm_readdatavalid = '1' then
+            hr_fc_out <= hr_fc_out - 1;
+         end if;
+         if hr_fc_s(1) /= hr_fcsel and hr_fc_out = 0 and hr_fast_avm_read = '0' and hr_fast_avm_write = '0' then
+            hr_fcsel <= hr_fc_s(1);
+         end if;
+      end if;
+   end process p_fc_sel;
+
+   hr_fast_avm_write      <= hr_ff_write      when hr_fcsel = '1' else hr_fs_write;
+   hr_fast_avm_read       <= hr_ff_read       when hr_fcsel = '1' else hr_fs_read;
+   hr_fast_avm_address    <= hr_ff_address    when hr_fcsel = '1' else hr_fs_address;
+   hr_fast_avm_writedata  <= hr_ff_writedata  when hr_fcsel = '1' else hr_fs_writedata;
+   hr_fast_avm_byteenable <= hr_ff_byteenable when hr_fcsel = '1' else hr_fs_byteenable;
+   hr_fast_avm_burstcount <= hr_ff_burstcount when hr_fcsel = '1' else hr_fs_burstcount;
+   hr_fs_waitrequest      <= hr_fast_avm_waitrequest   when hr_fcsel = '0' else '1';
+   hr_fs_readdatavalid    <= hr_fast_avm_readdatavalid when hr_fcsel = '0' else '0';
+   hr_ff_waitrequest      <= hr_fast_avm_waitrequest   when hr_fcsel = '1' else '1';
+   hr_ff_readdatavalid    <= hr_fast_avm_readdatavalid when hr_fcsel = '1' else '0';
 
    i_cdc_fast_on : entity work.cdc_stable
       generic map (

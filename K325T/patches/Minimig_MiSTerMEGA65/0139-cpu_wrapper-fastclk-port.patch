@@ -1,0 +1,144 @@
+diff --git a/rtl/cpu_wrapper.v b/rtl/cpu_wrapper.v
+index 2306465..25070eb 100644
+--- a/rtl/cpu_wrapper.v
++++ b/rtl/cpu_wrapper.v
+@@ -111,7 +111,26 @@ module cpu_wrapper
+ 
+ 	output reg  [1:0] cpustate,
+ 	output reg  [3:0] cacr,
+-	output reg [31:0] nmi_addr
++	output reg [31:0] nmi_addr,
++
++	// K325T a1200-fastclk: an external CPU (the fast 68020 on its own clock, K325T/fc_cpu.vhd, through
++	// the mailbox K325T/fc_mbox.vhd).  ext_en (static, set while the CPU is in reset) replaces the TG68K
++	// instance's bus outputs by these at the CPU boundary and holds the instance in reset; the chip-bus
++	// FSM, its 32-bit cycles and everything after it are unchanged.  ext_en = 0: exactly as before.
++	input             ext_en,
++	input      [31:0] ext_addr,
++	input       [1:0] ext_state,     // 01 idle, 10 read, 11 write (never 00: code is read as data)
++	input      [15:0] ext_dout,
++	input             ext_uds_n,
++	input             ext_lds_n,
++	input             ext_long,
++	input      [31:0] ext_vbr,
++	input       [3:0] ext_cacr,
++	input             ext_reset_out,
++	output            ext_ack,       // one clock: the access is done (read data on ext_din)
++	output     [15:0] ext_din,
++	output      [2:0] ext_ipl,
++	output     [11:0] ext_zcfg       // {z3ram_base1, z3ram_base0, z3ram_ena1, z3ram_ena0, z2ram_ena}
+ );
+ 
+ // MiSTer2MEGA65 (AExp Amiga 500 port), June 2026: the SDRAM/DDR3 cpu port is
+@@ -329,6 +348,23 @@ wire        uds_p;
+ wire        lds_p;
+ wire        reset_out_p;
+ wire        longword;
++// K325T a1200-fastclk: the TG68K instance's outputs (_k) and the external CPU's, chosen by ext_en
++wire [15:0] cpu_dout_k;
++wire [31:0] cpu_addr_k;
++wire  [1:0] cpustate_k;
++wire  [3:0] cacr_k;
++wire [31:0] vbr_k;
++wire        wr_k, uds_k, lds_k, reset_out_k, longword_k;
++assign cpu_dout_p  = ext_en ? ext_dout  : cpu_dout_k;
++assign cpu_addr_p  = ext_en ? ext_addr  : cpu_addr_k;
++assign cpustate_p  = ext_en ? ext_state : cpustate_k;
++assign cacr_p      = ext_en ? ext_cacr  : cacr_k;
++assign vbr_p       = ext_en ? ext_vbr   : vbr_k;
++assign wr_p        = ext_en ? ~(ext_state == 2'b11) : wr_k;
++assign uds_p       = ext_en ? ext_uds_n : uds_k;
++assign lds_p       = ext_en ? ext_lds_n : lds_k;
++assign reset_out_p = ext_en ? ext_reset_out : reset_out_k;
++assign longword    = ext_en ? ext_long  : longword_k;
+ // K325T stage 3: MiSTer master's TG68K interface (#276, 09226f7; the 68030 parts tied off)
+ wire        ec020      = (cpucfg[1:0] == 2'b11) & cpucfg[2];
+ wire [31:0] cpu_addr_m = ec020 ? {8'd0, cpu_addr_p[23:0]} : cpu_addr_p;
+@@ -346,6 +382,17 @@ wire        skipfetch;
+ wire  [2:0] fc_p;
+ wire        cacr_wr;
+ wire  [5:0] caar;
++// K325T a1200-fastclk: the cycle model, the 68EC020 cache model and the skipped reads see nothing of
++// the external CPU (its reads are data reads, its caches are its own)
++wire        opc_start_k, mmu_busy_k, skipfetch_k, cacr_wr_k;
++wire [13:0] cacr_x_k;
++wire  [2:0] fc_k;
++assign opc_start = opc_start_k & ~ext_en;
++assign mmu_busy  = mmu_busy_k & ~ext_en;
++assign skipfetch = skipfetch_k & ~ext_en;
++assign cacr_wr   = cacr_wr_k & ~ext_en;
++assign cacr_x    = ext_en ? 14'd0 : cacr_x_k;
++assign fc_p      = ext_en ? 3'b101 : fc_k;
+ 
+ // (the TG68K instance follows the chip bus FSM: Vivado does not accept the forward
+ // references to cpu_req, chipready and cpu_ipl that Quartus takes)
+@@ -743,19 +790,19 @@ TG68KdotC_Kernel
+ cpu_inst_p
+ (
+   .clk(clk),
+-  .nreset(reset),
++  .nreset(reset & ~ext_en),   // a1200-fastclk: held in reset while the external CPU runs
+   .clkena_in(clkena_p_throttled),
+   .data_in(cpu_din),
+   .ipl(cpu_ipl),
+   .ipl_autovector(1'b1),   // K325T: a 32-bit constant on a VHDL std_logic port fails
+   .regin_out(),
+-  .addr_out(cpu_addr_p),
+-  .data_write(cpu_dout_p),
+-  .nwr(wr_p),
+-  .nuds(uds_p),
+-  .nlds(lds_p),
+-  .nresetout(reset_out_p),
+-  .longword(longword),
++  .addr_out(cpu_addr_k),
++  .data_write(cpu_dout_k),
++  .nwr(wr_k),
++  .nuds(uds_k),
++  .nlds(lds_k),
++  .nresetout(reset_out_k),
++  .longword(longword_k),
+   .s21_en(1'b0),        // K325T: no 68030
+   .long_cand(long_cand),
+   .long_ack(1'b0),
+@@ -765,21 +812,21 @@ cpu_inst_p
+   .cpu({cpucfg[1], cpucfg[1] | cpucfg[0]}),
+   .cpu030(1'b0),
+   .ec030(1'b0),
+-  .opc_start(opc_start),
++  .opc_start(opc_start_k),
+   .opc_out(opc_out),
+   .opc_cond(opc_cond),
+   .opc_snd(opc_snd),
+   .opc_dbx(opc_dbx),
+-  .opc_cacr(cacr_x),
+-  .opc_cacr_wr(cacr_wr),
++  .opc_cacr(cacr_x_k),
++  .opc_cacr_wr(cacr_wr_k),
+   .opc_caar(caar),
+-  .fc(fc_p),
+-  .mmu_busy(mmu_busy),
+-  .skipfetch(skipfetch),
+-  .busstate(cpustate_p),		// 0: fetch code, 1: no memaccess, 2: read data, 3: write data
+-  .cacr_out(cacr_p),
++  .fc(fc_k),
++  .mmu_busy(mmu_busy_k),
++  .skipfetch(skipfetch_k),
++  .busstate(cpustate_k),		// 0: fetch code, 1: no memaccess, 2: read data, 3: write data
++  .cacr_out(cacr_k),
+   .d_cache_out(),
+-  .vbr_out(vbr_p)
++  .vbr_out(vbr_k)
+ );
+ 
+ ///////////////////// AUTOCONFIG ////////////////////////////
+@@ -913,4 +960,10 @@ assign ramsel_i = cpu_req & ~sel_nmi_vector & sel_zram;
+ //assign ramsel   = ramsel_i & ~req_gate;   // K325T stage 3: MiSTer #276 throttle gate
+ assign ramsel   = ramsel_i & ~req_gate & ~fic_wait;   // a1200-fastcpu: fast-RAM code from the cache
+ 
++// K325T a1200-fastclk: the external CPU's acknowledge, data, interrupt level and fast RAM windows
++assign ext_ack  = clkena_p_throttled & cpu_req;
++assign ext_din  = cpu_din;
++assign ext_ipl  = cpu_ipl;
++assign ext_zcfg = {z3ram_base1, z3ram_base0, z3ram_ena1, z3ram_ena0, z2ram_ena};
++
+ endmodule

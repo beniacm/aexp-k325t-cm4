@@ -26,6 +26,11 @@ library xpm;
 use xpm.vcomponents.all;
 
 entity clk is
+   generic (
+      -- K325T a1200-fastclk: the fast 68020's clock = VCO 1135 MHz / G_CPU_DIV (22: 51.59 MHz;
+      -- 21: 54.05; 20: 56.75 -- the out-of-context limit of the fast CPU block is ~17.66 ns)
+      G_CPU_DIV       : integer := 22
+   );
    port (
       sys_clk_i       : in  std_logic;   -- expects 100 MHz
       core_speed_i    : in  unsigned(1 downto 0);   -- b0: '1' = flicker-free "fast" rate (asynchronous)
@@ -33,6 +38,7 @@ entity clk is
       main_rst_o      : out std_logic;   -- main's reset, synchronized
       -- K325T stall machinery (CORE/vhdl/clk.vhd has the same ports as dummies)
       src_clk_o       : out std_logic;   -- the ungated source clock (29.290 MHz)
+      cpu_clk_o       : out std_logic;   -- a1200-fastclk: the fast 68020's clock (not gated, never stops)
       stall_cfg_i     : in  std_logic_vector(7 downto 0);   -- bridge VIDEO byte (asynchronous)
       stall_i         : in  std_logic := '0';                -- external stall request (src_clk_o)
       miss_i          : in  std_logic := '0';                -- combinational stall of this edge
@@ -58,6 +64,7 @@ architecture rtl of clk is
    signal src_clk               : std_logic;
    signal main_clk              : std_logic;
    signal main_locked           : std_logic;
+   signal cpu_clk_mmcm          : std_logic;
    signal ce                    : std_logic;
 begin
 
@@ -76,10 +83,14 @@ begin
          CLKOUT0_DIVIDE_F     => 36.250,     -- 31.310345 MHz = 28.375 MHz x 32/29 (stage 2: h = 10.3 %)
          CLKOUT0_PHASE        => 0.000,
          CLKOUT0_DUTY_CYCLE   => 0.500,
-         CLKOUT0_USE_FINE_PS  => FALSE
+         CLKOUT0_USE_FINE_PS  => FALSE,
+         CLKOUT1_DIVIDE       => G_CPU_DIV,  -- a1200-fastclk: the fast 68020 (asynchronous to main_clk)
+         CLKOUT1_PHASE        => 0.000,
+         CLKOUT1_DUTY_CYCLE   => 0.500,
+         CLKOUT1_USE_FINE_PS  => FALSE
       )
       port map (
-         CLKFBOUT => main_fb_mmcm, CLKOUT0 => src_clk_mmcm,
+         CLKFBOUT => main_fb_mmcm, CLKOUT0 => src_clk_mmcm, CLKOUT1 => cpu_clk_mmcm,
          CLKFBIN => main_fb, CLKIN1 => sys_clk_i, CLKIN2 => '0', CLKINSEL => '1',
          DADDR => (others => '0'), DCLK => '0', DEN => '0', DI => (others => '0'), DO => open,
          DRDY => open, DWE => '0', PSCLK => '0', PSEN => '0', PSINCDEC => '0', PSDONE => open,
@@ -87,6 +98,9 @@ begin
       );
 
    main_fb_bufg : BUFG port map (I => main_fb_mmcm, O => main_fb);
+
+   -- a1200-fastclk: the fast 68020's clock
+   cpu_bufg : BUFG port map (I => cpu_clk_mmcm, O => cpu_clk_o);
 
    -- the ungated source clock: the controller
    src_bufg : BUFG port map (I => src_clk_mmcm, O => src_clk);

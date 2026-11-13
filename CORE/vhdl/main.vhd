@@ -151,6 +151,19 @@ entity main is
       fast_wdata_o            : out std_logic_vector(15 downto 0);
       fast_rdata_i            : in  std_logic_vector(15 downto 0) := x"0000";
       fast_ready_i            : in  std_logic := '0';
+      -- K325T a1200-fastclk: in the fast setting the 68020 is fc_cpu on its own clock (cpu_clk_i, not
+      -- gated, asynchronous to clk_main_i) with its own fast RAM port (fcr_*, in cpu_clk_i: an
+      -- amiga_fastram instance of its own in mega65.vhd); fc_en_o = that CPU runs (clk_main_i)
+      cpu_clk_i               : in  std_logic := '0';
+      fc_en_o                 : out std_logic;
+      fcr_sel_o               : out std_logic;
+      fcr_addr_o              : out std_logic_vector(26 downto 0);   -- DDR3 word address
+      fcr_we_o                : out std_logic;
+      fcr_uds_n_o             : out std_logic;
+      fcr_lds_n_o             : out std_logic;
+      fcr_wdata_o             : out std_logic_vector(15 downto 0);
+      fcr_rdata_i             : in  std_logic_vector(15 downto 0) := x"0000";
+      fcr_ready_i             : in  std_logic := '0';
 
       -- K325T a1200-ide: Gayle IDE (menu bit: userio 0xF8 = Gayle + master, Gayle path also for the
       -- 68020); ide.v's host (mgmt) port, served by hdd_spi in mega65.vhd
@@ -348,7 +361,22 @@ architecture synthesis of main is
 
          cpustate       : out std_logic_vector(1 downto 0);
          cacr           : out std_logic_vector(3 downto 0);
-         nmi_addr       : out std_logic_vector(31 downto 0)
+         nmi_addr       : out std_logic_vector(31 downto 0);
+         -- K325T a1200-fastclk: the external CPU port (patch 0139)
+         ext_en         : in  std_logic;
+         ext_addr       : in  std_logic_vector(31 downto 0);
+         ext_state      : in  std_logic_vector(1 downto 0);
+         ext_dout       : in  std_logic_vector(15 downto 0);
+         ext_uds_n      : in  std_logic;
+         ext_lds_n      : in  std_logic;
+         ext_long       : in  std_logic;
+         ext_vbr        : in  std_logic_vector(31 downto 0);
+         ext_cacr       : in  std_logic_vector(3 downto 0);
+         ext_reset_out  : in  std_logic;
+         ext_ack        : out std_logic;
+         ext_din        : out std_logic_vector(15 downto 0);
+         ext_ipl        : out std_logic_vector(2 downto 0);
+         ext_zcfg       : out std_logic_vector(11 downto 0)
       );
    end component cpu_wrapper;
 
@@ -375,7 +403,23 @@ architecture synthesis of main is
    -- K325T stage 3: 68EC020 (MiSTer #276): stock-speed timing + instruction cache with AGA, 32-bit chip
    -- cycles; dout2_hold = word A+1 of a 32-bit read (MiSTer's chipRD2), held like chip48
    signal cpu_ec020        : std_logic := '0';
-   signal cpu_fast         : std_logic := '0';   -- a1200-fastcpu: the fast 68020 (latched in reset)
+   signal cpu_fast         : std_logic := '0';
+   -- K325T a1200-fastclk
+   signal fc_rst_n         : std_logic;
+   signal fc_zcfg          : std_logic_vector(11 downto 0);
+   signal fc_ipl           : std_logic_vector(2 downto 0);
+   signal fc_mb_req, fc_mb_wr, fc_mb_long, fc_mb_uds_n, fc_mb_lds_n, fc_mb_ack : std_logic;
+   signal fc_mb_addr, fc_mb_wdata, fc_mb_rdata : std_logic_vector(31 downto 0);
+   signal fc_fr_addr       : std_logic_vector(31 downto 0);
+   signal fc_ext_addr      : std_logic_vector(31 downto 0);
+   signal fc_ext_state     : std_logic_vector(1 downto 0);
+   signal fc_ext_dout, fc_ext_din : std_logic_vector(15 downto 0);
+   signal fc_ext_uds_n, fc_ext_lds_n, fc_ext_long, fc_ext_ack : std_logic;
+   signal fc_vbr, fc_vbr_s, fc_vbr_m : std_logic_vector(31 downto 0) := (others => '0');
+   signal fc_cacr, fc_cacr_s, fc_cacr_m : std_logic_vector(3 downto 0) := (others => '0');
+   signal fc_rso, fc_rso_s, fc_rso_m : std_logic := '1';
+   attribute ASYNC_REG : string;
+   attribute ASYNC_REG of fc_vbr_s, fc_vbr_m, fc_cacr_s, fc_cacr_m, fc_rso_s, fc_rso_m : signal is "TRUE";   -- a1200-fastcpu: the fast 68020 (latched in reset)
    signal cpu_long         : std_logic;
    signal cpu_chip32_en    : std_logic;
    signal ram_long_i       : std_logic;
@@ -632,8 +676,105 @@ begin
 
          cpustate        => cpu_state,
          cacr            => open,
-         nmi_addr        => cpu_nmi_addr
+         nmi_addr        => cpu_nmi_addr,
+         -- a1200-fastclk: the fast 68020 through its mailbox
+         ext_en          => cpu_fast,
+         ext_addr        => fc_ext_addr,
+         ext_state       => fc_ext_state,
+         ext_dout        => fc_ext_dout,
+         ext_uds_n       => fc_ext_uds_n,
+         ext_lds_n       => fc_ext_lds_n,
+         ext_long        => fc_ext_long,
+         ext_vbr         => fc_vbr_m,
+         ext_cacr        => fc_cacr_m,
+         ext_reset_out   => fc_rso_m,
+         ext_ack         => fc_ext_ack,
+         ext_din         => fc_ext_din,
+         ext_ipl         => fc_ipl,
+         ext_zcfg        => fc_zcfg
       ); -- i_cpu_wrapper
+
+   ---------------------------------------------------------------------------
+   -- K325T a1200-fastclk: the fast 68020 (fc_cpu, cpu_clk_i) and its mailbox (fc_mbox, here).
+   -- In reset unless the fast setting is in effect (cpu_fast, latched while the CPU is in reset).
+   -- Crossings: the mailbox toggles (2-flop synchronisers) with fields stable while a request is
+   -- open; IPL, the Zorro windows, the reset and the status words are synchronised in fc_cpu / here
+   -- (quasi-static or filtered).  K325T/qmtech_k325t_cm4.xdc: set_max_delay -datapath_only.
+   ---------------------------------------------------------------------------
+   fc_rst_n <= cpu_reset_n and cpu_fast;
+
+   i_fc_cpu : entity work.fc_cpu
+      port map (
+         clk            => cpu_clk_i,
+         rst_n_i        => fc_rst_n,
+         cfg_z2_i       => fc_zcfg(0),
+         cfg_z3e0_i     => fc_zcfg(1),
+         cfg_z3e1_i     => fc_zcfg(2),
+         cfg_z3b0_i     => fc_zcfg(7 downto 3),
+         cfg_z3b1_i     => fc_zcfg(11 downto 8),
+         cfg_chipcode_i => '1',
+         ipl_i          => fc_ipl,
+         mb_req_o       => fc_mb_req,
+         mb_addr_o      => fc_mb_addr,
+         mb_wr_o        => fc_mb_wr,
+         mb_long_o      => fc_mb_long,
+         mb_uds_n_o     => fc_mb_uds_n,
+         mb_lds_n_o     => fc_mb_lds_n,
+         mb_wdata_o     => fc_mb_wdata,
+         mb_ack_i       => fc_mb_ack,
+         mb_rdata_i     => fc_mb_rdata,
+         fr_sel_o       => fcr_sel_o,
+         fr_addr_o      => fc_fr_addr,
+         fr_we_o        => fcr_we_o,
+         fr_uds_n_o     => fcr_uds_n_o,
+         fr_lds_n_o     => fcr_lds_n_o,
+         fr_wdata_o     => fcr_wdata_o,
+         fr_rdata_i     => fcr_rdata_i,
+         fr_ready_i     => fcr_ready_i,
+         vbr_o          => fc_vbr,
+         cacr_o         => fc_cacr,
+         resetout_n_o   => fc_rso,
+         qempty_o       => open
+      ); -- i_fc_cpu
+
+   -- the fast RAM windows as DDR3 word addresses (as fast_addr_o -> mega65.vhd's main_fast_ddr):
+   -- Zorro II ($200000-$9FFFFF) at word $800000 + addr[23:1], Zorro III 128 MB at word $4000000
+   fcr_addr_o <= "0001" & fc_fr_addr(23 downto 1) when fc_fr_addr(31 downto 24) = x"00" else
+                 '1' & fc_fr_addr(26 downto 1);
+
+   i_fc_mbox : entity work.fc_mbox
+      port map (
+         clk_i       => clk_main_i,
+         mb_req_i    => fc_mb_req,
+         mb_addr_i   => fc_mb_addr,
+         mb_wr_i     => fc_mb_wr,
+         mb_long_i   => fc_mb_long,
+         mb_uds_n_i  => fc_mb_uds_n,
+         mb_lds_n_i  => fc_mb_lds_n,
+         mb_wdata_i  => fc_mb_wdata,
+         mb_ack_o    => fc_mb_ack,
+         mb_rdata_o  => fc_mb_rdata,
+         ext_addr_o  => fc_ext_addr,
+         ext_state_o => fc_ext_state,
+         ext_dout_o  => fc_ext_dout,
+         ext_uds_n_o => fc_ext_uds_n,
+         ext_lds_n_o => fc_ext_lds_n,
+         ext_long_o  => fc_ext_long,
+         ext_ack_i   => fc_ext_ack,
+         ext_din_i   => fc_ext_din
+      ); -- i_fc_mbox
+
+   -- the fast CPU's VBR (NMI vector), CACR and RESET instruction into the machine clock (quasi-static
+   -- words: two flip-flops per bit; the RESET line is a level held for many clocks)
+   fc_status_sync : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         fc_vbr_s   <= fc_vbr;   fc_vbr_m  <= fc_vbr_s;
+         fc_cacr_s  <= fc_cacr;  fc_cacr_m <= fc_cacr_s;
+         fc_rso_s   <= fc_rso;   fc_rso_m  <= fc_rso_s;
+      end if;
+   end process fc_status_sync;
+   fc_en_o <= cpu_fast;
 
    -- K325T phase 2: the fast RAM port takes the CPU's raw bus (the chip bus sees no
    -- address strobe during fast RAM cycles: chip_as = ramsel | AS in cpu_wrapper.v)
