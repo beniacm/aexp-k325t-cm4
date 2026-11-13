@@ -272,6 +272,7 @@ port (
    -- K325T stage 2b: the clock of main_audio_left_o / _right_o (the ungated source clock)
    k325t_audio_clk_o       : out std_logic;
    -- K325T a1200-ide: the hard disk's own SPI to the Linux module (K325T/hdd_spi.vhd)
+   k325t_hd_clk_i          : in  std_logic := '0';                 -- the top's 162.7 MHz bridge clock (hdd_spi's SPI side)
    k325t_hd_sck_i          : in  std_logic := '0';
    k325t_hd_mosi_i         : in  std_logic := '0';
    k325t_hd_cs_n_i         : in  std_logic := '1';
@@ -1606,8 +1607,8 @@ begin
    ---------------------------------------------------------------------------------------------
    i_hdd_spi : entity work.hdd_spi
       port map (
-         fclk_i          => hr_clk_i,
-         frst_i          => hr_rst_i,
+         fclk_i          => k325t_hd_clk_i,
+         frst_i          => '0',                    -- power-up values; the SPI side follows CS and enable_i
          enable_i        => main_osm_control_i(C_MENU_IDE),
          spi_sck_i       => k325t_hd_sck_i,
          spi_mosi_i      => k325t_hd_mosi_i,

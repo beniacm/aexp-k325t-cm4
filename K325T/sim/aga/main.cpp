@@ -116,11 +116,20 @@ static int b_xfer(void*, const uint8_t* tx, uint8_t* rx, int len) {
   std::unique_lock<std::mutex> l(g_spi.m);
   g_spi.tx = tx; g_spi.rx = rx; g_spi.len = len; g_spi.done = 0; g_spi.pending = 1;
   g_spi.cv.wait(l, [] { return g_spi.done || g_hdd_stop.load(); });
+  static int dbg = getenv("HDD_SPIDBG") ? atoi(getenv("HDD_SPIDBG")) : 0;
+  if (dbg > 0) {                                  // the first HDD_SPIDBG transactions, for debugging
+    dbg--;
+    fprintf(stderr, "spi %d bytes tx", len);
+    for (int i = 0; i < len && i < 6; i++) fprintf(stderr, " %02x", tx[i]);
+    fprintf(stderr, " rx");
+    for (int i = 0; i < len && i < 6; i++) fprintf(stderr, " %02x", rx[i]);
+    fprintf(stderr, " (tick %llu)\n", (unsigned long long)g_tick);
+  }
   return g_hdd_stop.load() ? -1 : 0;
 }
 static int b_xfer_batch(void* c, const struct hdd_seg* seg, int n) {
   for (int i = 0; i < n; i++) {
-    static uint8_t scratch[513];
+    static uint8_t scratch[4100];
     if (b_xfer(c, seg[i].tx, seg[i].rx ? seg[i].rx : scratch, seg[i].len)) return -1;
     if (seg[i].delay_us) {
       std::unique_lock<std::mutex> l(g_spi.m);
@@ -177,6 +186,10 @@ restart:
             (unsigned long long)g_tick);
   }
   if (hdd_serve(&g_hdd, (volatile int*)&g_hdd_stop) < 0 && !g_hdd_stop.load()) {
+    if (getenv("HDD_NORESTART")) {      // the server is gone for good (what does the Amiga do?)
+      fprintf(stderr, "hddsrv: gone for good (tick %llu)\n", (unsigned long long)g_tick);
+      return;
+    }
     fprintf(stderr, "hddsrv: restarting after a link error (tick %llu)\n", (unsigned long long)g_tick);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     goto restart;

@@ -7,35 +7,40 @@
 -- second SPI of its own (Radxa CM3: SPI0 M0), not over rk_bridge, so disk traffic never delays the
 -- floppy, keyboard, mouse or menu.
 --
---   SPI slave (fclk, the free-running 100 MHz MIG ui_clk; SCK oversampled, mode 0, MSB first)
+--   SPI slave (fclk = the top's 162.7 MHz bridge clock; SCK oversampled, mode 0, MSB first; like
+--   rk_bridge the next MISO bit leaves while the SCK edge is still in the first synchroniser stage,
+--   so the link runs at 33 MHz)
 --     -> commands into an engine (mclk = the Amiga's main clock, gated by the stall controller)
 --        that performs the mgmt accesses on ide.v
---     <- results, the mailboxes (one sector each way, LUT RAM), the ide request
+--     <- results, the ide request, and a 16-sector buffer (one block RAM: SPI side in fclk, engine
+--        side in mclk) between the two
 --   att_o: '1' while ide.v requests something or an engine command has finished (the server
 --          sleeps on its edge).
 --
--- One SPI transaction = CS low .. CS high, byte 0 = command:
---   x"00" STATUS -> bytes 1..4: x"A1" (version), flags {busy, done, att, 0, 0, req[2:0]},
---                   result word (hi, lo) of the last engine command
+-- Protocol version 2 (x"A2").  One SPI transaction = CS low .. CS high, byte 0 = command; byte 1 of
+-- every answer is x"A2" (fixed, so MISO never depends on the MOSI bit sampled on the same edge):
+--   x"00" STATUS -> bytes 1..4: x"A2", flags {busy, done, att, coll, 0, req[2:0]}, result (hi, lo)
+--   x"01" ACK    : clears done and coll
 --   x"1a" REGRD  (a = mgmt address 0..15): engine reads mgmt register a into the result word
 --   x"2a" REGWR  + bytes 1, 2 = the value (hi, lo): engine writes mgmt register a
---   x"30" PUT    + bytes 1..512: the sector into the inbound mailbox (word i = bytes 2i+1, 2i+2,
---                   high byte first); no engine
---   x"31" COMMIT : engine writes the inbound mailbox into ide.v's buffer (mgmt address 15, 256 words)
+--   x"30" PUT    + byte 1 = first sector s (0..15) + bytes 2..: words into the buffer from word
+--                   256 s (word i = bytes 2i+2, 2i+3, high byte first); no engine; allowed while
+--                   the engine runs (the host keeps PUT and COMMIT on different sectors)
+--   x"31" COMMIT + byte 1 = s, byte 2 = n (1..16): engine writes n x 256 buffer words from sector s
+--                   into ide.v's buffer at its pointer (mgmt address 15)
 --   x"32" PTR0   : engine resets ide.v's buffer pointer (a read strobe on mgmt address 0)
---   x"40" FETCH  : engine reads 256 words of ide.v's buffer into the outbound mailbox
---   x"41" GET    -> bytes 1..512: the outbound mailbox
---   x"01" ACK    : clears done (att then follows the ide request alone)
+--   x"40" FETCH  + s, n: engine reads n x 256 words of ide.v's buffer into the buffer from sector s
+--   x"41" GET    + byte 1 = s, byte 2 dummy -> bytes 3..: the buffer words from sector s
 -- An engine command is taken at the end of its last byte; busy until the engine has acknowledged,
--- then done (and att) until the next engine command.  Commands sent while busy are ignored (the host
--- polls STATUS / waits for att first).  Bytes beyond a command's length are ignored / answer 0.
+-- then done (and att) until the next engine command.  An engine command sent while busy is ignored
+-- and sets coll (sticky until ACK), so a host that batches commands learns that one was lost.
 --
 -- Clock domains: every crossing is a toggle handshake (request fclk -> mclk, acknowledge back) or a
--- slowly changing level (req) through two flip-flops; the mailboxes are written in one domain and
--- read in the other only while the handshake keeps the writer idle.  The engine moves only on
--- main-clock edges, so a stalled Amiga clock delays a transfer and never loses or repeats a word.
--- An Amiga reset (mrst_i) while the engine runs ends the command at once (acknowledged, result
--- x"DEAD"), so the host is never left waiting.
+-- slowly changing level (req, enable) through two flip-flops; the buffer is a dual-clock block RAM.
+-- The engine moves only on main-clock edges, so a stalled Amiga clock delays a transfer and never
+-- loses or repeats a word.  An Amiga reset (mrst_i) while the engine runs ends the command at once
+-- (acknowledged, result x"DEAD"), so the host is never left waiting.  With enable_i low (IDE off in
+-- the menu) the SPI side is held idle, MISO/att are not driven and no engine command can start.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -43,7 +48,7 @@ use ieee.numeric_std.all;
 
 entity hdd_spi is
    port (
-      fclk_i        : in  std_logic;                       -- 100 MHz, free-running
+      fclk_i        : in  std_logic;                       -- 162.7 MHz, free-running
       frst_i        : in  std_logic;
       enable_i      : in  std_logic;                       -- the menu's IDE bit (static; synchronised here)
       spi_sck_i     : in  std_logic;
@@ -66,33 +71,49 @@ end entity hdd_spi;
 
 architecture rtl of hdd_spi is
 
-   type t_mbox is array (0 to 255) of std_logic_vector(15 downto 0);
-   signal mbox_in  : t_mbox;                               -- written in fclk (PUT), read in mclk
-   signal mbox_out : t_mbox;                               -- written in mclk (FETCH), read in fclk
+   constant C_VERSION : std_logic_vector(7 downto 0) := x"A2";
+
+   -- the 16-sector buffer: 4096 x 16, port A fclk (SPI), port B mclk (engine)
+   type t_buf is array (0 to 4095) of std_logic_vector(15 downto 0);
+   shared variable sbuf : t_buf;
    attribute ram_style : string;
-   attribute ram_style of mbox_in  : signal is "distributed";
-   attribute ram_style of mbox_out : signal is "distributed";
+   attribute ram_style of sbuf : variable is "block";
+   signal a_addr   : unsigned(11 downto 0) := (others => '0');
+   signal a_we     : std_logic := '0';
+   signal a_din    : std_logic_vector(15 downto 0) := (others => '0');
+   signal a_q      : std_logic_vector(15 downto 0) := (others => '0');
+   signal b_addr   : unsigned(11 downto 0) := (others => '0');
+   signal b_we     : std_logic := '0';
+   signal b_din    : std_logic_vector(15 downto 0) := (others => '0');
+   signal b_q      : std_logic_vector(15 downto 0) := (others => '0');
 
    -- fclk: SPI front end
    signal sck_s, mosi_s, cs_s : std_logic_vector(2 downto 0) := (others => '0');
    signal bitcnt   : unsigned(2 downto 0) := (others => '0');
-   signal bytecnt  : unsigned(9 downto 0) := (others => '0');
+   signal bytecnt  : unsigned(12 downto 0) := (others => '0');
    signal rx       : std_logic_vector(7 downto 0) := (others => '0');
    signal tx       : std_logic_vector(7 downto 0) := (others => '0');
+   signal nxt      : std_logic_vector(7 downto 0) := (others => '0');   -- the byte after this one
+   signal mbit     : std_logic := '0';                                  -- the bit after this one
+   signal miso_r   : std_logic := '0';
    signal cmd      : std_logic_vector(7 downto 0) := (others => '0');
    signal wr_hi    : std_logic_vector(7 downto 0) := (others => '0');
+   signal sbase    : unsigned(3 downto 0) := (others => '0');           -- PUT / GET first sector
 
    -- fclk: engine command register + handshake
    signal e_op     : std_logic_vector(2 downto 0) := (others => '0');  -- 1 REGRD 2 REGWR 3 COMMIT 4 PTR0 5 FETCH
    signal e_addr   : std_logic_vector(3 downto 0) := (others => '0');
-   signal e_data   : std_logic_vector(15 downto 0) := (others => '0');
+   signal e_data   : std_logic_vector(15 downto 0) := (others => '0');  -- REGWR value / {s, n} of COMMIT, FETCH
    signal req_tgl  : std_logic := '0';
    signal ack_s    : std_logic_vector(2 downto 0) := (others => '0');
    signal busy     : std_logic := '0';
    signal done     : std_logic := '0';
+   signal coll     : std_logic := '0';
    signal idereq_s1, idereq_s2 : std_logic_vector(2 downto 0) := (others => '0');
    signal en_s     : std_logic_vector(1 downto 0) := (others => '0');
+   signal frst_s   : std_logic_vector(1 downto 0) := (others => '1');
    signal en       : std_logic;
+   signal flags    : std_logic_vector(7 downto 0);
 
    -- mclk: engine
    signal req_m    : std_logic_vector(2 downto 0) := (others => '0');
@@ -100,36 +121,25 @@ architecture rtl of hdd_spi is
    signal result   : std_logic_vector(15 downto 0) := (others => '0');
    type t_state is (S_IDLE, S_RD, S_WR, S_COMMIT, S_PTR0, S_FETCH, S_ACK);
    signal st       : t_state := S_IDLE;
-   signal widx     : unsigned(8 downto 0) := (others => '0');
+   signal widx     : unsigned(12 downto 0) := (others => '0');          -- words moved
+   signal wend     : unsigned(12 downto 0) := (others => '0');          -- n x 256
    signal phase    : unsigned(2 downto 0) := (others => '0');
    signal m_addr   : std_logic_vector(3 downto 0) := (others => '0');
    signal m_wr, m_rd : std_logic := '0';
    signal m_wdata  : std_logic_vector(15 downto 0) := (others => '0');
-   -- asynchronous mailbox reads by explicit address (one LUT RAM read port each)
-   signal out_word : std_logic_vector(15 downto 0);
-   signal in_word  : std_logic_vector(15 downto 0);
 
-   -- the byte to send as byte n of command c (w = the outbound mailbox word for that byte)
-   function txbyte(c : std_logic_vector(7 downto 0); n : unsigned(9 downto 0);
-                   flags : std_logic_vector(7 downto 0); res : std_logic_vector(15 downto 0);
-                   w : std_logic_vector(15 downto 0)) return std_logic_vector is
+   function engine_cmd(c : std_logic_vector(7 downto 0)) return boolean is
    begin
-      if c = x"00" then
-         case to_integer(n) is
-            when 1      => return x"A1";
-            when 2      => return flags;
-            when 3      => return res(15 downto 8);
-            when 4      => return res(7 downto 0);
-            when others => return x"00";
-         end case;
-      elsif c = x"41" and n >= 1 and n <= 512 then
-         if n(0) = '1' then
-            return w(15 downto 8);
-         else
-            return w(7 downto 0);
-         end if;
+      return c(7 downto 4) = x"1" or c(7 downto 4) = x"2" or c = x"31" or c = x"32" or c = x"40";
+   end function;
+
+   -- the length (bytes) after which an engine command is complete
+   function engine_len(c : std_logic_vector(7 downto 0)) return integer is
+   begin
+      if c(7 downto 4) = x"2" or c = x"31" or c = x"40" then
+         return 3;
       end if;
-      return x"00";
+      return 1;
    end function;
 
 begin
@@ -139,11 +149,34 @@ begin
    ide_read_o      <= m_rd;
    ide_writedata_o <= m_wdata;
 
+   ------------------------------------------------------------------ the buffer
+   p_buf_a : process (fclk_i)
+   begin
+      if rising_edge(fclk_i) then
+         if a_we = '1' then
+            sbuf(to_integer(a_addr)) := a_din;
+         end if;
+         a_q <= sbuf(to_integer(a_addr));
+      end if;
+   end process p_buf_a;
+
+   p_buf_b : process (mclk_i)
+   begin
+      if rising_edge(mclk_i) then
+         if b_we = '1' then
+            sbuf(to_integer(b_addr)) := b_din;
+         end if;
+         b_q <= sbuf(to_integer(b_addr));
+      end if;
+   end process p_buf_b;
+
    ------------------------------------------------------------------ fclk side
+   flags <= busy & done & (done or idereq_s2(2) or idereq_s2(1) or idereq_s2(0)) & coll & '0' & idereq_s2;
+
    p_spi : process (fclk_i)
-      variable rxb   : std_logic_vector(7 downto 0);
-      variable flags : std_logic_vector(7 downto 0);
-      variable nb    : unsigned(9 downto 0);
+      variable rxb : std_logic_vector(7 downto 0);
+      variable nb  : unsigned(12 downto 0);
+      variable go  : boolean;
    begin
       if rising_edge(fclk_i) then
          sck_s  <= sck_s(1 downto 0) & spi_sck_i;
@@ -151,81 +184,131 @@ begin
          cs_s   <= cs_s(1 downto 0) & spi_cs_n_i;
          ack_s  <= ack_s(1 downto 0) & ack_tgl;
          en_s      <= en_s(0) & enable_i;
+         frst_s    <= frst_s(0) & frst_i;
          idereq_s1 <= ide_req_i;
          idereq_s2 <= idereq_s1;
+         a_we      <= '0';
 
          if busy = '1' and ack_s(2) /= ack_s(1) then       -- engine finished
             busy <= '0';
             done <= '1';
          end if;
-         flags := busy & done & (done or (idereq_s2(2) or idereq_s2(1) or idereq_s2(0))) & "00" & idereq_s2;
 
-         if frst_i = '1' or en = '0' then
+         -- the byte after the current one (bytecnt = the byte being received): byte 1 is fixed
+         if bytecnt = 0 then
+            nxt <= C_VERSION;
+         elsif cmd = x"00" then
+            case to_integer(bytecnt) is
+               when 1      => nxt <= flags;
+               when 2      => nxt <= result(15 downto 8);
+               when 3      => nxt <= result(7 downto 0);
+               when others => nxt <= x"00";
+            end case;
+         elsif cmd = x"41" and bytecnt >= 2 then           -- GET data from byte 3: word (n - 3) / 2
+            if bytecnt(0) = '0' then
+               nxt <= a_q(15 downto 8);                    -- next byte odd = high byte
+            else
+               nxt <= a_q(7 downto 0);
+            end if;
+         else
+            nxt <= x"00";
+         end if;
+         -- the GET read address: the word of byte bytecnt + 1 (one block RAM clock + nxt ahead)
+         if cmd = x"41" then
+            a_addr <= (sbase & x"00") + resize((bytecnt - 2) / 2, 12);
+         end if;
+         -- early MISO: the bit after this edge, put out while the edge is in the first stage
+         if bitcnt /= 7 then
+            mbit <= tx(6);
+         else
+            mbit <= nxt(7);
+         end if;
+
+         if frst_s(1) = '1' or en = '0' then
             bitcnt  <= (others => '0');
             bytecnt <= (others => '0');
-            tx      <= x"A1";
+            tx      <= x"00";
+            miso_r  <= '0';
             busy    <= '0';
             done    <= '0';
+            coll    <= '0';
+            cmd     <= x"FF";
          elsif cs_s(1) = '1' then                          -- deselected: ready for byte 0
             bitcnt  <= (others => '0');
             bytecnt <= (others => '0');
-            tx      <= x"A1";                              -- byte 0 answers the version (sync)
-         elsif sck_s(2) = '0' and sck_s(1) = '1' then      -- rising edge: sample, then present the next bit
-            rxb    := rx(6 downto 0) & mosi_s(1);
-            rx     <= rxb;
-            bitcnt <= bitcnt + 1;
-            if bitcnt = 7 then                             -- a byte is complete
-               nb      := bytecnt + 1;
-               bytecnt <= nb;
-               if bytecnt = 0 then
-                  cmd <= rxb;
-                  tx  <= txbyte(rxb, nb, flags, result, out_word);
-                  if rxb = x"01" then
-                     done <= '0';
+            tx      <= x"00";
+            miso_r  <= '0';
+         else
+            if sck_s(1) = '0' and sck_s(0) = '1' then
+               miso_r <= mbit;
+            end if;
+            if sck_s(2) = '0' and sck_s(1) = '1' then      -- rising edge: sample, then present the next bit
+               rxb    := rx(6 downto 0) & mosi_s(1);
+               rx     <= rxb;
+               bitcnt <= bitcnt + 1;
+               if bitcnt = 7 then                          -- a byte is complete
+                  nb      := bytecnt + 1;
+                  bytecnt <= nb;
+                  tx      <= nxt;
+                  miso_r  <= nxt(7);
+                  go      := false;
+                  if bytecnt = 0 then
+                     cmd <= rxb;
+                     if rxb = x"01" then
+                        done <= '0';
+                        coll <= '0';
+                     end if;
+                     if engine_cmd(rxb) and engine_len(rxb) = 1 then
+                        go := true;
+                        if rxb(7 downto 4) = x"1" then
+                           e_op <= "001"; e_addr <= rxb(3 downto 0);
+                        else
+                           e_op <= "100";                  -- PTR0
+                        end if;
+                     end if;
+                  else
+                     if bytecnt = 1 then
+                        wr_hi <= rxb;
+                        sbase <= unsigned(rxb(3 downto 0));
+                     end if;
+                     if engine_cmd(cmd) and bytecnt = 2 then
+                        go := true;
+                        e_data <= wr_hi & rxb;
+                        if cmd(7 downto 4) = x"2" then
+                           e_op <= "010"; e_addr <= cmd(3 downto 0);
+                        elsif cmd = x"31" then
+                           e_op <= "011";
+                        else
+                           e_op <= "101";                  -- FETCH
+                        end if;
+                     end if;
+                     if cmd = x"30" and bytecnt >= 2 then  -- PUT data
+                        if bytecnt(0) = '0' then
+                           wr_hi <= rxb;
+                        else
+                           a_addr <= (sbase & x"00") + resize((bytecnt - 2) / 2, 12);
+                           a_din  <= wr_hi & rxb;
+                           a_we   <= '1';
+                        end if;
+                     end if;
                   end if;
-                  if busy = '0' then                       -- single-byte engine commands
-                     if rxb(7 downto 4) = x"1" then
-                        e_op <= "001"; e_addr <= rxb(3 downto 0);
+                  if go then
+                     if busy = '0' then
                         req_tgl <= not req_tgl; busy <= '1'; done <= '0';
-                     elsif rxb = x"31" then
-                        e_op <= "011";
-                        req_tgl <= not req_tgl; busy <= '1'; done <= '0';
-                     elsif rxb = x"32" then
-                        e_op <= "100";
-                        req_tgl <= not req_tgl; busy <= '1'; done <= '0';
-                     elsif rxb = x"40" then
-                        e_op <= "101";
-                        req_tgl <= not req_tgl; busy <= '1'; done <= '0';
+                     else
+                        coll <= '1';                       -- the engine is busy: command lost
                      end if;
                   end if;
                else
-                  tx <= txbyte(cmd, nb, flags, result, out_word);
-                  if cmd(7 downto 4) = x"2" then           -- REGWR
-                     if bytecnt = 1 then
-                        wr_hi <= rxb;
-                     elsif bytecnt = 2 and busy = '0' then
-                        e_op <= "010"; e_addr <= cmd(3 downto 0); e_data <= wr_hi & rxb;
-                        req_tgl <= not req_tgl; busy <= '1'; done <= '0';
-                     end if;
-                  elsif cmd = x"30" and bytecnt <= 512 then -- PUT
-                     if bytecnt(0) = '1' then
-                        wr_hi <= rxb;
-                     elsif busy = '0' or e_op /= "011" then
-                        mbox_in(to_integer(bytecnt - 2) / 2) <= wr_hi & rxb;
-                     end if;
-                  end if;
+                  tx     <= tx(6 downto 0) & '0';
+                  miso_r <= tx(6);
                end if;
-            else
-               tx <= tx(6 downto 0) & '0';
             end if;
          end if;
       end if;
    end process p_spi;
 
-   -- for the byte after byte bytecnt: word (bytecnt + 1 - 1) / 2 = bytecnt / 2 of the GET data
-   out_word      <= mbox_out(to_integer(bytecnt(8 downto 1)));
-   in_word       <= mbox_in(to_integer(widx(7 downto 0)));
-   spi_miso_o    <= tx(7);
+   spi_miso_o    <= miso_r;
    en            <= en_s(1);
    spi_miso_oe_o <= en and not cs_s(1);
    att_o         <= en and (done or idereq_s2(2) or idereq_s2(1) or idereq_s2(0));
@@ -237,10 +320,18 @@ begin
          req_m <= req_m(1 downto 0) & req_tgl;
          m_wr  <= '0';
          m_rd  <= '0';
+         b_we  <= '0';
          case st is
             when S_IDLE =>
                phase <= (others => '0');
                widx  <= (others => '0');
+               -- COMMIT / FETCH: sector s = e_data(11:8), n = e_data(4:0) (1..16; 0 = 16)
+               b_addr <= unsigned(e_data(11 downto 8)) & x"00";
+               if e_data(4 downto 0) = "00000" or unsigned(e_data(4 downto 0)) > 16 then
+                  wend <= to_unsigned(4096, 13);
+               else
+                  wend <= unsigned(e_data(4 downto 0)) & x"00";
+               end if;
                if req_m(2) /= req_m(1) then
                   if mrst_i = '1' then
                      result <= x"DEAD";
@@ -282,30 +373,32 @@ begin
                   st <= S_ACK;
                end if;
 
-            -- 256 words into the buffer: write strobe one clock (ide.v writes the word at its
-            -- pointer), low one clock (the falling strobe advances the pointer)
+            -- n x 256 words into ide.v's buffer, 3 clocks per word: the block RAM word of b_addr
+            -- (b_q, one clock after the address), write strobe one clock, low one clock (the
+            -- falling strobe advances ide.v's pointer) while the next address is read
             when S_COMMIT =>
                if mrst_i = '1' then
                   result <= x"DEAD";
                   st     <= S_ACK;
                elsif phase = 0 then
-                  m_wdata <= in_word;
-                  phase   <= "001";
+                  phase <= "001";                          -- b_q follows b_addr
                elsif phase = 1 then
-                  m_wr  <= '1';
-                  phase <= "010";
+                  m_wdata <= b_q;
+                  m_wr    <= '1';
+                  phase   <= "010";
                else
-                  phase <= "000";
-                  if widx = 255 then
+                  phase  <= "000";
+                  widx   <= widx + 1;
+                  b_addr <= b_addr + 1;
+                  if widx + 1 = wend then
                      result <= x"0000";
                      st     <= S_ACK;
                   end if;
-                  widx <= widx + 1;
                end if;
 
-            -- 256 words out of the buffer: the word at the pointer appears on mgmt_readdata two
-            -- clocks after the pointer moved (block RAM + output register); then a read strobe
-            -- advances the pointer
+            -- n x 256 words out of ide.v's buffer: the word at the pointer appears on mgmt_readdata
+            -- two clocks after the pointer moved (block RAM + output register); then a read strobe
+            -- advances the pointer and the word goes into the block RAM
             when S_FETCH =>
                if mrst_i = '1' then
                   result <= x"DEAD";
@@ -313,15 +406,17 @@ begin
                else
                   phase <= phase + 1;
                   if phase = 3 then
-                     mbox_out(to_integer(widx(7 downto 0))) <= ide_readdata_i;
-                     m_rd <= '1';
+                     b_din <= ide_readdata_i;
+                     b_we  <= '1';
+                     m_rd  <= '1';
                   elsif phase = 4 then
-                     phase <= "000";
-                     if widx = 255 then
+                     phase  <= "000";
+                     widx   <= widx + 1;
+                     b_addr <= b_addr + 1;
+                     if widx + 1 = wend then
                         result <= x"0000";
                         st     <= S_ACK;
                      end if;
-                     widx <= widx + 1;
                   end if;
                end if;
 

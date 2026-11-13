@@ -63,7 +63,7 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/CORE/vhdl/adf_track_engine.vhd" \
     "$here/adf_engine_tb.vhd" -e adf_engine_tb > adf_engine.v 2> ghdl_adf.log) || { cat "$OUT/ghdl_adf.log" >&2; exit 1; }
 # a1200-ide: the hard disk SPI slave + engine -> Verilog
-(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/hdd_spi.vhd" \
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -frelaxed --out=verilog "$root/K325T/hdd_spi.vhd" \
     -e hdd_spi > hdd_spi.v 2> ghdl_hdd.log) || { cat "$OUT/ghdl_hdd.log" >&2; exit 1; }
 # FAST_A500=1: the 68020 (TG68K) and the chip cache replaced by stubs -- for A500 runs (fx68k, ideal
 # memory) only; --cpu 3 and --cache do not work in such a build

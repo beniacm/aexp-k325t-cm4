@@ -40,11 +40,16 @@ static void lg(struct hdd *h, const char *fmt, unsigned a, unsigned b, unsigned 
     h->io.log(h->io.ctx, m);
 }
 
+#define VERSION  0xA2         /* hdd_spi protocol version (byte 1 of every answer) */
+#define FL_BUSY  0x80
+#define FL_DONE  0x40
+#define FL_COLL  0x10          /* an engine command was sent while the engine was busy (lost) */
+
 int hdd_status(struct hdd *h, uint8_t *flags, uint16_t *result)
 {
     uint8_t tx[5] = {0}, rx[5];
     if (h->io.xfer(h->io.ctx, tx, rx, 5)) return -1;
-    if (rx[1] != 0xA1) {
+    if (rx[1] != VERSION) {
         if (h->verbose > 1) lg(h, "STATUS answer %02x %02x %02x %02x", rx[1], rx[2], rx[3], rx[4]);
         return -1;
     }
@@ -53,74 +58,86 @@ int hdd_status(struct hdd *h, uint8_t *flags, uint16_t *result)
     return 0;
 }
 
-/* an engine command (REGRD 0x1a, REGWR 0x2a + data, COMMIT 0x31, PTR0 0x32, FETCH 0x40); waits for it */
+static int ack(struct hdd *h)
+{
+    uint8_t tx[1] = {0x01}, rx[1];
+    return h->io.xfer(h->io.ctx, tx, rx, 1);
+}
+
+/* wait until the engine is idle; 0, -2 (its last command ended by an Amiga reset), -1 */
+static int engine_idle(struct hdd *h, uint8_t *flp)
+{
+    uint8_t fl;
+    uint16_t res;
+    int i;
+    for (i = 0; i < 100000; i++) {
+        if (hdd_status(h, &fl, &res)) return -1;
+        if (!(fl & FL_BUSY)) {
+            if (flp) *flp = fl;
+            return (fl & FL_DONE) && res == 0xDEAD ? -2 : 0;
+        }
+    }
+    h->timeouts++;
+    lg(h, "engine: timeout", 0, 0, 0, 0);
+    return -1;
+}
+
+/* an engine command (REGRD 0x1a, REGWR 0x2a + data, COMMIT 0x31 + s n, PTR0 0x32, FETCH 0x40 + s n);
+   waits for it.  A command that met a busy engine is lost (coll): then wait, acknowledge, resend. */
 int hdd_engine(struct hdd *h, uint8_t cmd, int has_data, uint16_t data, uint16_t *result)
 {
     uint8_t tx[3] = {cmd, (uint8_t)(data >> 8), (uint8_t)data}, rx[3], fl;
     uint16_t res;
-    int i;
-    if (h->io.xfer(h->io.ctx, tx, rx, has_data ? 3 : 1)) return -1;
-    for (i = 0; i < 100000; i++) {
-        if (hdd_status(h, &fl, &res)) return -1;
-        if (!(fl & 0x80) && (fl & 0x40)) {
-            if (result) *result = res;
-            return res == 0xDEAD ? -2 : 0;    /* -2: an Amiga reset ended the command */
+    int i, t;
+    for (t = 0; t < 4; t++) {
+        if (h->io.xfer(h->io.ctx, tx, rx, has_data ? 3 : 1)) return -1;
+        for (i = 0; i < 100000; i++) {
+            if (hdd_status(h, &fl, &res)) return -1;
+            if (!(fl & FL_BUSY)) break;
         }
+        if (i < 100000 && !(fl & FL_DONE)) {  /* neither busy nor done: not taken at all (the SPI
+                                                 side was held: core start, IDE bit just switched on) */
+            h->batch_retries++;
+            continue;
+        }
+        if (i == 100000) {
+            h->timeouts++;
+            if (h->verbose > 1) lg(h, "engine %02x: timeout, flags %02x result %04x", cmd, fl, res, 0);
+            return -1;
+        }
+        if (h->verbose > 1 && res == 0xDEAD) lg(h, "engine %02x: DEAD (Amiga reset)", cmd, 0, 0, 0);
+        if (!(fl & FL_COLL)) {
+            if (result) *result = res;
+            return res == 0xDEAD ? -2 : 0;   /* -2: an Amiga reset ended the command */
+        }
+        h->batch_retries++;                  /* lost behind a running command: once more */
+        if (ack(h)) return -1;
     }
-    h->timeouts++;
     return -1;
 }
 
 /* an engine error: -1 link, -2 the Amiga is in reset (result x"DEAD"): passed up unchanged */
 #define TRY(x) do { int rc_ = (x); if (rc_) return rc_; } while (0)
 
-
 static int regwr(struct hdd *h, unsigned a, uint16_t v)  { return hdd_engine(h, 0x20 | a, 1, v, 0); }
 static int ptr0(struct hdd *h)                           { return hdd_engine(h, 0x32, 0, 0, 0); }
 
-int hdd_put(struct hdd *h, const uint8_t *s)
-{
-    uint8_t tx[513], rx[513];
-    int i;
-    tx[0] = 0x30;
-    for (i = 0; i < 256; i++) {               /* word = s[2i] | s[2i+1] << 8, high byte sent first */
-        tx[1 + 2 * i] = s[2 * i + 1];
-        tx[2 + 2 * i] = s[2 * i];
-    }
-    if (h->io.xfer(h->io.ctx, tx, rx, 513)) return -1;
-    return hdd_engine(h, 0x31, 0, 0, 0);
-}
-
-int hdd_get(struct hdd *h, uint8_t *s)
-{
-    uint8_t tx[513], rx[513];
-    int i, r = hdd_engine(h, 0x40, 0, 0, 0);
-    if (r) return r;
-    memset(tx, 0, sizeof tx);
-    tx[0] = 0x41;
-    if (h->io.xfer(h->io.ctx, tx, rx, 513)) return -1;
-    for (i = 0; i < 256; i++) {
-        s[2 * i + 1] = rx[1 + 2 * i];
-        s[2 * i] = rx[2 + 2 * i];
-    }
-    return 0;
-}
-
-/* ---- batches: several transactions per system call.  A STATUS (5 bytes) after each engine
-   command reports whether it finished in time.  If one did not (a long stall of the Amiga clock),
-   the rest of the batch raced it: hdd_spi ignores commands and PUT data only WHILE the engine is
-   busy, so a later command may or may not have been taken and ide.v's buffer pointer is unknown.
-   Then the whole block is redone the slow way from the start (PTR0, one verified step at a time):
-   writing or reading the same sectors again is harmless (in fast read mode the CPU just waits
-   until the pointer is ahead of it again). */
-#define D_REG    2       /* us after a register access (the engine needs ~5 main clocks) */
-#define D_COMMIT 30      /* us after COMMIT (256 words x 3 main clocks = 27 us; +10 us CS gap) */
-#define D_FETCH  40      /* us after FETCH (256 words x 5 main clocks = 45 us; +10 us CS gap) */
+/* ---- batches: several transactions per system call (the RK3568 costs ~46 us per transfer either
+   way, so what counts is the number of transfers: the 16-sector buffer of hdd_spi v2 moves up to 7
+   sectors per transfer).  A STATUS in front of each engine command confirms that the engine is idle
+   (else that command is lost: coll) and that the data of the previous step is complete.  If one is
+   not, the block is redone the slow verified way from PTR0: writing or reading the same sectors
+   again is harmless (in fast read mode the CPU just waits until the pointer is ahead again).
+   spidev counts each transfer rounded up to 128 bytes (ARCH_KMALLOC_MINALIGN) against its 4096-byte
+   bounce buffer per direction. */
+#define D_REG    2                       /* us after a register access (~5 main clocks) */
+#define D_FETCH1 50                      /* us per sector of FETCH (256 words x 5 clocks = 45 us) */
 #define DL(h, d) ((uint16_t)((d) * (100 - (h)->delay_cut) / 100))   /* tests: shortened delays */
+#define CHUNK    7                       /* sectors per PUT / GET transfer (2..3 + 7 x 512 bytes) */
 
 static int batch(struct hdd *h, const struct hdd_seg *seg, int n)
 {
-    static uint8_t scratch[513];
+    static uint8_t scratch[HDD_BATCH_BYTES];
     int i;
     if (h->io.xfer_batch) return h->io.xfer_batch(h->io.ctx, seg, n);
     for (i = 0; i < n; i++)
@@ -128,105 +145,150 @@ static int batch(struct hdd *h, const struct hdd_seg *seg, int n)
     return 0;
 }
 
-/* a STATUS reply: 1 finished (result in *res), 0 still busy / not acknowledged, -1 link error */
-static int st_done(const uint8_t *rx, uint16_t *res)
+/* a STATUS reply in a batch: 1 engine idle and nothing lost so far, 0 not, -1 link error, -2 reset */
+static int st_ok(const uint8_t *rx)
 {
-    if (rx[1] != 0xA1) return -1;
-    if (!(rx[2] & 0x80) && (rx[2] & 0x40)) {
-        if (res) *res = (uint16_t)(rx[3] << 8 | rx[4]);
-        return 1;
-    }
-    return 0;
-}
-
-/* wait for the running engine command (after a "busy" STATUS in a batch) */
-static int engine_wait(struct hdd *h)
-{
-    uint8_t fl;
-    uint16_t res;
-    int i;
-    h->batch_retries++;
-    for (i = 0; i < 100000; i++) {
-        if (hdd_status(h, &fl, &res)) return -1;
-        if (!(fl & 0x80) && (fl & 0x40)) return res == 0xDEAD ? -2 : 0;
-    }
-    h->timeouts++;
-    lg(h, "engine_wait: timeout", 0, 0, 0, 0);
-    return -1;
+    if (rx[1] != VERSION) return -1;
+    if (rx[2] & (FL_BUSY | FL_COLL)) return 0;
+    if ((rx[2] & FL_DONE) && (rx[3] << 8 | rx[4]) == 0xDEAD) return -2;
+    return 1;
 }
 
 static const uint8_t st_tx[5] = {0, 0, 0, 0, 0};
-static const uint8_t commit_tx[1] = {0x31};
-static const uint8_t fetch_tx[1] = {0x40};
+static const uint8_t ack_tx[1] = {0x01};
 
-#define PER_PUT  (HDD_AL(513) + HDD_AL(1) + HDD_AL(5))     /* tx bytes per sector (the larger side) */
-#define MAX_K    (HDD_BATCH_BYTES / PER_PUT)               /* 4 sectors per batch */
+static void put_cmd(uint8_t *tx, unsigned sec, const uint8_t *s, unsigned k)
+{
+    unsigned i;
+    tx[0] = 0x30;
+    tx[1] = (uint8_t)sec;
+    for (i = 0; i < 256 * k; i++) {         /* word = s[2i] | s[2i+1] << 8, high byte sent first */
+        tx[2 + 2 * i] = s[2 * i + 1];
+        tx[3 + 2 * i] = s[2 * i];
+    }
+}
+
+static void get_copy(uint8_t *s, const uint8_t *rx, unsigned k)
+{
+    unsigned i;
+    for (i = 0; i < 256 * k; i++) {
+        s[2 * i + 1] = rx[3 + 2 * i];
+        s[2 * i] = rx[4 + 2 * i];
+    }
+}
+
+/* n sectors (1..16) into ide.v's buffer at its pointer, slow and verified: one chunk at a time */
+static int put_slow(struct hdd *h, const uint8_t *s, unsigned n)
+{
+    static uint8_t tx[2 + 512 * CHUNK], rx[2 + 512 * CHUNK];
+    unsigned c, k;
+    uint8_t fl;
+    for (c = 0; c < n; c += k) {
+        k = n - c < CHUNK ? n - c : CHUNK;
+        put_cmd(tx, c, s + 512 * c, k);
+        if (h->io.xfer(h->io.ctx, tx, rx, (int)(2 + 512 * k))) return -1;
+        TRY(hdd_engine(h, 0x31, 1, (uint16_t)(c << 8 | k), 0));
+    }
+    return engine_idle(h, &fl);
+}
 
 int hdd_put_n(struct hdd *h, const uint8_t *s, unsigned n)
 {
-    uint8_t tx[MAX_K][513], srx[MAX_K][5];
-    struct hdd_seg seg[3 * MAX_K];
-    unsigned done = 0, k, m, i;
-    uint16_t res;
-    if (!h->batch) goto slow;
-    while (done < n) {
-        m = n - done < MAX_K ? n - done : MAX_K;
-        for (k = 0; k < m; k++) {
-            const uint8_t *p = s + 512 * (done + k);
-            tx[k][0] = 0x30;
-            for (i = 0; i < 256; i++) { tx[k][1 + 2 * i] = p[2 * i + 1]; tx[k][2 + 2 * i] = p[2 * i]; }
-            seg[3 * k]     = (struct hdd_seg){tx[k], NULL, 513, 0};
-            seg[3 * k + 1] = (struct hdd_seg){commit_tx, NULL, 1, DL(h, D_COMMIT)};
-            seg[3 * k + 2] = (struct hdd_seg){st_tx, srx[k], 5, 0};
-        }
-        if (batch(h, seg, 3 * (int)m)) return -1;
-        for (k = 0; k < m; k++) {
-            int r = st_done(srx[k], &res);
-            if (r < 0) { lg(h, "put batch: bad STATUS %02x %02x after sector %u", srx[k][1], srx[k][2], done + k, 0); return -1; }
-            if (r == 0) { TRY(engine_wait(h)); TRY(ptr0(h)); goto slow; }
-            if (res == 0xDEAD) return -2;
-        }
-        done += m;
+    static uint8_t tx[3][2 + 512 * CHUNK];
+    uint8_t ctx[3][3], srx[4][5], fl;
+    struct hdd_seg seg[12];
+    unsigned c, k, q = 0, ns = 0;
+    int r;
+    if (!h->batch || n > 16) return put_slow(h, s, n);
+    /* one batch per chunk: [PUT c][STATUS: the previous COMMIT done, nothing lost][COMMIT c];
+       the PUT of chunk c+1 runs while COMMIT c moves its words (different sectors of the buffer) */
+    for (c = 0; c < n; c += k, q++) {
+        int m = 0;
+        k = n - c < CHUNK ? n - c : CHUNK;
+        put_cmd(tx[q], c, s + 512 * c, k);
+        ctx[q][0] = 0x31; ctx[q][1] = (uint8_t)c; ctx[q][2] = (uint8_t)k;
+        if (c == 0) seg[m++] = (struct hdd_seg){ack_tx, NULL, 1, 0};
+        seg[m++] = (struct hdd_seg){tx[q], NULL, (uint16_t)(2 + 512 * k), 0};
+        seg[m++] = (struct hdd_seg){st_tx, srx[ns], 5, 0};
+        seg[m++] = (struct hdd_seg){ctx[q], NULL, 3, 0};
+        if (batch(h, seg, m)) return -1;
+        r = st_ok(srx[ns++]);
+        if (r == -1 || r == -2) return r;
+        if (r == 0) goto redo;
     }
+    /* the last COMMIT: idle, and none lost on the way */
+    TRY(engine_idle(h, &fl));
+    if (fl & FL_COLL) goto redo;
     return 0;
-slow:
-    for (k = 0; k < n; k++) TRY(hdd_put(h, s + 512 * k));
-    return 0;
+redo:
+    h->batch_retries++;
+    TRY(engine_idle(h, &fl));
+    if (ack(h)) return -1;
+    TRY(ptr0(h));
+    return put_slow(h, s, n);
 }
 
+/* n sectors (1..16) out of ide.v's buffer from its pointer, slow and verified */
+static int get_slow(struct hdd *h, uint8_t *s, unsigned n)
+{
+    static uint8_t tx[3 + 512 * CHUNK], rx[3 + 512 * CHUNK];
+    unsigned c, k;
+    memset(tx, 0, sizeof tx);
+    for (c = 0; c < n; c += k) {
+        k = n - c < CHUNK ? n - c : CHUNK;
+        TRY(hdd_engine(h, 0x40, 1, (uint16_t)(c << 8 | k), 0));
+        tx[0] = 0x41; tx[1] = (uint8_t)c;
+        if (h->io.xfer(h->io.ctx, tx, rx, (int)(3 + 512 * k))) return -1;
+        get_copy(s + 512 * c, rx, k);
+    }
+    return 0;
+}
 
 int hdd_get_n(struct hdd *h, uint8_t *s, unsigned n)
 {
-    uint8_t gtx[513], rx[MAX_K][513], srx[MAX_K][5];
-    struct hdd_seg seg[3 * MAX_K];
-    unsigned done = 0, k, m, i;
-    uint16_t res;
-    if (!h->batch) goto slow;
-    memset(gtx, 0, sizeof gtx);
-    gtx[0] = 0x41;
-    while (done < n) {
-        m = n - done < MAX_K ? n - done : MAX_K;
-        for (k = 0; k < m; k++) {
-            seg[3 * k]     = (struct hdd_seg){fetch_tx, NULL, 1, DL(h, D_FETCH)};
-            seg[3 * k + 1] = (struct hdd_seg){st_tx, srx[k], 5, 0};
-            seg[3 * k + 2] = (struct hdd_seg){gtx, rx[k], 513, 0};
-        }
-        if (batch(h, seg, 3 * (int)m)) return -1;
-        for (k = 0; k < m; k++) {
-            int r = st_done(srx[k], &res);
-            if (r < 0) { lg(h, "get batch: bad STATUS %02x %02x before sector %u", srx[k][1], srx[k][2], done + k, 0); return -1; }
-            if (r == 0) { TRY(engine_wait(h)); TRY(ptr0(h)); goto slow; }
-            if (res == 0xDEAD) return -2;
-            for (i = 0; i < 256; i++) { s[512 * (done + k) + 2 * i + 1] = rx[k][1 + 2 * i];
-                                        s[512 * (done + k) + 2 * i] = rx[k][2 + 2 * i]; }
-        }
-        done += m;
+    static uint8_t gtx[3][3 + 512 * CHUNK], grx[3][3 + 512 * CHUNK];
+    uint8_t ftx[3][3], srx[3][5], fl;
+    struct hdd_seg seg[12];
+    unsigned c[4], k[4], nc = 0, q;
+    int r, m;
+    if (!h->batch || n > 16) return get_slow(h, s, n);
+    for (c[0] = 0; c[nc] < n; nc++) {           /* chunks */
+        k[nc] = n - c[nc] < CHUNK ? n - c[nc] : CHUNK;
+        c[nc + 1] = c[nc] + k[nc];
+    }
+    for (q = 0; q < nc; q++) {
+        ftx[q][0] = 0x40; ftx[q][1] = (uint8_t)c[q]; ftx[q][2] = (uint8_t)k[q];
+        memset(gtx[q], 0, 3);
+        gtx[q][0] = 0x41; gtx[q][1] = (uint8_t)c[q];
+    }
+    /* [FETCH 0][wait][STATUS][FETCH 1][GET 0], [STATUS][FETCH 2][GET 1], [STATUS][GET 2]:
+       each STATUS confirms the FETCH before it is complete (and nothing lost) before its data is
+       read and the next FETCH starts; FETCH q+1 runs while GET q moves (other buffer sectors) */
+    for (q = 0; q < nc; q++) {
+        m = 0;
+        if (q == 0)                          /* (no ACK here: 4096 bytes would be exceeded; coll is
+                                                clear, every path that can set it acknowledges) */
+            seg[m++] = (struct hdd_seg){ftx[0], NULL, 3, DL(h, (uint16_t)(D_FETCH1 * k[0]))};
+        seg[m++] = (struct hdd_seg){st_tx, srx[q], 5, 0};
+        if (q + 1 < nc) seg[m++] = (struct hdd_seg){ftx[q + 1], NULL, 3, 0};
+        seg[m++] = (struct hdd_seg){gtx[q], grx[q], (uint16_t)(3 + 512 * k[q]), 0};
+        if (batch(h, seg, m)) return -1;
+        r = st_ok(srx[q]);
+        if (r == -1 || r == -2) return r;
+        if (r == 0) goto redo;
+        get_copy(s + 512 * c[q], grx[q], k[q]);
     }
     return 0;
-slow:
-    for (k = 0; k < n; k++) TRY(hdd_get(h, s + 512 * k));
-    return 0;
+redo:
+    h->batch_retries++;
+    TRY(engine_idle(h, &fl));
+    if (ack(h)) return -1;
+    TRY(ptr0(h));
+    return get_slow(h, s, n);
 }
+
+int hdd_put(struct hdd *h, const uint8_t *s) { return hdd_put_n(h, s, 1); }
+int hdd_get(struct hdd *h, uint8_t *s)       { return hdd_get_n(h, s, 1); }
 
 /* register accesses in one batch: ops[i] = 0x1a (read, result into v[i]), 0x2a (write v[i]) or 0x32
    (PTR0).  Only for IDEMPOTENT sequences (task file reads, block size + PTR0): if one step is found
@@ -234,25 +296,28 @@ slow:
    DRQ / raises the interrupt is never batched (doing it twice would restart the CPU's transfer). */
 static int regs_batch(struct hdd *h, const uint8_t *ops, uint16_t *v, int n)
 {
-    uint8_t tx[8][3], srx[8][5];
-    struct hdd_seg seg[16];
-    int i, r;
+    uint8_t tx[8][3], srx[9][5], fl;
+    struct hdd_seg seg[18];
+    int i, r, m = 0;
     if (!h->batch) goto slow;
+    seg[m++] = (struct hdd_seg){ack_tx, NULL, 1, 0};
     for (i = 0; i < n; i++) {
         tx[i][0] = ops[i]; tx[i][1] = (uint8_t)(v[i] >> 8); tx[i][2] = (uint8_t)v[i];
-        seg[2 * i]     = (struct hdd_seg){tx[i], NULL, (uint16_t)((ops[i] & 0xF0) == 0x20 ? 3 : 1), DL(h, D_REG)};
-        seg[2 * i + 1] = (struct hdd_seg){st_tx, srx[i], 5, 0};
+        seg[m++] = (struct hdd_seg){tx[i], NULL, (uint16_t)((ops[i] & 0xF0) == 0x20 ? 3 : 1), DL(h, D_REG)};
+        seg[m++] = (struct hdd_seg){st_tx, srx[i], 5, 0};
     }
-    if (batch(h, seg, 2 * n)) return -1;
+    if (batch(h, seg, m)) return -1;
     for (i = 0; i < n; i++) {
-        uint16_t res;
-        r = st_done(srx[i], &res);
-        if (r < 0) return -1;
-        if (r == 0) { TRY(engine_wait(h)); goto slow; }
-        if (res == 0xDEAD) return -2;
-        if ((ops[i] & 0xF0) == 0x10) v[i] = res;
+        r = st_ok(srx[i]);
+        if (r == -1 || r == -2) return r;
+        if (r == 0) goto redo;
+        if ((ops[i] & 0xF0) == 0x10) v[i] = (uint16_t)(srx[i][3] << 8 | srx[i][4]);
     }
     return 0;
+redo:
+    h->batch_retries++;
+    TRY(engine_idle(h, &fl));
+    if (ack(h)) return -1;
 slow:
     for (i = 0; i < n; i++)
         TRY((ops[i] & 0xF0) == 0x20 ? hdd_engine(h, ops[i], 1, v[i], 0) : hdd_engine(h, ops[i], 0, 0, &v[i]));
