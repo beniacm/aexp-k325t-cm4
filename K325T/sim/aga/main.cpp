@@ -21,6 +21,9 @@
 // --fastcpu: the "Fast 68020" setting (cpu_wrapper cpucfg b3: no cycle-table throttle; with fast RAM
 // also amiga_fastram's 2-clock read hits, as main.vhd / mega65.vhd wire it); --fastcpu-nothrottle
 // only the throttle off (fast RAM as in the stock machine), --fr-quick only the fast RAM change.
+// --fastcpu = all stages as the board wires the menu line; --fastcpu-f1 = stage F1 only (no look-ahead
+// lookup, no write queue).  --census FILE (census.h, from a1200-pistorm 69c7ffd): the CPU's requests per
+// frame by address class and kind, gap / wait clocks, idle, polling loops.
 // --frame-hash FILE: "frame hash" per frame of the picture buffer (FNV-1a 64), to count distinct frames.
 // --save-every N (with --save NAME): the state every N frames as NAME_<frame>; --restore one of them with
 // other CPU options (--fastcpu) continues the same machine state in the other setting (bench only: on the
@@ -45,6 +48,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "hddsrv_core.h"
+#include "census.h"   // a1200-pistorm 69c7ffd: --census FILE
 #include <deque>
 
 // a1200-lxshell bench link (--host-link REQ RSP): the Linux shell's bridge commands from a named pipe,
@@ -317,6 +321,8 @@ static bool load_rom(const char* fn, uint16_t* dst, size_t words) {
   return true;
 }
 
+static Census g_census;
+
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
   const char* kick = nullptr; const char* ext = nullptr; const char* out = nullptr;
@@ -339,7 +345,7 @@ int main(int argc, char** argv) {
   double inj_p = 0; int inj_k = 0;   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   unsigned cfg_fast = 0; int flat_min = 26, flat_span = 10, flat_wr = 2;   // a1200-fastcpu
-  bool fastcpu = false, fr_quick = false;
+  bool fastcpu = false, fr_quick = false, fast_f2 = false;
   FILE* fhash = nullptr; int save_every = 0;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -388,7 +394,9 @@ int main(int argc, char** argv) {
     else if (a == "--fast") cfg_fast = strtoul(nx(), 0, 0);
     else if (a == "--frame-hash") fhash = fopen(nx(), "w");
     else if (a == "--save-every") save_every = atoi(nx());
-    else if (a == "--fastcpu") { fastcpu = true; fr_quick = true; }
+    else if (a == "--fastcpu") { fastcpu = true; fr_quick = true; fast_f2 = true; }
+    else if (a == "--fastcpu-f1") { fastcpu = true; fr_quick = true; }
+    else if (a == "--census") g_census.open(nx());
     else if (a == "--fastcpu-nothrottle") fastcpu = true;
     else if (a == "--fr-quick") fr_quick = true;
     else if (a == "--flat") { flat_min = atoi(nx()); flat_span = atoi(nx()); flat_wr = atoi(nx()); }
@@ -471,7 +479,7 @@ int main(int argc, char** argv) {
   }
   top->pf_en = pf_mask;
   if (cfg_fast && !use_cache) { fprintf(stderr, "--fast needs --cache (amiga_fastram's memory side runs in ui_clk)\n"); return 1; }
-  top->fastcpu = fastcpu; top->fr_quick = fr_quick;
+  top->fastcpu = fastcpu; top->fr_quick = fr_quick; top->fast_f2 = fast_f2;
   top->cfg_fast = cfg_fast; top->flat_min = flat_min; top->flat_span = flat_span; top->flat_wr = flat_wr;
   top->stock020 = stock020; top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
   top->lat_min = lat_min; top->lat_span = lat_span;
@@ -635,6 +643,7 @@ int main(int argc, char** argv) {
     }
     if (reset_cyc && cyc == reset_cyc + 200) { top->rst_ext = 0; reset_cyc = 0; }
     int vpos = top->o_vpos;
+    g_census.step(g_tick, g_frame, top->o_cpustate, top->o_cpu_addr32, top->o_cpu_ack);
     if (cput && (int)g_frame >= cput_from && (int)g_frame <= cput_to) {
       // one line per CPU request: start tick, ack tick, state, address, beam position at start
       int cs = top->o_cpustate;
@@ -671,6 +680,7 @@ int main(int argc, char** argv) {
     if (vpos != g_last_vpos) {
       col = 0;
       if (vpos == 0 && g_last_vpos > 0) {
+        g_census.frame_end(g_frame);
         g_frame++;
         g_frame_a = g_frame;
         if (g_frame % 10 == 0) fprintf(stderr, "frame %u tick %llu recs %llu pc %06x\n", g_frame,
@@ -757,6 +767,7 @@ int main(int argc, char** argv) {
     }
   }
   if (cput) fclose(cput);
+  g_census.close();
   if (dump_fn) {
     uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];
     FILE* f = fopen(dump_fn, "wb");

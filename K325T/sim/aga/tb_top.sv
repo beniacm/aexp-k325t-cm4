@@ -16,6 +16,7 @@ module tb_top (
   input  wire [2:0]  cfg_fast,
   input  wire        fastcpu,          // cpucfg b3: the stock-speed throttle off (main.vhd: menu line "Fast 68020")
   input  wire        fr_quick,         // amiga_fastram quick_i: read hits in 2 clocks (main.vhd: with fastcpu)
+  input  wire        fast_f2,          // F2: cpucfg b4 (look-ahead lookup) + amiga_fastram wq_i (main.vhd: with fastcpu)
   input  wire [7:0]  flat_min, flat_span, flat_wr,   // fast RAM Avalon model: read latency min + random(span), write accept
   input  wire        kick512,         // 512 KB Kickstart (the cache's kick512_i)
   input  wire [6:0]  pf_en,           // stage 2b prefetch enables (bpl, spr, aud, dsk, cop, blt, cpu)
@@ -199,7 +200,7 @@ module tb_top (
   cpu_wrapper i_cpu (
     .reset(cpu_reset_n), .reset_out(cpu_reset_out_n), .clk(clk), .ph1(cpu_ph1), .ph2(cpu_ph2),
     // stage 3: MiSTer's cpucfg (b2 = 68EC020 stock timing), cachecfg b0 = its instruction cache
-    .cpucfg({1'b0, fastcpu, stock020 & (mm_cpucfg == 2'b11), mm_cpucfg}), .ntsc(1'b0),
+    .cpucfg({fast_f2, fastcpu, stock020 & (mm_cpucfg == 2'b11), mm_cpucfg}), .ntsc(1'b0),
     .fastramcfg(cfg_fast), .cachecfg({2'b00, stock020}), .bootrom(1'b0),
     .chip_addr(cpu_addr), .chip_dout(cpu_dout), .chip_din(cpu_din), .chip_as(cpu_as_n),
     .chip_uds(cpu_uds_n), .chip_lds(cpu_lds_n), .chip_rw(cpu_rw), .chip_dtack(cpu_dtack_n),
@@ -222,7 +223,7 @@ module tb_top (
   reg  [15:0] fa_rdata = 0;
   reg         fa_rvalid = 0, fa_acc = 0;
   amiga_fastram i_fastram (
-    .clk_i(clk), .sel_i(fr_sel), .pulse_i(mm_cpucfg != 2'b00), .quick_i(fr_quick), .addr_i(fr_ddr), .we_i(cpustate == 2'b11),
+    .clk_i(clk), .sel_i(fr_sel), .pulse_i(mm_cpucfg != 2'b00), .quick_i(fr_quick), .wq_i(fast_f2), .addr_i(fr_ddr), .we_i(cpustate == 2'b11),
     .uds_n_i(fr_uds_n), .lds_n_i(fr_lds_n), .wdata_i(fr_wdata), .rdata_o(fr_rdata), .ready_o(fr_ready),
     .rst_i(1'b0), .dbg_o(),
     .hr_clk_i(ui_clk), .hr_rst_i(1'b0), .avm_write_o(fa_write), .avm_read_o(fa_read),
@@ -517,7 +518,9 @@ module tb_top (
   assign o_red_green = {red, green, blue};
   assign o_cpustate = cpustate;
   assign o_cpu_addr32 = i_cpu.cpu_addr;
-  assign o_cpu_ack = mm_cpucfg != 2'b00 ? (i_cpu.cpu_req & (i_cpu.chipready | fr_ready)) : (~cpu_as_n & ~cpu_dtack_n);
+  // a1200-fastcpu: the TG68K's request is done in the clock its clock enable is high (chip, cache, fast
+  // RAM; the stock throttle's hold included)
+  assign o_cpu_ack = mm_cpucfg != 2'b00 ? (i_cpu.cpu_req & i_cpu.clkena_p_throttled) : (~cpu_as_n & ~cpu_dtack_n);
   assign o_hsync_n = hsync_n;
   assign o_vsync_n = vsync_n;
 
