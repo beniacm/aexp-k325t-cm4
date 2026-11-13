@@ -157,7 +157,9 @@ def memstate(b):
             "ecs": w2 >> 6 & 1, "aga": w2 >> 5 & 1, "chip2m": w2 >> 4 & 1, "cache_mode": w2 >> 3 & 1,
             "req_2m": w2 >> 2 & 1, "req_cache": w2 >> 1 & 1, "menu_aga": w2 & 1,
             # W2 b31 (a1200-lxshell): 1 = built without the cache prefetchers (older bitstreams: 0)
-            "no_pf": w2 >> 31 & 1}
+            "no_pf": w2 >> 31 & 1,
+            # W2 b30 (a1200-lxshell SLIM=1): the lean lat_meter -- no latency meter, no $FF..$FC words
+            "lean": w2 >> 30 & 1}
 
 
 def memstate_str(m):
@@ -185,6 +187,12 @@ def verify(b, want, what):
     bad = {k: (v, got[k]) for k, v in want.items() if got[k] != v}
     if bad:
         sys.exit("ERROR: %s: write(s) lost, read back %s (wanted, got)" % (what, bad))
+
+
+def lean_meter(b):
+    """True for bitstreams with the lean lat_meter (only $FB and the mailbox are served)."""
+    m = memstate(b)
+    return bool(m and m["lean"])
 
 
 def main():
@@ -267,6 +275,8 @@ def main():
             verify(b, {"pf": m & 0x7F, "afifo": 1 if af else 0}, "pf")
             print("prefetch enables %s; audio FIFO %s" %
                   (", ".join(n for i, n in enumerate(names) if m >> i & 1) or "none", "on" if af else "off"))
+        elif ms and ms["lean"]:
+            print("prefetch counters: not built in this bitstream (lean latency meter, SLIM build)")
         else:
             b.wr(6, 7)
             for c, n in enumerate(names):
@@ -290,6 +300,8 @@ def main():
             out += [int.from_bytes(bytes(r[60 + 4 * k:64 + 4 * k]), "big") for k in range(3)]
         b.wr(4, 0); b.wr(5, 0); b.wr(6, 0)
         print(" ".join("%08x" % v for v in out[:16]))
+    elif cmd == "avm" and lean_meter(b):
+        print("Avalon debug words: not built in this bitstream (lean latency meter, SLIM build)")
     elif cmd == "avm":
         # Avalon debug words of the top (lat_meter index $FF / $FE): the write burst avm_mig is in
         pass                                # (register 0 kept: it holds the cache shrink bit 1;
@@ -312,6 +324,8 @@ def main():
                                                          a1[0] / 1e5))
         print("since the last memory reset: %d write bursts, %d read bursts; last read %08x" %
               (a1[2] >> 16, a1[2] & 0xFFFF, a1[1]))
+    elif cmd == "fdbg" and lean_meter(b):
+        print("fast RAM debug words: not built in this bitstream (lean latency meter, SLIM build)")
     elif cmd == "fdbg":
         # stage 3: amiga_fastram + the hr_core select (lat_meter $FD / $FC)
         b.wr(6, 7)
@@ -368,6 +382,8 @@ def main():
             print("cache %s, shrink %d (sets / %d), %s (override) -- now a full reset" %
                   ("on" if on else "off", shrink, (1, 8, 64, 512)[shrink],
                    "2 MB chip" if c2 else "chip as in the menu"))
+    elif cmd == "lat" and lean_meter(b):
+        print("line latency meter: not built in this bitstream (lean latency meter, SLIM build)")
     elif cmd == "lat":
         # line latency meter (lat_meter.vhd, page 7): lat SECS [r|w|rw]
         secs = float(sys.argv[2])

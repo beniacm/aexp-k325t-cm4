@@ -173,6 +173,9 @@ begin
             aux <= dbg2_i(95 downto 0);
          elsif hidx = x"FB" then
             aux <= dbg2_i(287 downto 192);
+            if not G_FULL then
+               aux(30) <= '1';          -- W2 b30: the lean meter (stallmon: lat / avm / fdbg not built)
+            end if;
          elsif hidx(7) = '1' then
             aux <= std_logic_vector(sum(d)(31 downto 0)) & std_logic_vector(mn(d)) &
                    std_logic_vector(mx(d)) & x"0000" & std_logic_vector(sum(d)(47 downto 32));
