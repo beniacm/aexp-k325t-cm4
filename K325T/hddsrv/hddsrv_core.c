@@ -437,7 +437,7 @@ static int read_blocks(struct hdd *h, uint64_t lba, unsigned total, unsigned blo
     unsigned i, n, last;
     int rc;
     h->inflight.lba = lba; h->inflight.total = total; h->inflight.block = block;
-    h->inflight.nblk = h->nblk; h->inflight.fast = (uint32_t)h->fast;
+    h->inflight.nblk = h->nblk; h->inflight.fast = (uint32_t)h->fast; h->inflight.write = 0;
     for (i = i0; i < total; i += n) {
         n = total - i < block ? total - i : block;
         last = i + n >= total;
@@ -474,13 +474,56 @@ static int read_blocks(struct hdd *h, uint64_t lba, unsigned total, unsigned blo
     return 0;
 }
 
+/* the blocks of a WRITE from sector i0 on; phase0 2 = block i0's DRQ is already armed (resume: the
+   CPU is filling it or has filled it; wait for 101 if it has not, then take the data) */
+static int write_blocks(struct hdd *h, uint64_t lba, unsigned total, unsigned block, unsigned i0, int phase0,
+                        int have101)
+{
+    uint8_t buf[HDD_MAX_MULTIPLE * 512];
+    unsigned i, n, last;
+    int rc;
+    h->inflight.lba = lba; h->inflight.total = total; h->inflight.block = block;
+    h->inflight.nblk = h->nblk; h->inflight.fast = (uint32_t)h->fast; h->inflight.write = 1;
+    for (i = i0; i < total; i += n) {
+        n = total - i < block ? total - i : block;
+        last = i + n >= total;
+        if (!(i == i0 && phase0 == 2)) {
+            /* PIO out: DRQ for the block (no interrupt before the first block), the CPU fills the
+               buffer, request 101, the data comes back here */
+            static const uint8_t ops[2] = {0x20, 0x32};          /* block size, PTR0 */
+            uint16_t v[2];
+            v[0] = (uint16_t)n; v[1] = 0;
+            keep(h, 1, i, n);
+            TRY(regs_batch(h, ops, v, 2));
+            TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | (i ? ST_IRQ : 0)));
+            keep(h, 2, i, n);
+            have101 = 0;
+        }
+        if (!have101 && (rc = wait_block(h))) {
+            if (rc == -2) keep(h, 0, 0, 0);  /* a reset ends it; a stop keeps the record */
+            return rc;
+        }
+        have101 = 0;
+        TRY(ptr0(h));
+        TRY(hdd_get_n(h, buf, n));
+        if (h->io.wr(h->io.ctx, lba + i, n, buf)) { keep(h, 0, 0, 0); return fail(h, ER_UNC); }
+        h->wr_sect += n;
+        if (last) {
+            keep(h, 0, 0, 0);
+            return finish(h, ST_DRDY | ST_DSC | ST_IRQ, 0);
+        }
+    }
+    keep(h, 0, 0, 0);
+    return 0;
+}
+
 static int command(struct hdd *h)
 {
     uint16_t r1, r2, r5;
-    unsigned cmd, drv, count, sector, cyl, head, block, n, i, total;
+    unsigned cmd, drv, count, sector, cyl, head, block, total;
     uint64_t lba;
     uint8_t buf[HDD_MAX_MULTIPLE * 512];
-    int lbamode, rc, write, multi;
+    int lbamode, write, multi;
 
     {
         static const uint8_t ops[3] = {0x11, 0x12, 0x15};
@@ -531,29 +574,7 @@ static int command(struct hdd *h)
         if (write && h->ro) return fail(h, ER_ABRT);
         block = multi ? h->multiple : 1;
         if (!write) return read_blocks(h, lba, total, block, 0, 1);
-        for (i = 0; i < total; i += n) {
-            unsigned last;
-            n = total - i < block ? total - i : block;
-            last = i + n >= total;
-            {
-                /* PIO out: DRQ for the block (no interrupt before the first block), the CPU fills
-                   the buffer, request 101, the data comes back here */
-                {
-                    static const uint8_t ops[2] = {0x20, 0x32};          /* block size, PTR0 */
-                    uint16_t v[2];
-                    v[0] = (uint16_t)n; v[1] = 0;
-                    TRY(regs_batch(h, ops, v, 2));
-                }
-                TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | (i ? ST_IRQ : 0)));
-                if ((rc = wait_block(h))) return rc;
-                TRY(ptr0(h));
-                TRY(hdd_get_n(h, buf, n));
-                if (h->io.wr(h->io.ctx, lba + i, n, buf)) return fail(h, ER_UNC);
-                h->wr_sect += n;
-                if (last) return finish(h, ST_DRDY | ST_DSC | ST_IRQ, 0);
-            }
-        }
-        return 0;
+        return write_blocks(h, lba, total, block, 0, 1, 0);
     case 0x40: case 0x41:                    /* READ VERIFY */
     case 0x10: case 0x11: case 0x12: case 0x13: case 0x14: case 0x15: case 0x16: case 0x17:
     case 0x18: case 0x19: case 0x1A: case 0x1B: case 0x1C: case 0x1D: case 0x1E: case 0x1F:
@@ -637,7 +658,9 @@ int hdd_serve(struct hdd *h, volatile int *stop)
         struct hdd_inflight f = h->inflight;
         int r, fastsave = h->fast;
         unsigned i0 = f.i, ph = (unsigned)h->resume;
-        lg(h, "resuming a read: lba %u, sector %u of %u, phase %u", (unsigned)f.lba, f.i, f.total, ph);
+        h->resume_ph = h->resume;
+        lg(h, f.write ? "resuming a write: lba %u, sector %u of %u, phase %u" :
+                        "resuming a read: lba %u, sector %u of %u, phase %u", (unsigned)f.lba, f.i, f.total, ph);
         h->resumes++;
         h->resume = 0;
         h->fast = (int)f.fast;
@@ -645,7 +668,11 @@ int hdd_serve(struct hdd *h, volatile int *stop)
             i0 = f.i + f.n;
             ph = 1;
         }
-        r = i0 < f.total ? read_blocks(h, f.lba, f.total, f.block, i0, (int)ph) : (keep(h, 0, 0, 0), 0);
+        if (f.write)                         /* 3 = the CPU filled block i (101): take its data */
+            r = write_blocks(h, f.lba, f.total, f.block, f.i, (int)(h->resume_ph == 3 ? 2 : h->resume_ph),
+                             h->resume_ph == 3);
+        else
+            r = i0 < f.total ? read_blocks(h, f.lba, f.total, f.block, i0, (int)ph) : (keep(h, 0, 0, 0), 0);
         h->fast = fastsave;
         if (r == -1) return -1;
     }

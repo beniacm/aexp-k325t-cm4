@@ -112,6 +112,13 @@ static int b_xfer(void*, const uint8_t* tx, uint8_t* rx, int len) {
   if (die_cmd > 0 && (long)g_hdd.cmds >= die_cmd && die_from < 0) die_from = g_xfer_n + 40;   // mid data phase
   if (die_from > 0 && g_xfer_n + 1 == die_from) { g_die_at = die_from; die_cmd = -1; die_from = 0; }
   static long die_put = getenv("HDD_DIE_IN_PUT") ? atol(getenv("HDD_DIE_IN_PUT")) : -1;
+  static long die_get = getenv("HDD_DIE_IN_GET") ? atol(getenv("HDD_DIE_IN_GET")) : -1;
+  if (die_get > 0 && (long)g_hdd.cmds >= die_get && len > 500 && tx[0] == 0x41) {   // draining a written block
+    die_get = -1;
+    fprintf(stderr, "hddsrv: simulated crash at the first GET of ATA command %llu (tick %llu)\n",
+            (unsigned long long)g_hdd.cmds, (unsigned long long)g_tick);
+    return -1;
+  }
   if (die_put > 0 && (long)g_hdd.cmds >= die_put && len > 500 && tx[0] == 0x30) {   // inside a data block
     die_put = -1;
     fprintf(stderr, "hddsrv: simulated crash at the first PUT of ATA command %llu (tick %llu)\n",

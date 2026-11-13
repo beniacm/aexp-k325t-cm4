@@ -39,13 +39,14 @@ struct hdd_io {
     void *ctx;
 };
 
-/* a READ in progress (the only data phase a restarted server cannot just abort: in fast mode the
-   CPU may be waiting inside the block) */
+/* a READ or WRITE in its data phase: a restarted server resumes it (a read: the CPU may wait inside
+   the block in fast mode; a write: the CPU may still be filling the block -- a status written now
+   would end its DRQ and the block would be lost without an error) */
 struct hdd_inflight {
-    uint32_t magic;                 /* HDD_INFLIGHT_MAGIC while a read has armed DRQ */
+    uint32_t magic;                 /* HDD_INFLIGHT_MAGIC while a data phase is in progress */
     uint32_t phase;                 /* 1 block i about to be armed, 2 its DRQ status written */
     uint64_t lba, nblk;
-    uint32_t total, block, i, n, fast;
+    uint32_t total, block, i, n, fast, write;
 };
 #define HDD_INFLIGHT_MAGIC 0x48444452u
 
@@ -63,7 +64,7 @@ struct hdd {
     uint64_t batch_retries;             /* a batched step found the engine still busy and resumed */
     uint64_t resumes;                   /* reads resumed after a server restart */
     struct hdd_inflight inflight;
-    int resume;                         /* hdd_init found an in-flight read to resume */
+    int resume, resume_ph;              /* hdd_init found an in-flight data phase to resume (1, 2, 3) */
     int batch;                          /* use batches (default 1; 0 = the old one-step-per-call path) */
     int delay_cut;                      /* tests: batch delays shortened by this many percent (0..100) */
 };
