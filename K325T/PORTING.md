@@ -2246,3 +2246,36 @@ topology like the memory radios: held while QNICE restarts; switching it on or o
   link: hdd_spi's pins are the module's BT1120 video lines there (inputs tied idle in that top).
 - Domination from a hard disk shows a black picture on the board and in FS-UAE alike (it runs from
   floppy); not a defect of the port.
+
+# Roadmap: the M2M shell on the Linux module (branch a1200-lxshell, 2026-11-13)
+
+The menu processor (QNICE + its firmware) moves to the Linux module; the FPGA keeps QNICE's register
+file and device bus, driven by the bridge.  Bridge commands, registers, throughput and the bench
+link: `ext/aexp9_lxshell/PROTOCOL.md`; the Linux side: `DESIGN.md` / `INVENTORY.md` there.
+
+- `G_LXSHELL` (top; build.sh `LXSHELL=1`): framework `G_QNICE_LOCAL = false` -> qnice_wrapper builds
+  `K325T/qnice_host.vhd` in place of QNICE_SOC (no CPU, ROM, RAM, UART, SD controller, strings ROM),
+  rtc_controller `G_HOST_RTC` (a read command completes with the time the host wrote), sd_emu is
+  not built.  `G_LXSHELL = false` = today's design (QNICE_SOC, rtc_master, sd_emu).
+- `K325T/menu_gen.py` (from the Linux side) runs in build.sh: `bin/<bitstream>.menu` (the shell's
+  menu definition) and `host_menu_pkg.vhd` (menu id = CRC-32 of that file, 16 factory-default CFM
+  words) from config.vhd.
+- **The bridge is an Amiga-only copy now**: `K325T/bridge/rk_bridge.vhdl` = mega65-core's master copy
+  (base 0705ce35, also in the Vixen trees) + generic HOST_FIFOS, the host_* ports, opcodes 0x80/0x81/
+  0x82, STATUS 72..81 and the PUT/GET FIFOs.  User decision: the Linux menu is for the Amiga only,
+  mega65-core is not touched; syncing the copies is a conscious step.
+- **Cache prefetchers not built** (user decision 2026-11-13, "leave it commented out"): top
+  `G_PREFETCH` defaults to false (PREFETCH=1 = the research build).  With the full-size cache their
+  benefit is negligible (Nexus 7: 0.0008 % stalled either way); cost ~250 KB of bitstream and ~17 k
+  LUTs of LUT RAM.  Useful again only with a cache much smaller than chip RAM.  lat_meter $FB W2
+  b31 = 1 = not built; `stallmon pf` says so.
+- `SLIM=1`: the lean lat_meter (only $FB and the mailbox $E0-$E5, what stallmon cache / mbox read).
+
+Sizes, Radxa variant (flash slot 1 = 8,388,608 B, m65flash.py adds a 4 KB prefix):
+
+| build | configuration data | vs the slot (with prefix) | LUTs | block RAM | WNS / WHS |
+|---|---|---|---|---|---|
+| build5 (QNICE, prefetch in) | 8,882,908 | 498,396 over | -- | 437.5 | +0.081 / +0.029 |
+| build6 (QNICE, prefetch out) | 8,629,616 | 245,104 over | 78,447 | -- | +0.059 / +0.051 |
+| size1 (QNICE removed by a stub, prefetch in) | 8,606,364 | 221,852 over | 78,914 | 416 | +0.072 / +0.046 |
+| **A** (host master, prefetch out, tags trimmed, lean meter) | **7,877,212** | **507,300 under** | 58,399 | 418 | +0.073 / +0.039 |
