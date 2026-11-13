@@ -13,3 +13,4 @@ timing_*.txt
 utilization_*.txt
 make_rom*.log
 demo_runs/
+host_menu_pkg.vhd

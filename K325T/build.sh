@@ -54,6 +54,10 @@ done
 python3 "$here/gen_top.py" "$root/M2M/vhdl/top_mega65-r6.vhd" "$here/top_qmtech_k325t_cm4.vhd" \
         "$here/top_qmtech_k325t_cm4.tpl.vhd"
 python3 "$here/gen_sources.py"
+# a1200-lxshell: the menu definition for the Linux shell (travels with the bitstream as .menu) and
+# its id + factory defaults for the host master (host_menu_pkg.vhd); both from config.vhd
+mkdir -p "$here/bin"
+python3 -I "$here/menu_gen.py" "$root" "$here/bin/aexp_k325t_cm4$suffix.menu" --vhdl "$here/host_menu_pkg.vhd"
 # The QNICE firmware (M2M shell: menus, file browser, SD/FAT32) is assembled from
 # CORE/m2m-rom/m2m-rom.asm by CORE/m2m-rom/make_rom.sh (the R6 project runs it as a
 # pre-synthesis hook; here it runs every build).  It needs the QNICE assembler and the

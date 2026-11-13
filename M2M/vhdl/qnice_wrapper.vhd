@@ -149,6 +149,17 @@ end entity qnice_wrapper;
 
 architecture synthesis of qnice_wrapper is
 
+-- K325T a1200-lxshell: menu_gen.py's 16 default words -> the master's 256-bit generic (word w at
+-- bits 16w+15..16w, as QNICE's control_m)
+function cfm_flat(a : t_cfm_defaults) return std_logic_vector is
+   variable r : std_logic_vector(255 downto 0);
+begin
+   for w in 0 to 15 loop
+      r(16 * w + 15 downto 16 * w) := a(w);
+   end loop;
+   return r;
+end function;
+
 ---------------------------------------------------------------------------------------------
 -- Constants
 ---------------------------------------------------------------------------------------------
@@ -291,7 +302,7 @@ begin
          G_FONT_DX               => FONT_DX,
          G_FONT_DY               => FONT_DY,
          G_MENU_ID               => C_HOST_MENU_ID,
-         G_CFM_DEFAULTS          => C_HOST_CFM_DEFAULTS
+         G_CFM_DEFAULTS          => cfm_flat(C_HOST_CFM_DEFAULTS)
       )
       port map (
          clk50_i                 => clk_i,
