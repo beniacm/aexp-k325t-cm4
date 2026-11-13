@@ -474,6 +474,50 @@ static int read_blocks(struct hdd *h, uint64_t lba, unsigned total, unsigned blo
     return 0;
 }
 
+/* streaming write (ide.v patch 0136): mgmt register 7 reads io_cnt, the words the CPU has written into
+   the buffer in this data phase, and that read keeps ide.v's buffer pointer.  So the sectors of a
+   block are fetched while the CPU still fills the later ones: FETCH continues at the pointer, which
+   only FETCH (address 15) and the io_cnt reads touch until the block is complete.  The pointer was
+   zeroed by the status write that armed DRQ.  -2: an Amiga reset / a new command ended the phase. */
+static int drain_stream(struct hdd *h, uint8_t *buf, unsigned n)
+{
+    static uint8_t tx[3 + 512 * CHUNK], rx[3 + 512 * CHUNK];
+    unsigned got = 0, avail, k;
+    uint16_t cnt;
+    uint8_t fl;
+    long i;
+    memset(tx, 0, 3);
+    for (i = 0; i < 2000000; i++) {
+        TRY(hdd_engine(h, 0x17, 0, 0, &cnt));                      /* REGRD 7: io_cnt (words) */
+        avail = cnt / 256u;
+        if (avail > n) avail = n;
+        while (got < avail) {                                       /* whole sectors the CPU wrote */
+            k = avail - got < CHUNK ? avail - got : CHUNK;
+            TRY(hdd_engine(h, 0x40, 1, (uint16_t)(got << 8 | k), 0)); /* FETCH into buffer sectors got.. */
+            tx[0] = 0x41; tx[1] = (uint8_t)got;
+            if (h->io.xfer(h->io.ctx, tx, rx, (int)(3 + 512 * k))) return -1;
+            get_copy(buf + 512 * got, rx, k);
+            got += k;
+        }
+        if (got >= n) {
+            h->stream_blocks++;
+            return 0;
+        }
+        if (hdd_status(h, &fl, 0)) return -1;
+        if ((fl & 7) == 6 || (fl & 7) == 4) {
+            lg(h, "data phase ended by request %u (Amiga reset)", fl & 7, 0, 0, 0);
+            return -2;
+        }
+        if (fl & FL_DONE) {                  /* our own done keeps att high: clear it, then sleep on att
+                                                (the CPU fills a sector in ~1 ms; 101 wakes us at once) */
+            if (ack(h)) return -1;
+        }
+        if (h->io.wait_att(h->io.ctx, 1) < 0) return -1;
+    }
+    h->timeouts++;
+    return -1;
+}
+
 /* the blocks of a WRITE from sector i0 on; phase0 2 = block i0's DRQ is already armed (resume: the
    CPU is filling it or has filled it; wait for 101 if it has not, then take the data) */
 static int write_blocks(struct hdd *h, uint64_t lba, unsigned total, unsigned block, unsigned i0, int phase0,
@@ -499,13 +543,23 @@ static int write_blocks(struct hdd *h, uint64_t lba, unsigned total, unsigned bl
             keep(h, 2, i, n);
             have101 = 0;
         }
-        if (!have101 && (rc = wait_block(h))) {
-            if (rc == -2) keep(h, 0, 0, 0);  /* a reset ends it; a stop keeps the record */
-            return rc;
+        if (h->stream && !have101) {         /* drain behind the CPU, then its 101 (immediate) */
+            rc = drain_stream(h, buf, n);
+            if (!rc) rc = wait_block(h);
+            if (rc) {
+                if (rc == -2) keep(h, 0, 0, 0);
+                return rc;
+            }
+        } else {
+            if (!have101 && (rc = wait_block(h))) {
+                if (rc == -2) keep(h, 0, 0, 0);  /* a reset ends it; a stop keeps the record */
+                return rc;
+            }
+            have101 = 0;
+            TRY(ptr0(h));
+            TRY(hdd_get_n(h, buf, n));
         }
         have101 = 0;
-        TRY(ptr0(h));
-        TRY(hdd_get_n(h, buf, n));
         if (h->io.wr(h->io.ctx, lba + i, n, buf)) { keep(h, 0, 0, 0); return fail(h, ER_UNC); }
         h->wr_sect += n;
         if (last) {
@@ -606,6 +660,12 @@ int hdd_init(struct hdd *h)
     /* the drive appears; an idle unit gets the ready status, a pending request (a command the Amiga
        issued while no server ran, or a reset) is left for the serve loop */
     if (regwr(h, 6, 0x0009) || hdd_status(h, &fl, 0)) return -1;
+    {   /* register 0 bit 2: ide.v with the streaming write (patch 0136); older ide.v reads 0 there.
+           (the read also zeroes ide.v's buffer pointer, as PTR0; every data path sets it itself) */
+        uint16_t r0 = 0;
+        if (hdd_engine(h, 0x10, 0, 0, &r0)) return -1;     /* -2 (still in reset): the caller retries */
+        h->stream = !h->nostream && (r0 & 4);
+    }
     /* a read that a previous server left in its data phase (state record in RAM): idle (the CPU may
        be waiting inside the block) or 101 (the CPU has read the block): resume it in hdd_serve */
     h->resume = 0;

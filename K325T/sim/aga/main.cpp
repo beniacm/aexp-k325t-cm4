@@ -201,8 +201,9 @@ static void hdd_thread() {
 restart:
   while ((r = hdd_init(&g_hdd)) != 0 && !g_hdd_stop.load())
     std::this_thread::sleep_for(std::chrono::milliseconds(20));      // until the Amiga's reset is over
-  fprintf(stderr, "hddsrv: drive ready, %llu sectors, %u/%u/%u (tick %llu)\n", (unsigned long long)g_hdd.nblk,
-          g_hdd.cyls, g_hdd.heads, g_hdd.spt, (unsigned long long)g_tick);
+  fprintf(stderr, "hddsrv: drive ready, %llu sectors, %u/%u/%u, streaming write %s (tick %llu)\n",
+          (unsigned long long)g_hdd.nblk, g_hdd.cyls, g_hdd.heads, g_hdd.spt, g_hdd.stream ? "on" : "off",
+          (unsigned long long)g_tick);
   if (getenv("HDD_LINKTEST")) {          // loopback through hdd_spi + ide.v's buffer, no Amiga involved
     int rounds = atoi(getenv("HDD_LINKTEST")), bad = 0, errs = 0;
     unsigned ns = getenv("HDD_LINKN") ? (unsigned)atoi(getenv("HDD_LINKN")) : 1;   // sectors per round (1..16)
@@ -417,6 +418,7 @@ int main(int argc, char** argv) {
     g_hdd.nblk = (uint64_t)lseek(g_hdd_fd, 0, SEEK_END) / 512; g_hdd.ro = hdf_ro; g_hdd.verbose = getenv("HDD_VV") ? 2 : hdd_verbose;
     g_hdd.fast = getenv("HDD_SLOW") ? 0 : 1;          // HDD_SLOW: reads without ide.v's fast mode
     g_hdd.batch = getenv("HDD_NOBATCH") ? 0 : 1;      // HDD_NOBATCH: one transaction per call
+    g_hdd.nostream = getenv("HDD_NOSTREAM") ? 1 : 0;  // HDD_NOSTREAM: writes drained after the block (no streaming)
     g_hdd.delay_cut = getenv("HDD_DELAYCUT") ? atoi(getenv("HDD_DELAYCUT")) : 0;   // tests of the batch fallback
     g_hdd.io.xfer_batch = b_xfer_batch;
     g_fclk_mhz = use_cache ? 100 : 28;
@@ -741,9 +743,9 @@ int main(int argc, char** argv) {
   if (inj_p > 0) fprintf(stderr, "injector: %llu stalls of %d source edges\n", (unsigned long long)inj_n, inj_k);
   if (hdf_fn) {
     fprintf(stderr, "hddsrv: %llu commands, %llu sectors read, %llu written, %llu errors, %llu resets, "
-            "%llu timeouts; SPI %llu transactions %llu bytes\n", (unsigned long long)g_hdd.cmds,
+            "%llu timeouts, %llu streamed write blocks; SPI %llu transactions %llu bytes\n", (unsigned long long)g_hdd.cmds,
             (unsigned long long)g_hdd.rd_sect, (unsigned long long)g_hdd.wr_sect, (unsigned long long)g_hdd.errors,
-            (unsigned long long)g_hdd.resets, (unsigned long long)g_hdd.timeouts,
+            (unsigned long long)g_hdd.resets, (unsigned long long)g_hdd.timeouts, (unsigned long long)g_hdd.stream_blocks,
             (unsigned long long)g_spi.xfers, (unsigned long long)g_spi.bytes);
     g_hdd_stop = 1; { std::lock_guard<std::mutex> l(g_spi.m); g_spi.cv.notify_all(); g_spi.att_cv.notify_all(); }
     hdd_th.join();

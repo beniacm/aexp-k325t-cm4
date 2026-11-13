@@ -67,6 +67,10 @@ struct hdd {
     int resume, resume_ph;              /* hdd_init found an in-flight data phase to resume (1, 2, 3) */
     int batch;                          /* use batches (default 1; 0 = the old one-step-per-call path) */
     int delay_cut;                      /* tests: batch delays shortened by this many percent (0..100) */
+    int stream;                         /* streaming write: ide.v announces mgmt register 7 = io_cnt
+                                           (patch 0136, register 0 bit 2); set by hdd_init */
+    int nostream;                       /* set before hdd_init: never stream (comparison runs) */
+    uint64_t stream_blocks;             /* write blocks drained while the CPU filled them */
 };
 
 #define HDD_MAX_MULTIPLE 16

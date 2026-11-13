@@ -1,0 +1,39 @@
+K325T: ide.v streaming write -- the host may drain the buffer behind the CPU (A1200 hard disk, branch a1200-idestream)
+ide.v had no fast WRITE: a WRITE MULTIPLE block was filled by the CPU (PIO through Gayle) and only
+then drained by the host, never overlapped.  Two mgmt-side additions let the host pull sector k while
+the CPU fills sector k+1: address 7 reads io_cnt (the words the CPU has written in this data phase),
+and that read does not reset the host's buffer pointer (mgmt_cnt) as reads of the other registers do.
+Register 0 bit 2 = 1 announces it.  Nothing the CPU sees changes.
+--- a/rtl/ide.v
++++ b/rtl/ide.v
+@@ -188,12 +188,17 @@
+ 
+ always @(posedge clk) begin
+ 	case(mgmt_address)
+-			0: mgmt_readdata <= {features, 6'd0, use_fast, io_done};
++			// K325T (2026-11-13): bit 2 = 1 tells the host that address 7 reads io_cnt (streaming write)
++			//0: mgmt_readdata <= {features, 6'd0, use_fast, io_done};
++			0: mgmt_readdata <= {features, 5'd0, 1'b1, use_fast, io_done};
+ 			1: mgmt_readdata <= {sector[7:0], sector_count[7:0]};
+ 			2: mgmt_readdata <= {cylinder[15:0]};
+ 			3: mgmt_readdata <= {sector[15:8], sector_count[15:8]};
+ 			4: mgmt_readdata <= {cylinder[31:16]};
+ 			5: mgmt_readdata <= {cmd, drv_addr};
++			// K325T (2026-11-13): streaming write -- the words the CPU has written into the buffer so far
++			// in this data phase, so the host can drain sector k while the CPU fills sector k+1
++			7: mgmt_readdata <= {2'b00, io_cnt};
+ 	default: mgmt_readdata <= (mgmt_cnt[0]) ? buf_readdata[31:16] : buf_readdata[15:0];
+ 	endcase
+ end
+@@ -268,7 +273,10 @@
+ 	old_rd <= mgmt_read;
+ 	if((old_wr & ~mgmt_write) | (old_rd & ~mgmt_read)) begin
+ 		if(&mgmt_address) mgmt_cnt <= mgmt_cnt + 1'd1;
+-		else mgmt_cnt <= 0;
++		// K325T (2026-11-13): reading io_cnt (address 7) keeps the host's buffer pointer, so the host
++		// can poll it between the sectors it drains (streaming write)
++		//else mgmt_cnt <= 0;
++		else if(mgmt_address != 4'd7) mgmt_cnt <= 0;
+ 	end
+ 	
+ 	if(~rst_n) mgmt_cnt <= 0;

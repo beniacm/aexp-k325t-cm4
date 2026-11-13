@@ -1,6 +1,6 @@
 /* hddsrv_linux.c -- the A1200 hard disk server on the Linux module (Radxa CM3), own code.
  *
- *   hddsrv IMAGE.hdf [-r] [-v] [-F] [-B] [-d /dev/spidev0.0] [-s HZ] [-g /dev/gpiochip4] [-l 21] [-L N]
+ *   hddsrv IMAGE.hdf [-r] [-v] [-F] [-B] [-W] [-d /dev/spidev0.0] [-s HZ] [-g /dev/gpiochip4] [-l 21] [-L N]
  *
  * IMAGE: a hard disk image (whole 512-byte sectors, e.g. an RDB HDF from tools/mk_hdf.py); for tests
  * keep it in RAM (/dev/shm).  Writes are plain pwrite()s into the file: no fsync, no journal, nothing
@@ -17,6 +17,8 @@
  * -S FILE: the in-flight read record (default /dev/shm/hddsrv.state, RAM): a server restarted while
  *     the Amiga is inside a read block resumes that read instead of leaving the CPU with stale data.
  * -F: reads without ide.v's fast mode (the whole block into the buffer before DRQ; slower, for comparison).
+ * -W: writes without the streaming drain (ide.v patch 0136: the block is taken after the CPU filled it, for
+ *     comparison; an ide.v without the patch is detected and served that way anyway).
  * Ctrl+C / SIGTERM ends the server cleanly (statistics printed).
  */
 #define _GNU_SOURCE
@@ -246,7 +248,7 @@ static int linktest(struct hdd *h, struct ctx *x, int rounds, int nsec)
 int main(int argc, char **argv)
 {
     const char *img = 0, *dev = "/dev/spidev0.0", *chip = "/dev/gpiochip4";
-    int line = 21, ro = 0, verbose = 0, link = 0, slow = 0, nobatch = 0, nsec = 1, i;
+    int line = 21, ro = 0, verbose = 0, link = 0, slow = 0, nobatch = 0, nostream = 0, nsec = 1, i;
     unsigned speed = 33000000;
     struct ctx x = {.spi = -1, .img = -1, .evfd = -1, .statefd = -1};
     const char *statefile = "/dev/shm/hddsrv.state";
@@ -255,6 +257,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "-r")) ro = 1;
         else if (!strcmp(argv[i], "-F")) slow = 1;
         else if (!strcmp(argv[i], "-B")) nobatch = 1;
+        else if (!strcmp(argv[i], "-W")) nostream = 1;
         else if (!strcmp(argv[i], "-S") && i + 1 < argc) statefile = argv[++i];
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) nsec = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-v")) verbose = 1;
@@ -264,7 +267,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-l") && i + 1 < argc) line = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-L") && i + 1 < argc) link = atoi(argv[++i]);
         else if (argv[i][0] != '-' && !img) img = argv[i];
-        else { fprintf(stderr, "usage: hddsrv IMAGE [-r] [-v] [-d SPIDEV] [-s HZ] [-g GPIOCHIP] [-l LINE] [-L N]\n"); return 2; }
+        else { fprintf(stderr, "usage: hddsrv IMAGE [-r] [-v] [-W] [-d SPIDEV] [-s HZ] [-g GPIOCHIP] [-l LINE] [-L N]\n"); return 2; }
     }
     if (!img && !link) { fprintf(stderr, "no image\n"); return 2; }
     x.speed = speed;
@@ -298,6 +301,7 @@ int main(int argc, char **argv)
     h.verbose = verbose;
     h.fast = !slow;
     h.batch = !nobatch;
+    h.nostream = nostream;            /* -W: never the streaming write (comparison runs) */
     if (nsec < 1 || nsec > 16) nsec = 1;
     if (link) return linktest(&h, &x, link, nsec);
     x.statefd = open(statefile, O_RDWR | O_CREAT, 0600);   /* a read in progress, for a restarted server */
@@ -317,7 +321,8 @@ int main(int argc, char **argv)
             usleep(100000);
         }
         if (g_stop) break;
-        fprintf(stderr, "hddsrv: drive online (%u/%u/%u)\n", h.cyls, h.heads, h.spt);
+        fprintf(stderr, "hddsrv: drive online (%u/%u/%u), streaming write %s\n", h.cyls, h.heads, h.spt,
+                h.stream ? "on" : h.nostream ? "off (-W)" : "off (ide.v without it)");
         i = hdd_serve(&h, &g_stop);
         if (i && !g_stop) {
             fprintf(stderr, "hddsrv: link lost (core reset or gone)\n");
@@ -338,9 +343,10 @@ int main(int argc, char **argv)
         fprintf(stderr, "\n");
     }
     fprintf(stderr, "hddsrv: %llu commands, %llu sectors read, %llu written, %llu errors, %llu resets, "
-            "%llu timeouts, %llu resumed reads, %llu link losses, %llu SPI transactions, %llu bytes\n", (unsigned long long)h.cmds,
+            "%llu timeouts, %llu resumed reads, %llu link losses, %llu streamed write blocks, %llu SPI transactions, %llu bytes\n", (unsigned long long)h.cmds,
             (unsigned long long)h.rd_sect, (unsigned long long)h.wr_sect, (unsigned long long)h.errors,
             (unsigned long long)h.resets, (unsigned long long)h.timeouts, (unsigned long long)h.resumes, (unsigned long long)h.links_lost,
+            (unsigned long long)h.stream_blocks,
             (unsigned long long)x.xfers,
             (unsigned long long)x.bytes);
     return i ? 1 : 0;
