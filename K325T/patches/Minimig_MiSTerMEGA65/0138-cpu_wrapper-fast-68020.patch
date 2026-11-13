@@ -1,0 +1,137 @@
+K325T a1200-fastcpu: the fast 68020 (cpucfg bit 3): the 68EC020's throttle off, its cache over fast RAM
+With cpucfg[2] (the A1200's 68EC020: AGA + 68020) the cpu_cycles model holds the TG68K by the
+68EC020's manual cycle counts.  Until now the throttle could only be dropped together with ec020
+(cpucfg[2] = 0), which also drops the 24-bit address bus and the instruction cache: chip-RAM code
+then runs 4x slower than the stock A1200 (every opcode word a chip-bus cycle).  Bit 3 (MiSTer's
+68030 bits b4:b3 are not used in this port) is the fast setting:
+- stock_speed = 0: cpu_cycles mode 0 (run = 0, hold = 0); ec020, the instruction cache and the
+  32-bit chip cycles stay;
+- the instruction cache also serves code in fast RAM, as a real 68020's does (the stock model
+  caches chip RAM only and lets other fetches evict entries, nf_v): a fast-RAM fetch waits one clock
+  for the lookup (ramsel held off), a hit is answered through the chip FSM's ic_take path (fic_take),
+  a miss goes to the fast RAM, and the high + low word fetches of one longword fill its entry (ff_*).
+  fr_busy keeps ramsel up while a fast-RAM access is open (the parent answers every started access).
+With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM as before).
+--- a/rtl/cpu_wrapper.v
++++ b/rtl/cpu_wrapper.v
+@@ -66,6 +66,8 @@
+ 	input             ph2,
+ 
+ 	input       [4:0] cpucfg,     // K325T stage 3: MiSTer's 5 bits (b2 = 68EC020 stock-speed timing)
++	                              // K325T a1200-fastcpu: b3 = fast 68020 (the stock-speed throttle off;
++	                              // MiSTer's 68030 bits b4:b3 are not used in this port, b4 stays 0)
+ 	input             ntsc,
+ 	input       [2:0] fastramcfg,
+ 	input       [2:0] cachecfg,
+@@ -233,6 +235,11 @@
+ reg  [23:2] if_a;
+ reg  [15:0] if_hi, if_lw;
+ reg         nf_v, nf_s;
++// K325T a1200-fastcpu: the instruction cache also for code in fast RAM (fast 68020 only, see below)
++reg         ff_v, ff_s;
++reg  [23:2] ff_a;
++reg  [15:0] ff_hi;
++reg         fr_busy;   // a fast-RAM access is open: ramsel must stay until its ramready
+ reg  [23:2] nf_a;
+ reg  [15:0] cpu_dout;
+ wire [15:0] cpu_din = ramsel ? ramdat : fastchip_selack ? fastchip_dout : {sel_autoconfig ? autocfg_data : chip_data[15:12], chip_data[11:0]};
+@@ -422,7 +429,10 @@
+ end
+ 
+ // K325T stage 3 (MiSTer #276): the 68EC020 cycle model holds the TG68K by the cycles of the real CPU
+-wire stock_speed = cpucfg[2] & (cpucfg[1:0] == 2'b11);
++// K325T a1200-fastcpu: cpucfg[3] = the fast setting: the 68EC020 keeps everything else (24-bit
++// addresses, the instruction cache, 32-bit chip cycles), only the cycle-table throttle is off
++//wire stock_speed = cpucfg[2] & (cpucfg[1:0] == 2'b11);
++wire stock_speed = cpucfg[2] & (cpucfg[1:0] == 2'b11) & ~cpucfg[3];
+ wire skip_rd     = skipfetch & (cpustate_p == 2) & ~ramsel_i & ~fastchip_selack;
+ wire cyc_hold;
+ 
+@@ -488,6 +498,20 @@
+ wire [31:0] ic_q    = ih_hit ? ih_d : ic_dq;
+ wire        ic_take = ifch & ~req_gate & ~if_go & ~cacr_wr & ~nf_v & (ih_hit | ic_hit);
+ wire        if_ok   = ~cacr_wr & ~nf_v & (~cacr_x[0] | ic_rdy);
++// K325T a1200-fastcpu: with the fast 68020 (cpucfg[3]) the 68EC020's instruction cache serves code in
++// fast RAM too, as a real 68020's cache does (the stock model caches only chip RAM, whose fetches are
++// timed by the cycle tables; fetches elsewhere only evict entries, nf_v).  A fast-RAM fetch waits one
++// clock for the cache lookup (ramsel held off while ic_rdy is low), is answered from the cache on a hit
++// (the chip-bus FSM's ic_take path below, ramsel stays off) and goes to the fast RAM on a miss; two
++// fast-RAM fetches of the high and then the low word of one longword fill its entry (sequential code;
++// ff_*).  Off (cpucfg[3] = 0): fifch = 0, ramsel and nf_v exactly as before.
++wire        fifch    = ic_ena & cpucfg[3] & ~|cpustate_p & ramsel_i;
++wire        fic_take = fifch & ~fr_busy & ~req_gate & ~cacr_wr & ~nf_v & (ih_hit | ic_hit);
++wire        fic_wait = fifch & ~fr_busy & ~cacr_wr & ~nf_v & (ih_hit | (cacr_x[0] & (~ic_rdy | ic_hit)));
++always @(posedge clk) begin
++	if (~reset) fr_busy <= 0;
++	else        fr_busy <= ramsel & ~ramready;
++end
+ wire [15:0] if_lw2  = if_l ? chip_dout2_p : if_lw;
+ 
+ always @(posedge clk) begin
+@@ -503,7 +527,8 @@
+ 	ic_vq <= ic_val[cpu_addr_m[7:2]];
+ 	ic_qa <= cpu_addr_m[23:2];
+ 	ic_qv <= ~clkena_p_throttled & ~ic_we & ~ic_clr & ~ic_clre;
+-	nf_v  <= ec020 & clkena_p_throttled & ~|cpustate_p & |cpu_addr_m[23:21];
++	// a1200-fastcpu: not for fast-RAM fetches of the fast 68020, which fill real entries (ff_*)
++	nf_v  <= ec020 & clkena_p_throttled & ~|cpustate_p & |cpu_addr_m[23:21] & ~(cpucfg[3] & ramsel_i);
+ 	nf_a  <= cpu_addr_m[23:2];
+ 	nf_s  <= fc_p[2];
+ 	if (~reset) ic_val <= 0;
+@@ -540,6 +565,7 @@
+ 		ic_clr <= 0;
+ 		ic_clre <= 0;
+ 		ic_nq <= 0;
++		ff_v <= 0;   // a1200-fastcpu
+ 	end
+ 	else begin
+ 		if (ph2n) begin
+@@ -578,7 +604,7 @@
+ 				now = 1;
+ 			end
+ 		end
+-		if ((stage == 0 || stage == 3) && ic_take) begin
++		if ((stage == 0 || stage == 3) && (ic_take | fic_take)) begin   // a1200-fastcpu: | fic_take
+ 			chipdout_i <= cpu_addr_m[1] ? ic_q[15:0] : ic_q[31:16];
+ 			ih_v <= 1;
+ 			ih_a <= cpu_addr_m[23:2];
+@@ -587,6 +613,30 @@
+ 			now = 1;
+ 		end
+ 
++		// a1200-fastcpu: a fast-RAM fetch of the fast 68020 completes in this clock (ramready): the high
++		// word of a longword is kept, the low word of the same longword then fills the cache entry
++		if (fifch & ramready & ~cacr_wr) begin
++			if (~cpu_addr_m[1]) begin
++				ff_v  <= 1;
++				ff_a  <= cpu_addr_m[23:2];
++				ff_s  <= fc_p[2];
++				ff_hi <= ramdat;
++			end
++			else begin
++				ff_v <= 0;
++				if (ff_v & (ff_a == cpu_addr_m[23:2])) begin
++					ih_v  <= 1;
++					ih_a  <= ff_a;
++					ih_d  <= {ff_hi, ramdat};
++					ic_we <= cacr_x[0] & ~cacr_x[1];
++					ic_wa <= ff_a[7:2];
++					ic_wt <= {ff_s, ff_a[23:8]};
++					ic_wd <= {ff_hi, ramdat};
++				end
++			end
++		end
++		if (cacr_wr | nf_v) ff_v <= 0;
++
+ 		chipready <= now;
+ 		if (ph1n) begin
+ 			chipready <= now | ready;
+@@ -860,6 +910,7 @@
+ 
+ // K325T phase 2: fast RAM select (see the comment at the top of the module body)
+ assign ramsel_i = cpu_req & ~sel_nmi_vector & sel_zram;
+-assign ramsel   = ramsel_i & ~req_gate;   // K325T stage 3: MiSTer #276 throttle gate
++//assign ramsel   = ramsel_i & ~req_gate;   // K325T stage 3: MiSTer #276 throttle gate
++assign ramsel   = ramsel_i & ~req_gate & ~fic_wait;   // a1200-fastcpu: fast-RAM code from the cache
+ 
+ endmodule

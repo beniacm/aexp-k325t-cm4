@@ -33,6 +33,10 @@
 -- windows, up to 256 MB); with pulse_i = '1' (the TG68K runs) ready_o is high for exactly
 -- one clock per access (the TG68K's clock enable) and an access starts on sel_i alone; with
 -- pulse_i = '0' (fx68k) it is the 68000's /DTACK as before (held until sel_i drops).
+-- K325T a1200-fastcpu: quick_i = '1' (only with pulse_i, the fast 68020 setting): a read hit is
+-- answered one clock earlier, from the data array read at the address of the request (M_IDLE ->
+-- M_SERVED: ready in the clock after the request, 2 clocks per access instead of 3).  quick_i = '0'
+-- is the design as before, clock for clock.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -44,6 +48,7 @@ entity amiga_fastram is
       clk_i              : in  std_logic;
       sel_i              : in  std_logic;                      -- ramsel: fast RAM bus cycle
       pulse_i            : in  std_logic := '0';               -- 1 = TG68K handshake (see above)
+      quick_i            : in  std_logic := '0';               -- 1 = read hits in 2 clocks (fast 68020)
       addr_i             : in  std_logic_vector(26 downto 0);  -- DDR3 word address
       we_i               : in  std_logic;                      -- 1 = write
       uds_n_i            : in  std_logic;                      -- upper byte (15:8), active low
@@ -96,6 +101,7 @@ architecture synthesis of amiga_fastram is
    signal m_ack_d      : std_logic := '0';
    signal m_ack_dd     : std_logic := '0';
    signal m_rd_addr    : std_logic_vector(12 downto 0) := (others => '0');
+   signal m_rd_a       : std_logic_vector(12 downto 0);                -- a1200-fastcpu: read address
    signal m_start      : std_logic;
    signal m_rdata      : std_logic_vector(15 downto 0) := (others => '0');
    signal m_ready      : std_logic := '0';
@@ -152,6 +158,7 @@ begin
    m_start <= sel_i and (pulse_i or not uds_n_i or not lds_n_i);
 
    rdata_o <= m_rdata;
+   m_rd_a  <= addr_i(12 downto 0) when m_state = M_IDLE else m_rd_addr;
    ready_o <= m_ready;
 
    core_proc : process (clk_i)
@@ -162,7 +169,9 @@ begin
          m_ack_dd <= m_ack_d;
          -- the data array, read asynchronously (stable: written only for lines this side
          -- is not reading, or before the fill acknowledge arrives)
-         m_rdata  <= dram_u(to_integer(unsigned(m_rd_addr))) & dram_l(to_integer(unsigned(m_rd_addr)));
+         -- a1200-fastcpu: in M_IDLE at the request's address (the quick read hit takes it at this edge;
+         -- otherwise nobody looks at m_rdata before M_READ reloads it from m_rd_addr: one read port)
+         m_rdata  <= dram_u(to_integer(unsigned(m_rd_a))) & dram_l(to_integer(unsigned(m_rd_a)));
 
          case m_state is
             when M_IDLE =>
@@ -183,6 +192,11 @@ begin
                      m_nreq     <= m_nreq + 1;
                      m_ready    <= '1';
                      m_state    <= M_SERVED;
+                  elsif hit = '1' and quick_i = '1' and pulse_i = '1' then
+                     -- fast 68020: m_rdata is loaded at this edge from the request's address (m_rd_a
+                     -- in M_IDLE), ready next clock
+                     m_ready    <= '1';
+                     m_state    <= M_SERVED;
                   elsif hit = '1' then
                      m_state    <= M_READ;          -- m_rd_addr is valid from the next clock
                   else
@@ -197,7 +211,12 @@ begin
                      m_req_fill = '0' and m_req_addr(12 downto 0) /= addr_i(12 downto 0) then
                   -- TG68K: a read hit need not wait for a posted write to another word (the
                   -- memory side writes only that word of the data array; tags do not change)
-                  m_state <= M_READ;
+                  if quick_i = '1' then
+                     m_ready <= '1';
+                     m_state <= M_SERVED;
+                  else
+                     m_state <= M_READ;
+                  end if;
                end if;
 
             when M_FILL =>

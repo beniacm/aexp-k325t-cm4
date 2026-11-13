@@ -133,12 +133,17 @@ entity main is
       -- K325T: CPU "00" 68000 (fx68k, default), "11" 68020 (TG68K); Zorro III fast RAM
       -- (128 MB, 68020 only; with the 68000 it falls back to 8 MB Zorro II as on MiSTer)
       cpu_i                   : in  std_logic_vector(1 downto 0) := "00";
+      -- K325T a1200-fastcpu: the "Fast 68020" setting (only with the 68020): the 68EC020's cycle-table
+      -- throttle off (cpu_wrapper cpucfg b3) and fast RAM read hits in 2 clocks (fast_quick_o);
+      -- '0' = the stock machine, clock for clock
+      cpu_fast_i              : in  std_logic := '0';
       fast_z3_i               : in  std_logic := '0';
       -- fast RAM port: MiSTer's cpu-port address (cpu_wrapper ramaddr: Z2 $18000000 +
       -- addr[22:1], Z3 128 MB $08000000 + addr[26:1]); fast_pulse_o = the TG68K runs, the
       -- port must answer with a one-clock ready pulse per access
       fast_sel_o              : out std_logic;
       fast_pulse_o            : out std_logic;
+      fast_quick_o            : out std_logic;      -- a1200-fastcpu: amiga_fastram quick_i
       fast_addr_o             : out std_logic_vector(28 downto 1);
       fast_we_o               : out std_logic;
       fast_uds_n_o            : out std_logic;
@@ -370,6 +375,7 @@ architecture synthesis of main is
    -- K325T stage 3: 68EC020 (MiSTer #276): stock-speed timing + instruction cache with AGA, 32-bit chip
    -- cycles; dout2_hold = word A+1 of a 32-bit read (MiSTer's chipRD2), held like chip48
    signal cpu_ec020        : std_logic := '0';
+   signal cpu_fast         : std_logic := '0';   -- a1200-fastcpu: the fast 68020 (latched in reset)
    signal cpu_long         : std_logic;
    signal cpu_chip32_en    : std_logic;
    signal ram_long_i       : std_logic;
@@ -566,6 +572,7 @@ begin
          if cpu_reset_n = '0' then
             cpucfg <= cpu_i;
             cpu_ec020 <= aga_i and cpu_i(1) and cpu_i(0);   -- K325T stage 3: the A1200's 68EC020
+            cpu_fast  <= cpu_fast_i and cpu_i(1) and cpu_i(0);  -- a1200-fastcpu: only with the 68020
          end if;
       end if;
    end process cpucfg_proc;
@@ -580,7 +587,8 @@ begin
          ph2             => cpu_ph2,
 
          -- K325T: 00 = 68000 (fx68k), 11 = 68020 (TG68K); stage 3: b2 = 68EC020 stock timing (AGA)
-         cpucfg          => "00" & cpu_ec020 & cpucfg,
+         -- a1200-fastcpu: b3 = the fast 68020 (no cycle-table throttle; everything else as b2 says)
+         cpucfg          => '0' & cpu_fast & cpu_ec020 & cpucfg,
          ntsc            => '0',
          fastramcfg      => fast_z3_i & fast_size_i, -- K325T: Zorro II fast RAM (autoconfig), 000 = none;
                                                  -- 110 = Zorro III 128 MB (68020; 8 MB Z2 with the 68000)
@@ -636,6 +644,7 @@ begin
    fast_uds_n_o <= fast_uds_n;
    fast_lds_n_o <= fast_lds_n;
    fast_pulse_o <= cpucfg(1) or cpucfg(0);
+   fast_quick_o <= cpu_fast;
 
    ---------------------------------------------------------------------------
    -- Host configuration FSM: replays MiSTer's HPS startup configuration
