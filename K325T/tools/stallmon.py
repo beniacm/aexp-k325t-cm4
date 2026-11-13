@@ -155,7 +155,9 @@ def memstate(b):
     return {"r": [w0 >> (4 * i) & 15 for i in range(8)], "pf": w1 >> 2 & 0x7F, "afifo": w1 >> 1 & 1,
             "ovr": w1 & 1, "topo": w2 >> 16 & 0x1FF, "shrink": w2 >> 8 & 3, "ovr_eff": w2 >> 7 & 1,
             "ecs": w2 >> 6 & 1, "aga": w2 >> 5 & 1, "chip2m": w2 >> 4 & 1, "cache_mode": w2 >> 3 & 1,
-            "req_2m": w2 >> 2 & 1, "req_cache": w2 >> 1 & 1, "menu_aga": w2 & 1}
+            "req_2m": w2 >> 2 & 1, "req_cache": w2 >> 1 & 1, "menu_aga": w2 & 1,
+            # W2 b31 (a1200-lxshell): 1 = built without the cache prefetchers (older bitstreams: 0)
+            "no_pf": w2 >> 31 & 1}
 
 
 def memstate_str(m):
@@ -246,6 +248,15 @@ def main():
         # chip cache prefetchers: "pf MASK" sets the enables (b0 bitplane, b1 sprite, b2 audio, b3 disk,
         # b4 copper, b5 blitter, b6 CPU; via page 5 + registers 3/4, injector off), "pf" reads the counters
         names = ["bitplane", "sprite", "audio", "disk", "copper", "blitter", "CPU"]
+        ms = memstate(b)
+        nopf = bool(ms and ms["no_pf"])
+        if nopf and (len(sys.argv) <= 2 or int(sys.argv[2], 0) & 0x7F):
+            # built without them (C_CACHE_PREFETCH false): no counters, enables have no effect
+            print("prefetchers not built in this bitstream" +
+                  ("" if len(sys.argv) <= 2 else "; prefetch mask ignored (set to 0)"))
+            if len(sys.argv) <= 2:
+                return
+            sys.argv[2] = "0"
         if len(sys.argv) > 2:
             m = int(sys.argv[2], 0)
             af = "afifo" in sys.argv[3:]          # register 4 bit 3: the audio FIFO (audio_fifo.vhd)

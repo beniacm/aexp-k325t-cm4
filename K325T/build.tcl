@@ -25,8 +25,10 @@ set_property top qmtech_k325t_cm4 [current_fileset]
 set gens {}
 if {$suffix eq "_radxacm3"} { lappend gens G_HDD=true }
 if {[info exists env(LXSHELL)] && $env(LXSHELL) eq "1"} { lappend gens G_LXSHELL=true }
-# SLIM=1: the flash-size build -- no cache prefetchers, the lean latency meter (lat_meter G_FULL)
-if {[info exists env(SLIM)] && $env(SLIM) eq "1"} { lappend gens G_PREFETCH=false G_LATMETER=false }
+# SLIM=1: the flash-size build -- the lean latency meter (lat_meter G_FULL false); PREFETCH=1: the
+# research build with the cache prefetchers (default: not built)
+if {[info exists env(SLIM)] && $env(SLIM) eq "1"} { lappend gens G_LATMETER=false }
+if {[info exists env(PREFETCH)] && $env(PREFETCH) eq "1"} { lappend gens G_PREFETCH=true }
 if {[llength $gens]} { set_property generic $gens [current_fileset] }
 # run settings as in CORE-R6.xpr
 set_property STEPS.SYNTH_DESIGN.ARGS.FLATTEN_HIERARCHY none [get_runs synth_1]

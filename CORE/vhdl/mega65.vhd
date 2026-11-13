@@ -437,16 +437,21 @@ signal main_mbox              : std_logic_vector(511 downto 0) := (others => '0'
 signal main_dma_dbr           : std_logic;                       -- stage 2b prefetch: bus owner
 signal main_dma_reg           : std_logic_vector(8 downto 1);
 signal main_pf_en             : std_logic_vector(6 downto 0);
--- K325T bitstream size: the cache's prefetchers (stage 2b; off at power-up, only stallmon switches them
--- on) cost a second asynchronous read port of the three tag arrays (~17 k LUTs of LUT RAM) and with it
--- ~0.6 MB of bitstream; without them the Radxa image fits flash slot 1.  false = built without them
--- (pf_en tied to 0: the queue never fills and synthesis removes the prefetch path; the machine is the
--- one that runs with the prefetchers off, the default); true = the research build with stallmon pf.
+-- K325T: the cache's prefetchers (stage 2b; off at power-up, only stallmon switched them on) -- NOT
+-- BUILT since a1200-lxshell (user decision 2026-11-13, "leave it commented out"): with the full-size
+-- cache (1.5 MB, all of chip RAM) their measured benefit is negligible (Nexus 7: 0.0008 % of machine
+-- time stalled with and without them), and they cost a second asynchronous read port of the three tag
+-- arrays (~17 k LUTs of LUT RAM) and ~250 KB of bitstream (build6 vs build5), which flash slot 1 does
+-- not have.  They become useful again with a cache much smaller than chip RAM (G_SET_BITS < 13 or a
+-- smaller part).  false = built without them (pf_en tied to 0, the 4 class/prefetched tag bits
+-- trimmed; lat_meter $FB W2 b31 = 1, stallmon pf says "not built"); the top's G_PREFETCH = true = the
+-- research build.
 constant C_CACHE_PREFETCH     : boolean := G_CACHE_PREFETCH;
 -- the cache's tag sets (2**n, 13 = 8192 = 1.5 MB with 3 ways and 64-byte lines; fewer = smaller tag LUT
 -- RAM and a smaller cache, machine time unchanged)
 constant C_CACHE_SET_BITS     : natural := 13;
 signal main_pf_en_c           : std_logic_vector(6 downto 0);
+signal pf_not_built           : std_logic;
 signal main_afifo_en          : std_logic;                       -- stage 2b audio FIFO
 signal main_mach_cnt          : unsigned(31 downto 0);
 signal main_lag               : unsigned(31 downto 0);
@@ -1191,6 +1196,7 @@ begin
       ); -- i_audio_fifo
 
    main_pf_en_c <= main_pf_en when C_CACHE_PREFETCH else (others => '0');
+   pf_not_built <= '0' when C_CACHE_PREFETCH else '1';       -- lat_meter $FB W2 b31 (stallmon pf)
 
    i_chip_cache : entity work.chip_cache
       generic map (
@@ -1560,11 +1566,11 @@ begin
    -- stray beats), W4 (memory-state age & blocked clocks), W5 (select: on, sel, fix, quiet count,
    -- select changes, hr_fast_on falls; the fix bit reads 1)
    -- $FB (stage 3, P4): W0 = stall controller registers r7..r0, W1 = pf_en & afifo & override,
-   -- W2 = the memory mode in effect: 25 IDE (a1200-ide), 24..16 topology (P2), 9..8 shrink, 7 override, 6 ECS, 5 AGA,
+   -- W2 = the memory mode in effect: 31 cache built without prefetchers (a1200-lxshell), 25 IDE (a1200-ide), 24..16 topology (P2), 9..8 shrink, 7 override, 6 ECS, 5 AGA,
    -- 4 2 MB chip, 3 cache mode latched, 2 2 MB requested, 1 cache requested, 0 AGA radio (held)
    k325t_fast_dbg_o <= main_stall_regs(40 downto 9) &
                        "00000000000000000000000" & main_stall_regs(8 downto 0) &
-                       "000000" & main_topo & "000000" & main_cache_cfg(0) & main_cache_cfg(3) &
+                       pf_not_built & "00000" & main_topo & "000000" & main_cache_cfg(0) & main_cache_cfg(3) &
                        main_memovr & main_chip_ecs & main_chip_aga & main_mem_chip2m & main_cache_on &
                        main_cc_2m_req & main_cc_on_req & main_topo(5) &
                        main_fast_dbg(143 downto 48) &

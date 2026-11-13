@@ -40,9 +40,10 @@ generic (
    G_HDD        : boolean := false;
    -- a1200-lxshell: the M2M menu processor (QNICE + firmware) runs on the Linux module, not here
    G_LXSHELL    : boolean := false;
-   -- bitstream size (flash slot 1): the cache's prefetchers (research; off at power-up) and the full
-   -- latency meter (development); the flash-size build sets both false
-   G_PREFETCH   : boolean := true;
+   -- bitstream size (flash slot 1): the cache's prefetchers (not built: user decision 2026-11-13, see
+   -- C_CACHE_PREFETCH in CORE/vhdl/mega65.vhd; true = the research build) and the full latency meter
+   -- (development; SLIM=1 builds the lean one)
+   G_PREFETCH   : boolean := false;
    G_LATMETER   : boolean := true
 );
 port (
