@@ -15,6 +15,7 @@
 // Plusargs of tb_top.sv: +flpdbg (floppy-channel frames and image reads), +dskdbg (every disk DMA
 // write to chip RAM, address and data: decode them as MFM to check what Paula received),
 // +dout2init=HEX (start with that stale word A+1 of a 32-bit read, as after a reset on the board).
+// a1200-akiko: --akiko (the Akiko C2P helper on, menu line 88; 68020 only), +akdbg (every Akiko access).
 #include "Vtb_top.h"
 #include "Vtb_top___024root.h"
 #include "Vtb_top_tb_top.h"
@@ -326,6 +327,7 @@ int main(int argc, char** argv) {
   bool shot_last = false;
   int reset_at = -1; uint64_t reset_cyc = 0;
   const char* hdf_fn = nullptr; bool hdf_ro = false, ide_only = false, hdd_verbose = false;   // a1200-ide
+  bool akiko = false;            // a1200-akiko: --akiko = the Akiko C2P helper on (menu line 88)
   double inj_p = 0; int inj_k = 0;   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   for (int i = 1; i < argc; i++) {
@@ -367,6 +369,7 @@ int main(int argc, char** argv) {
     else if (a == "--hdf") hdf_fn = nx();
     else if (a == "--hdf-ro") hdf_ro = true;
     else if (a == "--ide") ide_only = true;
+    else if (a == "--akiko") akiko = true;
     else if (a == "--hdd-verbose") hdd_verbose = true;
     else if (a == "--stall-inject") { inj_p = atof(nx()); inj_k = atoi(nx()); }
     else if (a == "--shot-last") shot_last = true;
@@ -405,6 +408,7 @@ int main(int argc, char** argv) {
   if (adf_fn) { top->disk_tracks = load_adf(adf_fn); top->disk_mounted = 1; }
   top->rst_ext = 1; top->bd_we = 0;
   // a1200-ide: Gayle on with --hdf (a drive) or --ide (the port without a drive)
+  top->akiko_on = akiko ? 1 : 0;
   top->ide_on = (hdf_fn || ide_only) ? 1 : 0; top->hd_cs_n = 1; top->hd_sck = 0; top->hd_mosi = 0;
   std::thread hdd_th;
   if (hdf_fn) {
@@ -592,7 +596,7 @@ int main(int argc, char** argv) {
       if (held && !now) {
         auto bit = [&](int n) -> unsigned { return (top->h_cfm[n / 32] >> (n % 32)) & 1; };
         unsigned c512 = bit(73), c1m = bit(74), ecs = bit(77), aga = bit(78), f2 = bit(80), f4 = bit(81),
-                 f8 = bit(82), z3 = bit(83), c020 = bit(86), ide = bit(87);
+                 f8 = bit(82), z3 = bit(83), c020 = bit(86), ide = bit(87), aki = bit(88);
         unsigned c2m = aga;                                  // AGA = 2 MB chip in the cache (stage 3)
         unsigned slow = !c512 && !c1m && !c2m;
         unsigned fs = f8 ? 3 : (f4 || z3) ? 2 : f2 ? 1 : 0;
@@ -600,10 +604,11 @@ int main(int argc, char** argv) {
         unsigned e_cpu = c020 ? 3 : 0;
         unsigned e_mem = (slow ? 4 : 0) | ((c1m || c2m) ? 1 : 0) | (c2m ? 2 : 0) | (fs << 4);
         bool ok = e_chip == (top->cfg_chipset & 0x18) && e_cpu == (top->cfg_cpu & 3) &&
-                  e_mem == (top->cfg_mem & 0x37) && (bool)ide == (bool)top->ide_on;
-        fprintf(stderr, "--host-link: release at frame %u: CFM topology -> chipset %02x cpu %02x mem %02x ide %u; "
-                "bench options chipset %02x cpu %02x mem %02x ide %u: %s\n", g_frame, e_chip, e_cpu, e_mem, ide,
-                top->cfg_chipset, top->cfg_cpu, top->cfg_mem, top->ide_on, ok ? "match" : "MISMATCH");
+                  e_mem == (top->cfg_mem & 0x37) && (bool)ide == (bool)top->ide_on &&
+                  (bool)aki == (bool)top->akiko_on;
+        fprintf(stderr, "--host-link: release at frame %u: CFM topology -> chipset %02x cpu %02x mem %02x ide %u akiko %u; "
+                "bench options chipset %02x cpu %02x mem %02x ide %u akiko %u: %s\n", g_frame, e_chip, e_cpu, e_mem, ide,
+                aki, top->cfg_chipset, top->cfg_cpu, top->cfg_mem, top->ide_on, top->akiko_on, ok ? "match" : "MISMATCH");
         if (!ok) { fprintf(stderr, "FAIL: the menu bits and the bench configuration disagree\n"); exit(2); }
       }
       held = now;

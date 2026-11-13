@@ -161,6 +161,10 @@ entity main is
       -- clearing the reset request (mgmt status write) before it has read it
       ide_reset_o             : out std_logic;
 
+      -- K325T a1200-akiko: the Akiko chunky-to-planar helper (K325T/akiko_c2p.v) on the 68020's
+      -- fastchip port (menu line 88, default off; held like the machine topology)
+      akiko_i                 : in  std_logic := '0';
+
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
       joy_1_down_n_i          : in  std_logic;
@@ -328,6 +332,7 @@ architecture synthesis of main is
          fastchip_lw    : out std_logic;
          fastchip_selack: in  std_logic;
          fastchip_ready : in  std_logic;
+         fastchip_addr  : out std_logic_vector(23 downto 1);   -- K325T a1200-akiko (patch 0137)
 
          ramsel         : out std_logic;
          ramaddr        : out std_logic_vector(28 downto 1);
@@ -346,6 +351,23 @@ architecture synthesis of main is
          nmi_addr       : out std_logic_vector(31 downto 0)
       );
    end component cpu_wrapper;
+
+   -- K325T a1200-akiko: the Akiko C2P helper (Verilog, own design)
+   component akiko_c2p is
+      port (
+         clk            : in  std_logic;
+         reset          : in  std_logic;
+         enable_i       : in  std_logic;
+         sel_i          : in  std_logic;
+         addr_i         : in  std_logic_vector(23 downto 1);
+         rnw_i          : in  std_logic;
+         uds_n_i        : in  std_logic;
+         lds_n_i        : in  std_logic;
+         din_i          : in  std_logic_vector(15 downto 0);
+         hit_o          : out std_logic;
+         dout_o         : out std_logic_vector(15 downto 0)
+      );
+   end component akiko_c2p;
 
    ---------------------------------------------------------------------------
    -- Signals
@@ -397,6 +419,16 @@ architecture synthesis of main is
    -- K325T: CPU selection, taken over only while minimig holds the CPU in reset
    signal cpucfg           : std_logic_vector(1 downto 0) := "00";
    signal cpu_state        : std_logic_vector(1 downto 0);
+   -- K325T a1200-akiko: cpu_wrapper's fastchip port <-> akiko_c2p
+   signal fc_sel           : std_logic;
+   signal fc_lds_n         : std_logic;
+   signal fc_uds_n         : std_logic;
+   signal fc_rnw           : std_logic;
+   signal fc_addr          : std_logic_vector(23 downto 1);
+   signal cpu_ramdin       : std_logic_vector(15 downto 0);   -- the CPU's write data (cpu_wrapper ramdin)
+   signal akiko_hit        : std_logic;
+   signal akiko_dout       : std_logic_vector(15 downto 0);
+   signal akiko_reset      : std_logic;
    signal fast_uds_n       : std_logic;
    signal fast_lds_n       : std_logic;
 
@@ -601,18 +633,21 @@ begin
          chip_din2       => cpu_din2,
          chip_dout2      => dout2_hold,
 
-         fastchip_dout   => x"0000",
-         fastchip_sel    => open,
-         fastchip_lds    => open,
-         fastchip_uds    => open,
-         fastchip_rnw    => open,
+         -- K325T a1200-akiko: the Akiko C2P helper; with akiko_i = '0' akiko_hit stays '0' (selack and
+         -- ready low: every access takes the chip bus as before)
+         fastchip_dout   => akiko_dout,
+         fastchip_sel    => fc_sel,
+         fastchip_lds    => fc_lds_n,
+         fastchip_uds    => fc_uds_n,
+         fastchip_rnw    => fc_rnw,
          fastchip_lw     => open,
-         fastchip_selack => '0',
-         fastchip_ready  => '0',
+         fastchip_selack => akiko_hit,
+         fastchip_ready  => akiko_hit,
+         fastchip_addr   => fc_addr,
 
          ramsel          => fast_sel_o,          -- K325T: fast RAM cycle (Zorro II/III window)
          ramaddr         => fast_addr_o,
-         ramdin          => fast_wdata_o,
+         ramdin          => cpu_ramdin,
          ramdout         => fast_rdata_i,
          ramready        => fast_ready_i,
          ramlds          => fast_lds_n,
@@ -633,6 +668,25 @@ begin
    -- (for the fx68k the same signals as before: AS/RW/UDS/LDS/data out; cpustate "11" =
    -- a write cycle)
    fast_we_o    <= '1' when cpu_state = "11" else '0';
+   fast_wdata_o <= cpu_ramdin;
+
+   -- K325T a1200-akiko: Akiko ID ($B80000.L = $C0CACAFE) and C2P ($B80038.L) for the 68020 (the
+   -- fastchip port carries 68020 cycles only); indexes reset with the CPU
+   akiko_reset <= not cpu_reset_n;
+   i_akiko : akiko_c2p
+      port map (
+         clk        => clk_main_i,
+         reset      => akiko_reset,
+         enable_i   => akiko_i,
+         sel_i      => fc_sel,
+         addr_i     => fc_addr,
+         rnw_i      => fc_rnw,
+         uds_n_i    => fc_uds_n,
+         lds_n_i    => fc_lds_n,
+         din_i      => cpu_ramdin,
+         hit_o      => akiko_hit,
+         dout_o     => akiko_dout
+      ); -- i_akiko
    fast_uds_n_o <= fast_uds_n;
    fast_lds_n_o <= fast_lds_n;
    fast_pulse_o <= cpucfg(1) or cpucfg(0);

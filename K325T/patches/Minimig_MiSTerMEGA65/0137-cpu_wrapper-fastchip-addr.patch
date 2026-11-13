@@ -1,0 +1,26 @@
+K325T: cpu_wrapper exports the CPU's own address for fastchip devices (fastchip_addr)
+For the Akiko C2P helper (branch a1200-akiko, K325T/akiko_c2p.v).  MiSTer's fastchip.v decodes
+chip_addr, which carries a posted 32-bit chip write's address or an instruction-cache fill's
+address while one is pending.  A new output only: nothing inside cpu_wrapper changes, and with
+the parent's fastchip_selack = 0 (the default, the unit off) the machine is unchanged.
+--- a/rtl/cpu_wrapper.v
++++ b/rtl/cpu_wrapper.v
+@@ -94,6 +94,10 @@
+ 	output reg        fastchip_lw,
+ 	input             fastchip_selack,
+ 	input             fastchip_ready,
++	// K325T (2026-11-13, a1200-akiko): the CPU's own address for fastchip devices.  chip_addr shows
++	// a posted 32-bit chip write's address (w32_adr) or an instruction-cache fill's address while
++	// one is pending, so a device decoding chip_addr can miss (or take) an access in that window.
++	output     [23:1] fastchip_addr,
+ 
+ 	output            ramsel,
+ 	output     [28:1] ramaddr,
+@@ -198,6 +202,7 @@
+ assign fastchip_lds = lds_in;
+ assign fastchip_uds = uds_in;
+ assign fastchip_rnw = wr;
++assign fastchip_addr = cpu_addr[23:1];   // K325T a1200-akiko (see the port)
+ 
+ reg  [31:0] cpu_addr;
+ wire        ramsel_i;    // K325T stage 3: declared before its first use (Vivado)

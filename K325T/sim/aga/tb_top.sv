@@ -34,6 +34,7 @@ module tb_top (
   // a1200-ide: Gayle IDE (0xF8 = 0x23 when ide_on) and the hard disk SPI of hdd_spi.vhd (main.cpp's
   // SPI master + the shared server core hddsrv_core.c on the other side)
   input  wire        ide_on,
+  input  wire        akiko_on,         // a1200-akiko: the Akiko C2P helper (akiko_c2p.v) on the fastchip port
   input  wire        kbd_rst,          // a1200-ide tests: with rst_ext, a reset hdd_spi does not see (the board's
                                         // keyboard reset: amiga_rst only, not main_reset_core/m2m)
   input  wire        cpu_rst,          // a1200-ide tests: the 68k RESET instruction line (minimig _cpu_reset_in)
@@ -168,6 +169,10 @@ module tb_top (
   wire [15:0] mm_din    = done ? eng_din : io_din;
 
   // ---------------- CPU ----------------
+  // a1200-akiko: cpu_wrapper's fastchip port <-> akiko_c2p (instance below)
+  wire        fc_sel, fc_lds_n, fc_uds_n, fc_rnw, akiko_hit;
+  wire [23:1] fc_addr;
+  wire [15:0] fc_din, akiko_dout;
   wire [23:1] cpu_addr;
   wire [15:0] cpu_dout, cpu_din;
   wire [2:0]  cpu_ipl_n;
@@ -196,10 +201,22 @@ module tb_top (
     .chip_uds(cpu_uds_n), .chip_lds(cpu_lds_n), .chip_rw(cpu_rw), .chip_dtack(cpu_dtack_n),
     .chip_ipl(cpu_ipl_n),
     .chip32_en(chip32_en), .chip_long(cpu_long), .chip_din2(cpu_din2), .chip_dout2(dout2_hold),
-    .fastchip_dout(16'h0), .fastchip_sel(), .fastchip_lds(), .fastchip_uds(), .fastchip_rnw(),
-    .fastchip_lw(), .fastchip_selack(1'b0), .fastchip_ready(1'b0),
-    .ramsel(), .ramaddr(), .ramdin(), .ramdout(16'h0), .ramready(1'b0), .ramlds(), .ramuds(),
+    .fastchip_dout(akiko_dout), .fastchip_sel(fc_sel), .fastchip_lds(fc_lds_n), .fastchip_uds(fc_uds_n),
+    .fastchip_rnw(fc_rnw), .fastchip_lw(), .fastchip_selack(akiko_hit), .fastchip_ready(akiko_hit),
+    .fastchip_addr(fc_addr),
+    .ramsel(), .ramaddr(), .ramdin(fc_din), .ramdout(16'h0), .ramready(1'b0), .ramlds(), .ramuds(),
     .ramshared(), .toccata_ena(), .toccata_base(), .cpustate(cpustate), .cacr(), .nmi_addr(nmi_addr));
+
+  // a1200-akiko: the Akiko C2P helper as main.vhd wires it (fastchip port, the CPU's own address and
+  // write data; reset with the CPU)
+  akiko_c2p i_akiko (.clk(clk), .reset(~cpu_reset_n), .enable_i(akiko_on), .sel_i(fc_sel),
+    .addr_i(fc_addr), .rnw_i(fc_rnw), .uds_n_i(fc_uds_n), .lds_n_i(fc_lds_n), .din_i(fc_din),
+    .hit_o(akiko_hit), .dout_o(akiko_dout));
+  // +akdbg: every Akiko access (address, direction, data)
+  reg akdbg = 0; initial akdbg = $test$plusargs("akdbg");
+  always @(posedge clk) if (akdbg && akiko_hit)
+    $display("AKIKO %06x %s %04x uds_n %0d lds_n %0d", {fc_addr, 1'b0}, fc_rnw ? "rd" : "wr",
+             fc_rnw ? akiko_dout : fc_din, fc_uds_n, fc_lds_n);
 
   // ---------------- memory model ----------------
   wire [15:0] ram_wdata;

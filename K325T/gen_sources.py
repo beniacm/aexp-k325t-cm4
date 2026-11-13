@@ -32,6 +32,9 @@ for f in ['TG68K_Pack.vhd', 'TG68K_ALU.vhd', os.path.join(here, 'cpu020/TG68K_MM
 # with $readmemh relative to the synthesis run directory)
 f = os.path.join(here, 'cpu020/cpu_cycles.v')
 out.append('add_files -norecurse {%s}; set_property FILE_TYPE {Verilog} [get_files {%s}]' % (f, f))
+# K325T a1200-akiko: the Akiko C2P helper on cpu_wrapper's fastchip port (main.vhd)
+f = os.path.join(here, 'akiko_c2p.v')
+out.append('add_files -norecurse {%s}; set_property FILE_TYPE {Verilog} [get_files {%s}]' % (f, f))
 mc = os.path.normpath(os.path.join(root, '../mega65-core/src/vhdl'))
 for f in [os.path.join(here, 'top_qmtech_k325t_cm4.vhd'), os.path.join(here, 'avm_mig.vhd'),
           os.path.join(here, 'm65kbd_emu.vhd'), os.path.join(here, 'amiga_mouse.vhd'),

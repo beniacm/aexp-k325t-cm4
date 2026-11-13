@@ -321,9 +321,10 @@ signal main_kick_512          : std_logic;  -- 512 KB Kickstart loaded (from the
 signal main_fast_size         : std_logic_vector(1 downto 0);  -- fast RAM: 00 none, 01 2 MB, 10 4 MB, 11 8 MB
 -- start fix P2: the topology lines of the menu, held while QNICE restarts (see p_topo):
 -- 8 MEM_CHIP512, 7 MEM_CHIP1M, 6 CHIPSET_ECS, 5 CHIPSET_AGA, 4 FAST_2M, 3 FAST_4M, 2 FAST_8M,
--- 1 FAST_Z3, 0 CPU_68020 (all 0 = the menu defaults' machine until the first release)
-signal main_topo              : std_logic_vector(9 downto 0) := (others => '0');
+-- 1 FAST_Z3, 0 CPU_68020 (all 0 = the menu defaults' machine until the first release); 9 IDE, 10 AKIKO
+signal main_topo              : std_logic_vector(10 downto 0) := (others => '0');
 signal main_ide               : std_logic;      -- a1200-ide: the menu's IDE line, held like the topology
+signal main_akiko             : std_logic;      -- a1200-akiko: the menu's Akiko line, held like the topology
 signal main_fast_z3           : std_logic;  -- K325T: Zorro III 128 MB (68020; size bits "10")
 signal main_cpu               : std_logic_vector(1 downto 0);  -- K325T: "00" 68000, "11" 68020
 
@@ -628,6 +629,7 @@ constant C_MENU_FAST_8M       : natural := 82;   -- 8 MB
 constant C_MENU_FAST_Z3       : natural := 83;   -- K325T: 128 MB Zorro III (68020; 8 MB Zorro II with the 68000)
 constant C_MENU_IDE           : natural := 87;   -- K325T a1200-ide: Gayle IDE port + master drive (hddsrv)
 constant C_MENU_CPU_68020     : natural := 86;   -- K325T: CPU radio 85 68000 (default) / 86 68020
+constant C_MENU_AKIKO         : natural := 88;   -- K325T a1200-akiko: Akiko C2P helper ($B80000 ID, $B80038 C2P; 68020)
 
 begin
 
@@ -774,7 +776,7 @@ begin
    begin
       if rising_edge(main_clk) then
          if main_reset_m2m_i = '0' and main_reset_core_i = '0' then
-            main_topo <= main_osm_control_i(C_MENU_IDE) &
+            main_topo <= main_osm_control_i(C_MENU_AKIKO) & main_osm_control_i(C_MENU_IDE) &
                          main_osm_control_i(C_MENU_MEM_CHIP512) & main_osm_control_i(C_MENU_MEM_CHIP1M) &
                          main_osm_control_i(C_MENU_CHIPSET_ECS) & main_osm_control_i(C_MENU_CHIPSET_AGA) &
                          main_osm_control_i(C_MENU_FAST_2M) & main_osm_control_i(C_MENU_FAST_4M) &
@@ -787,6 +789,9 @@ begin
    -- boots the Amiga like the other lines, and it is held while QNICE restarts, so neither Gayle's
    -- decoding nor hdd_spi's link (the server would see it vanish) follow the menu's reset values
    main_ide        <= main_topo(9);
+   -- a1200-akiko: the Akiko line too: graphics.library looks for the chip when it starts, so the
+   -- chip appears or disappears only with a cold boot (a change cold-boots the Amiga, as IDE does)
+   main_akiko      <= main_topo(10);
    main_mem_chip1m <= main_topo(7);
    main_mem_slow   <= not main_topo(8) and not main_topo(7) and not main_mem_chip2m;
    -- stage 2: 2 MB chip RAM only with chip RAM in the cache (r7 b2 of the stall controller)
@@ -815,7 +820,7 @@ begin
          -- AGA needs the 2 MB chip RAM of the cache, which the cache takes only at a reset, so the
          -- effective bits change only after this cold boot (a menu change of the AGA radio alone
          -- would otherwise never trigger one)
-         topology_i        => main_ide & main_cc_on_req & main_cc_2m_req & main_cpu(1) & main_fast_z3 & main_fast_size &
+         topology_i        => main_akiko & main_ide & main_cc_on_req & main_cc_2m_req & main_cpu(1) & main_fast_z3 & main_fast_size &
                               main_chip_ecs & (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
          cold_req_i        => main_reset_m2m_i,
          amiga_reset_o     => amiga_cold_reset,
@@ -937,6 +942,7 @@ begin
          ide_read_i           => main_ide_read,
          ide_readdata_o       => main_ide_readdata,
          ide_reset_o          => main_ide_reset,
+         akiko_i              => main_akiko,
 
          -- MEGA65 joysticks and paddles/mouse/potentiometers
          joy_1_up_n_i         => main_joy_1_up_n_i ,
@@ -1566,11 +1572,11 @@ begin
    -- stray beats), W4 (memory-state age & blocked clocks), W5 (select: on, sel, fix, quiet count,
    -- select changes, hr_fast_on falls; the fix bit reads 1)
    -- $FB (stage 3, P4): W0 = stall controller registers r7..r0, W1 = pf_en & afifo & override,
-   -- W2 = the memory mode in effect: 31 cache built without prefetchers (a1200-lxshell), 25 IDE (a1200-ide), 24..16 topology (P2), 9..8 shrink, 7 override, 6 ECS, 5 AGA,
+   -- W2 = the memory mode in effect: 31 cache built without prefetchers (a1200-lxshell), 26 Akiko (a1200-akiko), 25 IDE (a1200-ide), 24..16 topology (P2), 9..8 shrink, 7 override, 6 ECS, 5 AGA,
    -- 4 2 MB chip, 3 cache mode latched, 2 2 MB requested, 1 cache requested, 0 AGA radio (held)
    k325t_fast_dbg_o <= main_stall_regs(40 downto 9) &
                        "00000000000000000000000" & main_stall_regs(8 downto 0) &
-                       pf_not_built & "00000" & main_topo & "000000" & main_cache_cfg(0) & main_cache_cfg(3) &
+                       pf_not_built & "0000" & main_topo & "000000" & main_cache_cfg(0) & main_cache_cfg(3) &
                        main_memovr & main_chip_ecs & main_chip_aga & main_mem_chip2m & main_cache_on &
                        main_cc_2m_req & main_cc_on_req & main_topo(5) &
                        main_fast_dbg(143 downto 48) &

@@ -81,7 +81,7 @@ fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $root/K325T/akiko_c2p.v $OUT/tg68k.v $OUT/chip_cache.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \
