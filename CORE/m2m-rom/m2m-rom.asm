@@ -306,12 +306,16 @@ _PS_CARD_OK
 ; treats it as mandatory:
 ;   - settings from the file (CONFIG_FILE open) and Kickstart loaded: nothing
 ;     to do (both came from the one framework mount);
-;   - else mount again, every 333 ms for about 21 s while the card does not
-;     answer (a message on the screen meanwhile; then a fatal message, the core
-;     stays held), and read the settings file and Kickstart again, both from
-;     this one mount; no / an empty / a corrupt settings file = the factory
-;     defaults at once, which do not depend on the card, so a Kickstart the
-;     framework has already loaded stays; no Kickstart = fatal, as before.
+;   - else hold the core and mount again every 333 ms until the card answers,
+;     with "Waiting for the SD card" on the screen -- no time limit: the card
+;     is served by the module's m65io, which does come (after its boot, a
+;     restart, a core switch), and a fatal screen would need a manual reset
+;     (measured: a 21-s limit made the core run the factory defaults with a
+;     stale Kickstart when the card came at 30 s); then read the settings file
+;     and Kickstart again, both from this one mount; no / an empty / a corrupt
+;     settings file = the factory defaults at once, which do not depend on the
+;     card, so a Kickstart the framework has already loaded stays; no
+;     Kickstart = fatal, as before.
 ; M2M-UPSTREAM home (comment only, nothing goes upstream): options.asm
 ; HELP_MENU_INIT (retry a failed mount before taking the factory defaults) and
 ; crts-and-roms.asm CRTROM_AUTOLOAD (retry the mount of a mandatory ROM).
@@ -319,7 +323,8 @@ _PS_CARD_OK
 ; Output: R8 = 0 OK, else error message; R9 = 0 or error code
 ; ----------------------------------------------------------------------------
 
-START_CARD      SYSCALL(enter, 1)
+START_CARD      INCRB                           ; (not the enter/leave syscalls:
+                                                ; leave restores R8/R9 = our result)
 
                 MOVE    CONFIG_FILE, R0
                 CMP     0, @R0
@@ -339,8 +344,6 @@ _SC_RETRY       MOVE    LOG_SC_RETRY, R8
                 ; START_CONNECT releases it again, a fatal error leaves it held
                 MOVE    M2M$CSR, R0
                 OR      M2M$CSR_RESET, @R0
-                MOVE    IO$CYC_MID, R6          ; R6: start (cycle counter, 763 Hz)
-                MOVE    @R6, R6
                 XOR     R4, R4                  ; R4: message shown (0 = no)
 _SC_MOUNT       MOVE    CONFIG_DEVH, R8
                 MOVE    1, R9                   ; partition #1 (framework-wide)
@@ -357,19 +360,8 @@ _SC_MOUNT       MOVE    CONFIG_DEVH, R8
                 MOVE    1, @R8
                 MOVE    MSG_SC_WAIT, R8
                 RSUB    SCR$PRINTSTR, 1
-_SC_WAIT        MOVE    IO$CYC_MID, R7          ; elapsed = now - start (16 bits);
-                MOVE    @R7, R7                 ; bits 15..14 set = >= 16384 ticks
-                SUB     R6, R7                  ; = 21.5 s: give up
-                AND     0xC000, R7
-                RBRA    _SC_NOCARD, !Z
-                RSUB    WAIT333MS, 1
-                RBRA    _SC_MOUNT, 1
-
-_SC_NOCARD      MOVE    CONFIG_FILE, R0         ; nothing from the card
-                MOVE    0, @R0
-                MOVE    ERR_SC_NOCARD, R8
-                MOVE    R5, R9
-                RBRA    _SC_RET, 1
+_SC_WAIT        RSUB    WAIT333MS, 1            ; no time limit: the module serves
+                RBRA    _SC_MOUNT, 1            ; the card in the end (m65io)
 
                 ; settings: the file name (config.vhd CFG_FILE) onto the stack
 _SC_MOUNTED     CMP     0, R4                   ; the wait message is up: remove it
@@ -542,7 +534,7 @@ _SC_ROMEOF      MOVE    CRTROM_AUT_LDF, R0
                 XOR     R8, R8
                 XOR     R9, R9
 
-_SC_RET         SYSCALL(leave, 1)
+_SC_RET         DECRB
                 RET
 
 ; OSM_SEL_POST callback function:
@@ -1923,9 +1915,6 @@ LOG_SC_ROMOK    .ASCII_W "Start check: Kickstart loaded\n"
 LOG_SC_ROMKEEP  .ASCII_W "Start check: factory defaults with the Kickstart already loaded\n"
 MSG_SC_WAIT     .ASCII_P "Waiting for the SD card ...\n\n"
                 .ASCII_W "The settings and Kickstart\nare read when it answers.\n"
-ERR_SC_NOCARD   .ASCII_P "The SD card did not answer for 20 s:\n"
-                .ASCII_P "settings and Kickstart not loaded.\n"
-                .ASCII_W "The Amiga stays in reset.\nReset to try again.\n"
 ERR_SC_NOROM    .ASCII_W "Kickstart /amiga/kick.rom not found.\n"
 ERR_SC_ROMRD    .ASCII_W "Reading Kickstart from the SD card\nfailed.\n"
 

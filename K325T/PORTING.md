@@ -2144,8 +2144,13 @@ every configuration: a flashed core could not come up as an A1200 at all.
 
 - P1 (`CORE/m2m-rom/m2m-rom.asm` START_CARD, first in PREP_START; Kickstart OPTIONAL for the framework's
   auto-load in `globals.vhd`): unless the settings file and Kickstart both came from the framework's
-  one mount, mount again (333 ms apart, at least 15 s) and load both from that one mount; no card:
-  fatal message, the core stays held; no settings file: factory defaults at once (first use).
+  one mount, hold the core, show "Waiting for the SD card ..." and mount again every 333 ms until
+  the card answers (no time limit: the module's m65io serves it in the end, and a fatal screen would
+  need a manual reset), then load both from that one mount; no settings file / an empty or corrupt
+  one: factory defaults at once (first use), keeping a Kickstart the framework already loaded.
+  (Two traps on the way, both measured on the Radxa: the framework's RP_SYSTEM_START releases the
+  core BEFORE PREP_START, so the core must be held explicitly; and the enter/leave syscalls restore
+  R8..R12, so a routine that returns its result in R8/R9 must use INCRB/DECRB.)
 - P2 (`mega65.vhd` p_topo): the machine-topology menu lines follow the menu only while neither M2M
   reset is set; the loaded profile takes effect at the release (one cold boot).
 - P3 (harness `rockchip/m65io.c`): a lost bridge is probed every 0.1 s for the first 10 s.
