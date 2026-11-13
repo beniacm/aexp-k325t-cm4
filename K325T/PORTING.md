@@ -2375,3 +2375,12 @@ F1/F2), so m65d needs this build's .menu in its menu directory; settings are sto
 existing amiga.settings keep working ("CPUFAST:Fast 68020" defaults to off); the shell's import of
 QNICE settings files (`LEGACY_SIZES` 94/93) needs 95 added (byte 88 = the new line) before 95-byte
 files from a local-QNICE build of this branch can be imported.
+
+Board (Radxa, Domination, new pictures per second stock / F1 / F2, aligned to the demo start): logo
+2.3 / 4.8 / 5.4, pictures 3.9 / 6.5 / 7.2, Terminator 1.6 / 2.5 / 3.0, title..tunnel 2.7 / 5.5 / 6.4,
+end part 50 in all; loading 53 / 42 / 35 s; stock = the flash baseline.  Builds (LXSHELL=1 SLIM=1
+radxacm3): F1 = 71baef8 (WNS +0.039, main_clk +0.46 on the cache's half-cycle take path), F2 = fd9b255
+(WNS +0.064; its first build failed because Vivado merged the write queue's Gray pointer bit 3 into the
+binary pointer and the crossing lost its constraint: dont_touch on both Gray pointers).  Bench profile
+of the logo part: instruction execution 70-75 % of the time, fast-RAM data ~10 %, chip-RAM writes < 1 %,
+frame pacing 13-20 %; in F2 the code loop misses the 256-byte instruction cache (fetch waits 31.5 %).
