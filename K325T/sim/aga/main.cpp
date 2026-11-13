@@ -480,6 +480,14 @@ int main(int argc, char** argv) {
   top->pf_en = pf_mask;
   if (cfg_fast && !use_cache) { fprintf(stderr, "--fast needs --cache (amiga_fastram's memory side runs in ui_clk)\n"); return 1; }
   top->fastcpu = fastcpu; top->fr_quick = fr_quick; top->fast_f2 = fast_f2;
+  // a1200-fastcpu: switching the fast setting on a restored (running) machine -- bench only; on the board
+  // it changes only in the CPU's reset, which clears the instruction cache: do that here too (the stock
+  // model's eviction entries, nf_v, carry valid tags with stale data that the fast setting takes as hits)
+  if (restore_fn && fastcpu) {
+    r->tb_top->__PVT__i_cpu__DOT__ic_val = 0; r->tb_top->__PVT__i_cpu__DOT__ih_v = 0;
+    r->tb_top->__PVT__i_cpu__DOT__ff_v = 0;
+    fprintf(stderr, "restore with --fastcpu: instruction cache cleared\n");
+  }
   top->cfg_fast = cfg_fast; top->flat_min = flat_min; top->flat_span = flat_span; top->flat_wr = flat_wr;
   top->stock020 = stock020; top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
   top->lat_min = lat_min; top->lat_span = lat_span;
