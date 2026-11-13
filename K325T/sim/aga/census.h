@@ -16,14 +16,16 @@
 // spin: a read of an address that was read again within the last SPIN_WIN requests with no write in
 // between marks itself and every request since that earlier read as a polling loop ("spin"); those
 // requests (and their clocks) move from the work bucket to the spin bucket.
+// hits: requests acknowledged within HIT_CLK clocks (the 68EC020 instruction cache, the second word of
+// a 32-bit chip read, skipped fetches): no bus cycle of their own.
 #pragma once
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 
 struct Census {
-  static const int NC = 8, IDLE_GAP = 256, SPIN_WIN = 48, RING = 64;
-  struct Acc { uint64_t words[NC][4], trans[NC][4], gap[NC][4], wait[NC][4]; };
+  static const int NC = 8, HIT_CLK = 3, IDLE_GAP = 256, SPIN_WIN = 48, RING = 64;
+  struct Acc { uint64_t words[NC][4], trans[NC][4], gap[NC][4], wait[NC][4], hits[NC][4]; };
   struct Ent { uint32_t frame, addr; uint8_t cls, typ, newtr, spin; uint32_t gap, wait; };
   FILE* f = nullptr;
   Acc a[2];                  // 0 work, 1 spin
@@ -51,13 +53,14 @@ struct Census {
     static const char* T[4] = {"f", "", "r", "w"};
     fprintf(f, "frame,clocks,idle");
     for (int b = 0; b < 2; b++) for (int c = 0; c < NC; c++) for (int t : {0, 2, 3})
-      for (const char* q : {"words", "trans", "gap", "wait"})
+      for (const char* q : {"words", "trans", "gap", "wait", "hits"})
         fprintf(f, ",%s_%s_%s_%s", b ? "spin" : "work", C[c], T[t], q);
     fprintf(f, "\n");
   }
   void add(int b, const Ent& e, int sign) {
     a[b].words[e.cls][e.typ] += sign; a[b].trans[e.cls][e.typ] += sign * e.newtr;
     a[b].gap[e.cls][e.typ] += (int64_t)sign * e.gap; a[b].wait[e.cls][e.typ] += (int64_t)sign * e.wait;
+    a[b].hits[e.cls][e.typ] += sign * (e.wait <= HIT_CLK ? 1 : 0);
   }
   // once per machine clock, after eval
   void step(uint64_t tick, uint32_t frame, int cs, uint32_t addr, bool ack) {
@@ -100,8 +103,8 @@ struct Census {
     if (!f) return;
     fprintf(f, "%u,%llu,%llu", frame, (unsigned long long)clocks, (unsigned long long)idle);
     for (int b = 0; b < 2; b++) for (int c = 0; c < NC; c++) for (int t : {0, 2, 3})
-      fprintf(f, ",%llu,%llu,%llu,%llu", (unsigned long long)a[b].words[c][t], (unsigned long long)a[b].trans[c][t],
-              (unsigned long long)a[b].gap[c][t], (unsigned long long)a[b].wait[c][t]);
+      fprintf(f, ",%llu,%llu,%llu,%llu,%llu", (unsigned long long)a[b].words[c][t], (unsigned long long)a[b].trans[c][t],
+              (unsigned long long)a[b].gap[c][t], (unsigned long long)a[b].wait[c][t], (unsigned long long)a[b].hits[c][t]);
     fprintf(f, "\n"); fflush(f);
     memset(a, 0, sizeof a); idle = 0; clocks = 0;
   }
