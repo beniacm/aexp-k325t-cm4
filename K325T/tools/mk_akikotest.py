@@ -22,13 +22,22 @@ One payload (68020; it takes the machine over like mk_cputime.py) that
   5. shows that picture (8 planes lores, FMODE 3, 256 colours of mk_agatest's palette) and writes
      DONE_MAGIC to DONE_ADDR after 3 frames.  `check` compares the bench frame with the reference image.
 Without the chip (ID differs) steps 3/4 are skipped and the picture is not drawn (DONE all the same).
+  0. (ADF under Kickstart only, in the boot block while the OS still runs) graphics.library V40's
+     WriteChunkyPixels() draws the same picture into two 320x256x8 bitmaps (AllocBitMap): first with
+     GfxBase->ChunkyToPlanarPtr = 0 (the ROM's software conversion), then -- if $B80000 reads $C0CACAFE --
+     with the pointer set to $B80038 for that one call (the hardware path); the pointer is restored.
+     Both are timed with the CIA-B TOD (horizontal lines), summed and compared with each other; the
+     bitmaps are freed before the machine is taken over.
 
-Results: 16 longs at RESULT (and the same 16 longs in the mailbox $C0..$FF of stallmon.py mbox):
+Results: 32 longs at RESULT (the first 16 also in the mailbox $C0..$FF of stallmon.py mbox):
    0 $AC1C0000 | b0 chip found | b1 graphics.library V40+ | b2 ChunkyToPlanarPtr = $B80038
    1 $B80000.L as read      2 GfxBase (0 = bench boot ROM, no Kickstart)    3 version << 16 | revision
    4 ChunkyToPlanarPtr       5 offset of $00B80038 in GfxBase ($FFFFFFFF = not found)
    6 longs compared          7..10 wrong longs V1..V4       11 S1 CCK   12 S2 CCK   13 S3 CCK
   14 $600D0000 all right / $BAD00000 | wrong count (or $00000000 without the chip)    15 $600DF00D
+  16 WCP status (b0 two bitmaps 40 bytes x 256 rows, b1 hardware call made, b2 boot-block phase ran)
+  17 WCP software lines   18 WCP hardware lines   19 sum of bitmap A's plane longs   20 the same of B
+  21 longs differing between A and B             22 expected sum (Python)            23..31 0
 The planar output (V1..V4) follows RESULT directly: --dump 0x%(res)X <len> FILE covers both.
 
 Usage:  mk_akikotest.py build OUTDIR    -> akikotest.bin (ORG, for the bench), akikotest.adf, bootrom.bin
@@ -40,7 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mk_agatest as M
 
 ORG = M.ORG                # 0x1C0000
-RESULT = 0x0FFFC0          # 16 longs, then the planar output
+RESULT = 0x0FFF80          # 32 longs, then the planar output
 OUTB = 0x100000
 SCREEN = 0x020000          # 8 planes x 10240 bytes (non-interleaved, FMODE 3: 64-bit aligned)
 PSIZE = 40 * 256
@@ -80,6 +89,24 @@ def picture():
     return bytes(((x + 7 * y + 1 + ((x * y) >> 4)) & 255) for y in range(H) for x in range(W))
 
 
+def planes_of(pic):
+    """the reference bitplanes of a W x H chunky picture: plane p as 40-byte rows"""
+    out = []
+    for p in range(8):
+        pl = bytearray()
+        for y in range(H):
+            for bx in range(W // 32):
+                blk = pic[y * W + bx * 32:y * W + bx * 32 + 32]
+                pl += struct.pack(">I", c2p_ref(blk)[p])
+        out.append(bytes(pl))
+    return out
+
+
+def expected_sum(pic):
+    return sum(struct.unpack(">%dI" % (len(pl) // 4), pl)[i] for pl in planes_of(pic)
+               for i in range(len(pl) // 4)) & 0xFFFFFFFF
+
+
 def layout():
     v1, rb = patterns()
     v2 = rb[:64]
@@ -116,10 +143,20 @@ start:  move.w  #0x2700,%%sr
         move.w  #0x0000,0x180(%%a6)
 | ---- result block cleared ----
         lea     0x%(res)x,%%a4
-        moveq   #15,%%d0
+        moveq   #31,%%d0
 1:      clr.l   (%%a4)+
         dbra    %%d0,1b
         lea     0x%(res)x,%%a4
+        move.l  #0x%(expsum)x,88(%%a4)
+        cmp.l   #0x47465842,%%d7            | boot block: d3..d6, a2, a5 = the WriteChunkyPixels results
+        bne.s   0f
+        move.l  %%a5,64(%%a4)
+        move.l  %%d3,68(%%a4)
+        move.l  %%d4,72(%%a4)
+        move.l  %%d5,76(%%a4)
+        move.l  %%d6,80(%%a4)
+        move.l  %%a2,84(%%a4)
+0:
         move.l  #0xac1c0000,(%%a4)
         move.l  #0xffffffff,20(%%a4)
 | ---- 1: graphics.library (A3 = GfxBase from the boot block, which sets D7 = 'GFXB'; else none) ----
@@ -433,7 +470,7 @@ BOOT = r"""
         move.l  #0x10002,%%d1               | MEMF_CHIP | MEMF_CLEAR
         jsr     -198(%%a6)                  | AllocMem
         tst.l   %%d0
-        beq.s   fail
+        beq     fail
         move.l  %%d0,%%a4
         move.l  %%a5,%%a1
         move.w  #2,28(%%a1)                 | CMD_READ
@@ -449,7 +486,56 @@ BOOT = r"""
         moveq   #0,%%d0
         jsr     -552(%%a6)                  | OpenLibrary("graphics.library", 0)
         move.l  %%d0,%%a3
-        move.l  #0x47465842,%%d7            | 'GFXB': A3 holds GfxBase
+| WriteChunkyPixels: software (pointer 0), then hardware ($B80038) when the chip answers
+        moveq   #0,%%d3
+        moveq   #0,%%d4
+        moveq   #0,%%d5
+        moveq   #0,%%d6
+        sub.l   %%a2,%%a2
+        sub.l   %%a5,%%a5
+        move.l  %%a3,%%d0
+        beq     nowcp
+        cmp.w   #40,20(%%a3)
+        bcs     nowcp
+        move.l  %%a6,-(%%sp)
+        move.l  %%a3,%%a6
+        bsr     allocbm
+        move.l  %%d0,-(%%sp)                | 4(sp) bitmap A
+        bsr     allocbm
+        move.l  %%d0,-(%%sp)                | (sp) bitmap B
+        tst.l   (%%sp)
+        beq     wfree
+        tst.l   4(%%sp)
+        beq     wfree
+        move.l  4(%%sp),%%a0
+        cmp.l   #0x00280100,(%%a0)          | BytesPerRow 40, Rows 256
+        bne     wfree
+        move.l  (%%sp),%%a0
+        cmp.l   #0x00280100,(%%a0)
+        bne     wfree
+        move.l  #5,%%a5                     | b0 bitmaps right, b2 phase ran
+        move.l  0x1fc(%%a6),-(%%sp)         | the pointer as Kickstart left it
+        clr.l   0x1fc(%%a6)
+        move.l  8(%%sp),%%a0
+        bsr     wcp
+        move.l  %%d0,%%d3
+        cmp.l   #0xc0cacafe,0xb80000
+        bne.s   1f
+        move.l  #0x00b80038,0x1fc(%%a6)
+        move.l  4(%%sp),%%a0
+        bsr     wcp
+        move.l  %%d0,%%d4
+        move.l  #7,%%a5
+1:      move.l  (%%sp)+,0x1fc(%%a6)
+        move.l  4(%%sp),%%a0                | sums and differences
+        move.l  (%%sp),%%a1
+        bsr     sumbm
+wfree:  move.l  (%%sp)+,%%a0
+        jsr     -924(%%a6)                  | FreeBitMap (NULL is fine)
+        move.l  (%%sp)+,%%a0
+        jsr     -924(%%a6)
+        move.l  (%%sp)+,%%a6
+nowcp:  move.l  #0x47465842,%%d7            | 'GFXB': A3 holds GfxBase
         jsr     -150(%%a6)                  | SuperState
         move.w  #0x2700,%%sr
         move.w  #0x7fff,0xdff09a
@@ -463,13 +549,78 @@ BOOT = r"""
         jmp     0x%(org)x
 fail:   moveq   #-1,%%d0
         rts
+allocbm:                                    | -> d0 320 x 256 x 8 bitmap, cleared (a6 = GfxBase)
+        movem.l %%d2-%%d3,-(%%sp)
+        move.l  #320,%%d0
+        move.l  #256,%%d1
+        moveq   #8,%%d2
+        moveq   #1,%%d3                     | BMF_CLEAR
+        sub.l   %%a0,%%a0
+        jsr     -918(%%a6)                  | AllocBitMap
+        movem.l (%%sp)+,%%d2-%%d3
+        rts
+wcp:                                        | a0 bitmap -> d0 CIA-B TOD lines of WriteChunkyPixels
+        movem.l %%d2-%%d7/%%a2-%%a5,-(%%sp)
+        move.l  %%a0,%%a5
+        lea     -104(%%sp),%%sp
+        move.l  %%sp,%%a1
+        jsr     -198(%%a6)                  | InitRastPort
+        move.l  %%a5,4(%%sp)                | rp_BitMap
+        bsr     tod
+        move.l  %%d0,%%d7
+        move.l  %%sp,%%a0
+        moveq   #0,%%d0
+        moveq   #0,%%d1
+        move.l  #319,%%d2
+        move.l  #255,%%d3
+        move.l  %%a4,%%a2                   | the chunky picture inside the loaded payload
+        add.l   #%(picofs)d,%%a2
+        move.l  #320,%%d4
+        jsr     -1056(%%a6)                 | WriteChunkyPixels
+        bsr     tod
+        sub.l   %%d7,%%d0
+        and.l   #0xffffff,%%d0
+        lea     104(%%sp),%%sp
+        movem.l (%%sp)+,%%d2-%%d7/%%a2-%%a5
+        rts
+tod:    moveq   #0,%%d0                     | CIA-B TOD (counts lines): high byte first latches
+        move.b  0xbfda00,%%d0
+        lsl.l   #8,%%d0
+        move.b  0xbfd900,%%d0
+        lsl.l   #8,%%d0
+        move.b  0xbfd800,%%d0
+        rts
+sumbm:                                      | a0 bitmap A, a1 B -> d5 sum A, d6 sum B, a2 differing longs
+        movem.l %%d2/%%d7/%%a3-%%a4,-(%%sp)
+        moveq   #0,%%d5
+        moveq   #0,%%d6
+        moveq   #0,%%d2
+        moveq   #7,%%d7
+1:      move.l  8(%%a0),%%a3
+        move.l  8(%%a1),%%a4
+        move.w  #(40*256/4)-1,%%d1
+2:      move.l  (%%a3)+,%%d0
+        add.l   %%d0,%%d5
+        cmp.l   (%%a4),%%d0
+        beq.s   3f
+        addq.l  #1,%%d2
+3:      add.l   (%%a4)+,%%d6
+        dbra    %%d1,2b
+        addq.l  #4,%%a0
+        addq.l  #4,%%a1
+        dbra    %%d7,1b
+        move.l  %%d2,%%a2
+        movem.l (%%sp)+,%%d2/%%d7/%%a3-%%a4
+        rts
 gname:  .asciz  "graphics.library"
 """
 
 
 def make_adf(payload):
     size = (len(payload) + 511) & ~511
-    bb = bytearray(M.assemble(BOOT % dict(size=size, org=ORG), 0))
+    picofs = payload.find(picture())
+    assert picofs > 0, picofs
+    bb = bytearray(M.assemble(BOOT % dict(size=size, org=ORG, picofs=picofs), 0))
     assert len(bb) <= 1024, len(bb)
     bb += bytes(1024 - len(bb))
     s = 0
@@ -502,7 +653,7 @@ def build_payload():
                      l1=l1, l2=l2, l3=l3, l4=l4, lall=l1 + l2 + l3 + l4, s1out=S1OUT, scratch=SCRATCH,
                      screen=SCREEN, screen4=SCREEN + 4 * PSIZE, nstrips=(W * H // 32) // NS, ns=NS,
                      psize=PSIZE, psize2=2 * PSIZE, psize3=3 * PSIZE, copper=COPPER,
-                     ncop=len(cop) // 2, **sz)
+                     ncop=len(cop) // 2, expsum=expected_sum(pic), **sz)
     assert (W * H // 32) % NS == 0
     src += "\n" + M.words_asm("coplst", b"".join(struct.pack(">H", w) for w in cop), 4) + "\n"
     src += "\n" + M.words_asm("palw", b"".join(pal), 4) + "\n"
@@ -519,13 +670,14 @@ def build(outdir):
     open(os.path.join(outdir, "akikotest.adf"), "wb").write(make_adf(payload))
     open(os.path.join(outdir, "bootrom.bin"), "wb").write(M.make_bootrom())
     n = sz["n1"] * 8 + sz["n2"] * 8 + sz["n3"] * 8 + sz["n4"] * 16
-    print("akikotest %d bytes; output %d longs (dump: --dump 0x%X %d FILE)" % (len(payload), n, RESULT, 64 + 4 * n))
+    print("akikotest %d bytes; output %d longs (dump: --dump 0x%X %d FILE)" % (len(payload), n, RESULT, 128 + 4 * n))
     if ORG + len(payload) > 0x1F0000:
         sys.exit("payload too large")
 
 
 NAMES = ["flags", "id", "gfxbase", "version", "c2pptr", "c2pofs", "longs", "wrong_v1", "wrong_v2",
-         "wrong_v3", "wrong_v4", "s1_cck", "s2_cck", "s3_cck", "verdict", "end"]
+         "wrong_v3", "wrong_v4", "s1_cck", "s2_cck", "s3_cck", "verdict", "end",
+         "wcp_status", "wcp_sw_lines", "wcp_hw_lines", "wcp_sum_a", "wcp_sum_b", "wcp_diff_ab", "wcp_exp_sum"]
 
 
 def decode(longs):
@@ -534,8 +686,16 @@ def decode(longs):
     f = r["flags"]
     out.update(chip_found=bool(f & 1), gfx_v40=bool(f & 2), c2pptr_akiko=bool(f & 4),
                gfx_version="%d.%d" % (r["version"] >> 16, r["version"] & 0xFFFF))
-    for k in ("longs", "wrong_v1", "wrong_v2", "wrong_v3", "wrong_v4", "s1_cck", "s2_cck", "s3_cck"):
-        out[k] = r[k]
+    for k in ("longs", "wrong_v1", "wrong_v2", "wrong_v3", "wrong_v4", "s1_cck", "s2_cck", "s3_cck",
+              "wcp_sw_lines", "wcp_hw_lines", "wcp_diff_ab"):
+        if k in r:
+            out[k] = r[k]
+    if r.get("wcp_status", 0) & 4:
+        line_s = 227 * 1e9 / 3546895.0 * 1e-9                 # one PAL line (227 CCK)
+        out["wcp_sw_ms"] = round(r["wcp_sw_lines"] * line_s * 1e3, 1)
+        out["wcp_hw_ms"] = round(r["wcp_hw_lines"] * line_s * 1e3, 1) if r["wcp_status"] & 2 else None
+        out["wcp_sw_sum_ok"] = r["wcp_sum_a"] == r["wcp_exp_sum"]
+        out["wcp_hw_sum_ok"] = r["wcp_sum_b"] == r["wcp_exp_sum"] if r["wcp_status"] & 2 else None
     cck_ns = 1e9 / 3546895.0                       # PAL colour clock (281.94 ns)
     if r["s3_cck"]:
         t = r["s3_cck"] * cck_ns * 1e-9
@@ -550,11 +710,11 @@ def decode(longs):
 
 def check(dump_fn, frame_fn=None):
     b = open(dump_fn, "rb").read()
-    longs = list(struct.unpack(">16I", b[:64]))
+    longs = list(struct.unpack(">32I", b[:128]))
     res = decode(longs)
     inp, exp, sz = layout()
     n = len(exp) // 4
-    got = b[64:64 + len(exp)]
+    got = b[128:128 + len(exp)]
     if len(got) < len(exp):
         res["error"] = "dump too short: %d of %d bytes" % (len(got), len(exp))
         return res
