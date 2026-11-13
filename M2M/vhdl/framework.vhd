@@ -150,6 +150,16 @@ port (
    main_osm_control_m_o    : out   std_logic_vector(255 downto 0);
    main_qnice_gp_reg_o     : out   std_logic_vector(255 downto 0);
    main_audio_clk_i        : in    std_logic := '0';         -- with G_AUDIO_EXT_CLK
+   -- K325T a1200-lxshell (G_QNICE_LOCAL = false): the host master's byte streams from / to rk_bridge
+   -- (HOST_FIFOS), in qnice_clk
+   host_s_data_i           : in    std_logic_vector(7 downto 0) := (others => '0');
+   host_s_valid_i          : in    std_logic := '0';
+   host_s_pop_o            : out   std_logic;
+   host_m_data_o           : out   std_logic_vector(7 downto 0);
+   host_m_push_o           : out   std_logic;
+   host_m_full_i           : in    std_logic := '1';
+   host_clr_i              : in    std_logic := '0';
+   host_flags_o            : out   std_logic_vector(7 downto 0);
    main_audio_l_i          : in    signed(15 downto 0);
    main_audio_r_i          : in    signed(15 downto 0);
    video_clk_i             : in    std_logic;
@@ -741,7 +751,15 @@ begin
       qnice_ramrom_data_in_i    => qnice_ramrom_data_in_i,
       qnice_ramrom_ce_o         => qnice_ramrom_ce_o,
       qnice_ramrom_we_o         => qnice_ramrom_we_o,
-      qnice_ramrom_wait_i       => qnice_ramrom_wait_i
+      qnice_ramrom_wait_i       => qnice_ramrom_wait_i,
+      host_s_data_i             => host_s_data_i,
+      host_s_valid_i            => host_s_valid_i,
+      host_s_pop_o              => host_s_pop_o,
+      host_m_data_o             => host_m_data_o,
+      host_m_push_o             => host_m_push_o,
+      host_m_full_i             => host_m_full_i,
+      host_clr_i                => host_clr_i,
+      host_flags_o              => host_flags_o
    ); -- i_qnice_wrapper
 
    -- Determine HDMI clock frequency
@@ -1141,7 +1159,8 @@ begin
    i_rtc_wrapper : entity work.rtc_wrapper
    generic map (
       G_BOARD       => G_BOARD,
-      G_I2C_CLK_DIV => 250   -- SCL=100kHz @50MHz
+      G_I2C_CLK_DIV => 250,  -- SCL=100kHz @50MHz
+      G_HOST_RTC    => not G_QNICE_LOCAL   -- K325T a1200-lxshell: the host sets the time
    )
    port map (
       clk_i         => qnice_clk,

@@ -64,7 +64,12 @@ use ieee.numeric_std_unsigned.all;
 entity rtc_controller is
   generic (
     G_CLK_SPEED_HZ : natural := 50_000_000;
-    G_BOARD        : string                     -- Which platform are we running on.
+    G_BOARD        : string;                    -- Which platform are we running on.
+    -- K325T a1200-lxshell: true = no external RTC; a read command completes at once with the
+    -- internal registers (the time the host wrote), so the "new value" toggle (rtc_o(64)) flips and
+    -- the core takes the time.  The reset-time read is not completed (nothing reaches the core until
+    -- the host sets a time).
+    G_HOST_RTC     : boolean := false
   );
   port (
     clk_i           : in  std_logic;
@@ -95,7 +100,7 @@ architecture synthesis of rtc_controller is
 
    signal rtc_read     : std_logic;
    signal rtc_write    : std_logic;
-   signal rtc_busy     : std_logic;
+   signal rtc_busy     : std_logic := '0';
    signal rtc_internal : std_logic_vector(64 downto 0);
    signal rtc_external : std_logic_vector(63 downto 0);
    signal rtc_busy_d   : std_logic;
@@ -114,6 +119,27 @@ begin
    rtc_o <= rtc_internal(64) & X"40" & rtc_internal(63 downto 8);
 
    -- Instantiate the RTC master
+   gen_rtc_host : if G_HOST_RTC generate
+      process (clk_i)
+      begin
+         if rising_edge(clk_i) then
+            -- busy for one cycle after a read or write command: rtc_proc sees the falling edge
+            rtc_busy <= rtc_read or rtc_write;
+            if rtc_read = '1' then
+               rtc_external <= rtc_internal(63 downto 0);
+            end if;
+            if rst_i = '1' then
+               rtc_busy <= '0';
+            end if;
+         end if;
+      end process;
+      cpu_m_ce_o      <= '0';
+      cpu_m_we_o      <= '0';
+      cpu_m_addr_o    <= (others => '0');
+      cpu_m_wr_data_o <= (others => '0');
+   end generate gen_rtc_host;
+
+   gen_rtc_i2c : if not G_HOST_RTC generate
    rtc_master_inst : entity work.rtc_master
       generic map (
          G_BOARD => G_BOARD
@@ -133,6 +159,7 @@ begin
          cpu_m_wr_data_o => cpu_m_wr_data_o,
          cpu_m_rd_data_i => cpu_m_rd_data_i
       ); -- rtc_master_inst
+   end generate gen_rtc_i2c;
 
    tick_proc : process (clk_i)
    begin

@@ -14,7 +14,8 @@ use ieee.numeric_std_unsigned.all;
 entity rtc_wrapper is
   generic (
     G_BOARD       : string;                                 -- Which platform are we running on.
-    G_I2C_CLK_DIV : integer
+    G_I2C_CLK_DIV : integer;
+    G_HOST_RTC    : boolean := false                        -- K325T a1200-lxshell (rtc_controller)
   );
   port (
     clk_i         : in  std_logic;
@@ -66,7 +67,8 @@ begin
 
   rtc_controller_inst : entity work.rtc_controller
     generic map (
-      G_BOARD => G_BOARD
+      G_BOARD    => G_BOARD,
+      G_HOST_RTC => G_HOST_RTC
     )
     port map (
       clk_i           => clk_i,

@@ -78,7 +78,15 @@ fw.insert(last + 1, '''      ext_hr_clk_i            => mig_ui_clk,
       ext_avm_readdata_i      => mem_readdata,
       ext_avm_readdatavalid_i => mem_readdatavalid,
       ext_avm_waitrequest_i   => mem_waitrequest,
-      main_audio_clk_i        => amiga_audio_clk''')
+      main_audio_clk_i        => amiga_audio_clk,
+      host_s_data_i           => host_s_data,
+      host_s_valid_i          => host_s_valid,
+      host_s_pop_o            => host_s_pop,
+      host_m_data_o           => host_m_data,
+      host_m_push_o           => host_m_push,
+      host_m_full_i           => host_m_full,
+      host_clr_i              => host_clr,
+      host_flags_o            => host_flags''')
 core = remap(core, CORE, None)
 # core: the K325T stall machinery (stall_clk.vhd): configuration byte from the bridge, diagnostics
 last = max(k for k, l in enumerate(core) if '=>' in l)

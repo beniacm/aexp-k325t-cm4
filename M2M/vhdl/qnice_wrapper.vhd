@@ -14,6 +14,7 @@ use work.qnice_tools.all;
 library work;
 use work.globals.all;
 use work.types_pkg.all;
+use work.host_menu_pkg.all;       -- K325T a1200-lxshell: menu id + factory defaults (generated)
 
 entity qnice_wrapper is
 generic (
@@ -132,7 +133,17 @@ port (
    qnice_ramrom_data_in_i    : in  std_logic_vector(15 downto 0);
    qnice_ramrom_ce_o         : out std_logic;
    qnice_ramrom_we_o         : out std_logic;
-   qnice_ramrom_wait_i       : in  std_logic
+   qnice_ramrom_wait_i       : in  std_logic;
+
+   -- K325T a1200-lxshell: the host master's byte streams (rk_bridge HOST_FIFOS, in clk_i), status
+   host_s_data_i             : in  std_logic_vector(7 downto 0) := (others => '0');
+   host_s_valid_i            : in  std_logic := '0';
+   host_s_pop_o              : out std_logic;
+   host_m_data_o             : out std_logic_vector(7 downto 0);
+   host_m_push_o             : out std_logic;
+   host_m_full_i             : in  std_logic := '1';
+   host_clr_i                : in  std_logic := '0';
+   host_flags_o              : out std_logic_vector(7 downto 0)   -- b1 busy b2 err b3 tmo b4 marker
 );
 end entity qnice_wrapper;
 
@@ -273,7 +284,15 @@ begin
    end generate gen_soc_local;
 
    gen_soc_host : if not G_QNICE_LOCAL generate
-   QNICE_HOST : entity work.qnice_host_stub
+   QNICE_HOST : entity work.qnice_host
+      generic map (
+         G_VGA_DX                => VGA_DX,
+         G_VGA_DY                => VGA_DY,
+         G_FONT_DX               => FONT_DX,
+         G_FONT_DY               => FONT_DY,
+         G_MENU_ID               => C_HOST_MENU_ID,
+         G_CFM_DEFAULTS          => C_HOST_CFM_DEFAULTS
+      )
       port map (
          clk50_i                 => clk_i,
          reset_n_i               => not rst_i,
@@ -334,9 +353,29 @@ begin
          ramrom_data_i           => qnice_ramrom_data_in,
          ramrom_ce_o             => qnice_ramrom_ce_o,
          ramrom_wait_i           => qnice_ramrom_wait,
-         ramrom_we_o             => qnice_ramrom_we_o
+         ramrom_we_o             => qnice_ramrom_we_o,
+         s_data_i                => host_s_data_i,
+         s_valid_i               => host_s_valid_i,
+         s_pop_o                 => host_s_pop_o,
+         m_data_o                => host_m_data_o,
+         m_push_o                => host_m_push_o,
+         m_full_i                => host_m_full_i,
+         clr_i                   => host_clr_i,
+         busy_o                  => host_flags_o(1),
+         err_o                   => host_flags_o(2),
+         tmo_o                   => host_flags_o(3),
+         marker_o                => host_flags_o(4)
       ); -- QNICE_HOST
+   host_flags_o(0)          <= '0';
+   host_flags_o(7 downto 5) <= "000";
    end generate gen_soc_host;
+
+   gen_soc_nohost : if G_QNICE_LOCAL generate
+      host_s_pop_o  <= '0';
+      host_m_data_o <= (others => '0');
+      host_m_push_o <= '0';
+      host_flags_o  <= (others => '0');
+   end generate gen_soc_nohost;
 
    -- Shell configuration file config.vhd
    g_cfg_local : if G_QNICE_LOCAL generate

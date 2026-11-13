@@ -31,6 +31,7 @@ use unisim.vcomponents.all;
 
 library work;
 use work.video_modes_pkg.all;
+use work.host_menu_pkg.all;
 
 entity qmtech_k325t_cm4 is
 generic (
@@ -181,6 +182,9 @@ architecture synthesis of qmtech_k325t_cm4 is
    -- stoppable Amiga clock (K325T/stall_clk.vhd): injector configuration = the bridge's VIDEO
    -- register (command 0x70, no Linux picture in this core), diagnostics = STATUS 60..71
    signal rk_vid_sel        : std_logic_vector(7 downto 0);
+   -- a1200-lxshell: the host master's streams (rk_bridge HOST_FIFOS <-> qnice_wrapper, qnice_clk)
+   signal host_s_data, host_m_data, host_flags : std_logic_vector(7 downto 0);
+   signal host_s_valid, host_s_pop, host_m_push, host_m_full, host_clr : std_logic;
    signal stall_diag        : std_logic_vector(95 downto 0);
    signal mig_dbg           : std_logic_vector(23 downto 0);   -- avm_mig state (debug probe)
    -- avm_mig's side of the MIG arbiter (mig_arb.vhd: line port first, avm_mig second)
@@ -441,7 +445,8 @@ begin
    ---------------------------------------------------------------------------------------
    i_rk_bridge : entity work.rk_bridge
       generic map (BIT_CLKS => 1412,       -- 162.71 MHz / 115200 baud (QNICE UART)
-                   CORE_ID  => x"03")      -- Amiga (AExp)
+                   CORE_ID  => x"03",      -- Amiga (AExp)
+                   HOST_FIFOS => G_LXSHELL)
       port map (
          clk => clk162, cpuclk => clk100,
          spi_sck => rk_sck, spi_cs_n => rk_cs_n, spi_mosi => rk_mosi, spi_miso => rk_miso,
@@ -459,9 +464,16 @@ begin
          iprog_toggle => ip_toggle, iprog_addr => ip_addr,
          video_sel => rk_vid_sel,
          video_diag => diag_out(95 downto 64), video_diag2 => diag_out(63 downto 0),
+         host_clk => qnice_clk, host_s_data => host_s_data, host_s_valid => host_s_valid,
+         host_s_pop => host_s_pop, host_m_data => host_m_data, host_m_push => host_m_push,
+         host_m_full => host_m_full, host_clr => host_clr,
+         host_ver => x"01" when G_LXSHELL else x"00", host_flags => host_flags,
+         host_id => C_HOST_MENU_ID,
          spi_active => open
       );
 
+   -- a1200-lxshell: no QNICE, no card for it: the emulated SD card is not built
+   g_sd_emu : if not G_LXSHELL generate
    i_sd_emu : entity work.sd_emu
       generic map (SYNC_IN => true)        -- SimpleSDHC runs on its own 25 MHz clock
       port map (
@@ -473,6 +485,13 @@ begin
          wbuf_we => wbuf_we, wbuf_addr => wbuf_addr, wbuf_data => wbuf_data,
          inited => sd_inited, cmd_count => sd_cmd_cnt, last_cmd => sd_last_cmd
       );
+   end generate g_sd_emu;
+   g_no_sd_emu : if G_LXSHELL generate
+      sd_miso_s <= '1'; sd_rd_req <= '0'; sd_wr_req <= '0'; sd_lba <= (others => '0');
+      sd_seq <= (others => '0'); rbuf_addr <= (others => '0'); wbuf_we <= '0';
+      wbuf_addr <= (others => '0'); wbuf_data <= (others => '0'); sd_inited <= '0';
+      sd_cmd_cnt <= (others => '0'); sd_last_cmd <= (others => '0');
+   end generate g_no_sd_emu;
 
    caps_n <= not rk_ctrl(2);
    kb_up_n   <= not rk_ctrl(4);              -- INPUT ctrl b4 / b5: cursor up / left keys
