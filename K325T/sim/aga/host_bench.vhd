@@ -1,7 +1,9 @@
 -- host_bench.vhd -- the host master for the Verilator bench (a1200-lxshell, GHDL -> Verilog):
 -- qnice_host with the generated menu id / defaults, and the core's device decode for the devices
 -- the bench has, as mega65.vhd does it: 0x0100 the Kickstart port of chip_cache (write-only, the
--- byte on lane U/L by address bit 0, wait from the cache; byte 1 = $14 -> 512 KB).
+-- byte on lane U/L by address bit 0, wait from the cache; byte 1 = $14 -> 512 KB) and 0x0103 the
+-- core's adf_mount_wrapper (unchanged RTL; its avm_fifo is avm_fifo_pass.vhd here, the image
+-- memory is tb_top's adfmem at word 0, the bench's track engine reads it there).
 -- Simulation tooling only.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -27,7 +29,19 @@ port (
    kq_addr     : out std_logic_vector(18 downto 0);
    kq_data     : out std_logic_vector(7 downto 0);
    kq_wait     : in  std_logic;
-   kick512     : out std_logic
+   kick512     : out std_logic;
+   -- adf_mount_wrapper (device 0x0103): mount state and its HyperRAM side (q_clk)
+   disk_mounted : out std_logic;
+   disk_tracks  : out std_logic_vector(7 downto 0);
+   write_en     : out std_logic;
+   hr_write     : out std_logic;
+   hr_read      : out std_logic;
+   hr_address   : out std_logic_vector(31 downto 0);
+   hr_writedata : out std_logic_vector(15 downto 0);
+   hr_byteenable: out std_logic_vector(1 downto 0);
+   hr_readdata  : in  std_logic_vector(15 downto 0);
+   hr_readdatavalid : in std_logic;
+   hr_waitrequest   : in std_logic
 );
 end entity;
 
@@ -42,6 +56,9 @@ architecture rtl of host_bench is
    signal addr        : std_logic_vector(27 downto 0);
    signal ce, we, wt  : std_logic;
    signal k512        : std_logic := '0';
+   signal adf_ce      : std_logic;
+   signal adf_rd      : std_logic_vector(15 downto 0);
+   signal adf_wt      : std_logic;
 begin
    i_host : entity work.qnice_host
       generic map (G_MENU_ID => C_HOST_MENU_ID, G_CFM_DEFAULTS => cfm_flat(C_HOST_CFM_DEFAULTS))
@@ -63,8 +80,21 @@ begin
    kq_we   <= ce and we when dev = x"0100" else '0';
    kq_addr <= addr(18 downto 0);
    kq_data <= wd(7 downto 0);
-   wt      <= kq_wait when dev = x"0100" else '0';
-   rd      <= x"0000";
+   adf_ce  <= ce when dev = x"0103" else '0';
+   wt      <= kq_wait when dev = x"0100" else adf_wt when dev = x"0103" else '0';
+   rd      <= adf_rd when dev = x"0103" else x"0000";
+
+   i_adf : entity work.adf_mount_wrapper
+      generic map (G_BASE_ADDRESS => (others => '0'))
+      port map (qnice_clk_i => q_clk, qnice_rst_i => q_rst, qnice_addr_i => addr, qnice_data_i => wd,
+                qnice_ce_i => adf_ce, qnice_we_i => we, qnice_data_o => adf_rd, qnice_wait_o => adf_wt,
+                qnice_disk_mounted_o => disk_mounted, qnice_disk_tracks_o => disk_tracks,
+                qnice_write_en_o => write_en, qnice_any_dirty_o => open,
+                qnice_wrt_track_i => (others => '0'), qnice_wrt_req_i => '0', qnice_wrt_ack_o => open,
+                hr_clk_i => q_clk, hr_rst_i => q_rst, hr_write_o => hr_write, hr_read_o => hr_read,
+                hr_address_o => hr_address, hr_writedata_o => hr_writedata, hr_byteenable_o => hr_byteenable,
+                hr_burstcount_o => open, hr_readdata_i => hr_readdata, hr_readdatavalid_i => hr_readdatavalid,
+                hr_waitrequest_i => hr_waitrequest);
 
    process (q_clk)
    begin

@@ -69,7 +69,8 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # --host-link; the menu id / defaults package from menu_gen.py as in the FPGA build
 python3 -I "$root/K325T/menu_gen.py" "$root" "$OUT/bench.menu" --vhdl "$OUT/host_menu_pkg.vhd" > "$OUT/menu_gen.log"
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -frelaxed --out=verilog "$OUT/host_menu_pkg.vhd" \
-    "$root/K325T/qnice_host.vhd" "$here/host_bench.vhd" -e host_bench > host_bench.v 2> ghdl_host.log) || { cat "$OUT/ghdl_host.log" >&2; exit 1; }
+    "$root/K325T/qnice_host.vhd" "$root/M2M/vhdl/qnice_csr.vhd" "$root/M2M/vhdl/qnice2hyperram.vhd" \
+    "$here/avm_fifo_pass.vhd" "$root/CORE/vhdl/adf_mount_wrapper.vhd" "$here/host_bench.vhd" -e host_bench > host_bench.v 2> ghdl_host.log) || { cat "$OUT/ghdl_host.log" >&2; exit 1; }
 # FAST_A500=1: the 68020 (TG68K) and the chip cache replaced by stubs -- for A500 runs (fx68k, ideal
 # memory) only; --cpu 3 and --cache do not work in such a build
 if [ -n "${FAST_A500:-}" ]; then

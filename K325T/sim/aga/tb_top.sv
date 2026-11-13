@@ -57,6 +57,9 @@ module tb_top (
   output wire [7:0]  h_flags,
   output wire [5:0]  h_csr,
   output wire [255:0] h_cfm,
+  output wire        h_mounted,       // adf_mount_wrapper: a valid image is loaded (df0 follows it with host_on)
+  output wire [7:0]  h_tracks,
+  output wire        h_wr_en,
   // backdoor memory port (C++ writes test programs while the CPU runs)
   input  wire        bd_we,
   input  wire [20:0] bd_addr,       // chip word address
@@ -133,13 +136,14 @@ module tb_top (
   reg         avm_rvalid = 0;
   import "DPI-C" function int adf_rd(input int addr);
   adf_engine_tb i_adf (
-    .clk(clk), .reset(rst_ext), .bus_grant(done), .disk_mounted(disk_mounted), .disk_tracks(disk_tracks),
+    .clk(clk), .reset(rst_ext), .bus_grant(done), .disk_mounted(host_on ? h_mounted : disk_mounted),
+    .disk_tracks(host_on ? h_tracks : disk_tracks),
     .io_fpga(io_fpga), .io_strobe(eng_strobe), .io_din(eng_din), .io_dout(io_dout), .io_wait(io_wait),
     .avm_write(avm_write), .avm_read(avm_read), .avm_address(avm_address), .avm_writedata(avm_writedata),
     .avm_readdata(avm_rdata), .avm_readdatavalid(avm_rvalid), .avm_waitrequest(1'b0));
   always @(posedge clk) begin
     avm_rvalid <= 0;
-    if (avm_read) begin avm_rdata <= adf_rd(avm_address)[15:0]; avm_rvalid <= 1; end
+    if (avm_read) begin avm_rdata <= host_on ? adfmem[avm_address[18:0]] : adf_rd(avm_address)[15:0]; avm_rvalid <= 1; end
   end
   // +flpdbg: the first floppy-channel frames and image reads
   reg flpdbg = 0; initial flpdbg = $test$plusargs("flpdbg");
@@ -219,13 +223,33 @@ module tb_top (
   wire [511:0] cc_wdata;
   wire [127:0] lp_rdata;
   wire        cc_mode;
+  wire        hr_write, hr_read;
+  wire [31:0] hr_address;
+  wire [15:0] hr_writedata;
+  wire [1:0]  hr_be;
+  reg  [15:0] hr_rdata = 0, hr_rd1 = 0;
+  reg         hr_rvalid = 0, hr_rv1 = 0;
   wire        kq_we, kq_wait, kick512_h;
   wire [18:0] kq_addr;
   wire [7:0]  kq_data;
   host_bench i_host (.q_clk(q_clk), .q_rst(q_rst), .s_data(hs_data), .s_valid(hs_valid), .s_pop(hs_pop),
     .m_data(hm_data), .m_push(hm_push), .m_full(hm_full), .clr(h_clr), .flags(h_flags), .csr(h_csr),
     .cfm(h_cfm), .kq_we(kq_we), .kq_addr(kq_addr), .kq_data(kq_data), .kq_wait(kq_wait),
-    .kick512(kick512_h));
+    .kick512(kick512_h),
+    .disk_mounted(h_mounted), .disk_tracks(h_tracks), .write_en(h_wr_en),
+    .hr_write(hr_write), .hr_read(hr_read), .hr_address(hr_address), .hr_writedata(hr_writedata),
+    .hr_byteenable(hr_be), .hr_readdata(hr_rdata), .hr_readdatavalid(hr_rvalid), .hr_waitrequest(1'b0));
+  // the ADF image in "HyperRAM" (adf_mount_wrapper's word 0 = the track engine's word 0 in this bench):
+  // written by the wrapper with byte enables, read back by it (2 q_clk latency) and by the engine
+  reg  [15:0] adfmem [0:524287] /*verilator public*/;
+  always @(posedge q_clk) begin
+    hr_rv1 <= 0; hr_rvalid <= hr_rv1; hr_rdata <= hr_rd1;
+    if (hr_write) begin
+      if (hr_be[0]) adfmem[hr_address[18:0]][7:0]  <= hr_writedata[7:0];
+      if (hr_be[1]) adfmem[hr_address[18:0]][15:8] <= hr_writedata[15:8];
+    end
+    if (hr_read) begin hr_rd1 <= adfmem[hr_address[18:0]]; hr_rv1 <= 1; end
+  end
   chip_cache i_cache (
     .clk_i(src_clk), .reset_i(cache_reset), .cache_on_i(cache_on), .shrink_i(shrink), .chip1m_i(1'b0),
     .chip_sel_i(use_cache & is_chip), .slow_sel_i(1'b0),

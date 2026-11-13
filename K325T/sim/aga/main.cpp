@@ -475,7 +475,9 @@ int main(int argc, char** argv) {
     if (q_lvl) {
       if (top->hs_pop && !g_putq.empty()) g_putq.pop_front();
       if (top->hm_push) g_getq.push_back(top->hm_data);
-      top->hs_valid = !g_putq.empty();
+      // HOST_RESET: as the bridge, the queue is empty in the cycle the master sees the clear (a request
+      // after R may already be queued here, which on the board comes in a later SPI transaction)
+      top->hs_valid = !g_putq.empty() && !g_hclr;
       top->hs_data = g_putq.empty() ? 0 : g_putq.front();
       top->hm_full = g_getq.size() >= 4092;
       top->h_clr = g_hclr; g_hclr = false;
