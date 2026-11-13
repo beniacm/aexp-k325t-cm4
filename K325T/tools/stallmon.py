@@ -159,19 +159,21 @@ def memstate(b):
             # W2 b31 (a1200-lxshell): 1 = built without the cache prefetchers (older bitstreams: 0)
             "no_pf": w2 >> 31 & 1,
             # W2 b30 (a1200-lxshell SLIM=1): the lean lat_meter -- no latency meter, no $FF..$FC words
-            "lean": w2 >> 30 & 1}
+            "lean": w2 >> 30 & 1,
+            # W2 b25 IDE (a1200-ide), b26 Akiko C2P (a1200-akiko; 0 in older bitstreams), as in effect
+            "ide": w2 >> 25 & 1, "akiko": w2 >> 26 & 1}
 
 
 def memstate_str(m):
     if m is None:
         return "no read-back in this bitstream (before stage 3 P4)"
     return ("memory mode: %s; requested: cache %s, 2 MB chip %s; in effect (latched at the last reset or "
-            "cold boot): cache mode %s, 2 MB chip %s, AGA %s, ECS %s; shrink %d (sets / %d); menu AGA radio %d; "
-            "registers r7..r0 %s" %
+            "cold boot): cache mode %s, 2 MB chip %s, AGA %s, ECS %s; IDE %d, Akiko %d; shrink %d (sets / %d); "
+            "menu AGA radio %d; registers r7..r0 %s" %
             ("OVERRIDE (stallmon cache on|off)" if m["ovr"] else "follows the menu profile (cache auto)",
              "on" if m["req_cache"] else "off", "on" if m["req_2m"] else "off",
              "on" if m["cache_mode"] else "off (identity)", "on" if m["chip2m"] else "off",
-             m["aga"], m["ecs"], m["shrink"], (1, 8, 64, 512)[m["shrink"]], m["menu_aga"],
+             m["aga"], m["ecs"], m["ide"], m["akiko"], m["shrink"], (1, 8, 64, 512)[m["shrink"]], m["menu_aga"],
              " ".join("%x" % v for v in m["r"][::-1])))
 
 
