@@ -17,7 +17,8 @@ use ieee.numeric_std.all;
 use ieee.math_real.all;
 
 entity tb_chip_cache is
-   generic (G_MODE : natural := 1; G_SHRINK : natural := 0; G_N : natural := 100000;
+   generic (G_PFHW : boolean := true; G_SETB : natural := 13;   -- chip_cache's G_PREFETCH / G_SET_BITS
+            G_MODE : natural := 1; G_SHRINK : natural := 0; G_N : natural := 100000;
             G_WR : natural := 35; G_SLOW : natural := 20;    -- percent
             G_KICK : natural := 15;                           -- percent of the runs: Kickstart reads
             G_KBYTES : natural := 32768;                      -- Kickstart bytes loaded through QNICE
@@ -97,6 +98,7 @@ begin
                 vsync_i => '0', ce_o => ce, inj_o => inj, lag_o => lag, diag_o => diag, mode_o => open);
 
    dut : entity work.chip_cache
+      generic map (G_PREFETCH => G_PFHW, G_SET_BITS => G_SETB)
       port map (clk_i => clk, reset_i => reset, cache_on_i => cache_on, shrink_i => shrink,
                 chip1m_i => '1', chip_sel_i => chip_sel, slow_sel_i => slow_sel, addr_i => addr,
                 kick_sel_i => kick_sel, kick512_i => '1',

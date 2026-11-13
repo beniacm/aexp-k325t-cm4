@@ -59,7 +59,14 @@ use ieee.numeric_std.all;
 
 entity chip_cache is
    generic (
-      G_DDR_BASE : unsigned(27 downto 0) := x"2000000"   -- backing store, MIG app_addr units (64 MB)
+      G_DDR_BASE : unsigned(27 downto 0) := x"2000000";  -- backing store, MIG app_addr units (64 MB)
+      -- bitstream size (K325T, 2026-11-13): false = built without the prefetchers' tag bits (21..18:
+      -- class, prefetched), the tag RAM 18 bits wide; only valid with pf_en_i tied to 0
+      G_PREFETCH : boolean := true;
+      -- the tag RAM's sets (2**G_SET_BITS, at most 8192): fewer = a smaller cache (the full line
+      -- address is in every tag, so this is the same as the run-time shrink of the set index; the
+      -- data RAM keeps its layout, the identity mode is unchanged)
+      G_SET_BITS : natural range 4 to 13 := 13
    );
    port (
       clk_i       : in  std_logic;     -- ungated source clock (stall_clk.vhd src_clk_o)
@@ -123,14 +130,31 @@ architecture rtl of chip_cache is
 
    -- tag store: per way and set: valid, dirty, line address (backing word address 20..5)
    -- tag: 21..19 prefetch class, 18 prefetched and not used yet, 17 valid, 16 dirty, 15..0 line
-   type tag_t is array (0 to SETS - 1) of std_logic_vector(21 downto 0);
+   function tagw return natural is
+   begin
+      if G_PREFETCH then return 22; end if;
+      return 18;
+   end function;
+   constant TW    : natural := tagw;                 -- stored tag bits (the upper ones read as 0)
+   constant TSETS : natural := 2 ** G_SET_BITS;
+   type tag_t is array (0 to TSETS - 1) of std_logic_vector(TW - 1 downto 0);
    signal tag0, tag1, tag2 : tag_t := (others => (others => '0'));
+   function tix(n : unsigned(12 downto 0)) return natural is
+   begin
+      return to_integer(n(G_SET_BITS - 1 downto 0));
+   end function;
+   function pad(v : std_logic_vector) return std_logic_vector is
+      variable r : std_logic_vector(21 downto 0) := (others => '0');
+   begin
+      r(v'length - 1 downto 0) := v;
+      return r;
+   end function;
    attribute ram_style : string;
    attribute ram_style of tag0, tag1, tag2 : signal is "distributed";
    constant KICK_LINE : std_logic_vector(2 downto 0) := "101";   -- bline(15:13) of the Kickstart
 
    signal mode        : std_logic := '0';
-   signal smask       : unsigned(12 downto 0) := (others => '1');
+   signal smask       : unsigned(12 downto 0) := to_unsigned(2 ** G_SET_BITS - 1, 13);
 
    -- the access
    signal acc         : std_logic;
@@ -264,10 +288,10 @@ begin
    -- cache mode: every access; identity mode: only the Kickstart (bank 2, way 2 forced)
    tagged <= '1' when mode = '1' or kick_sel_i = '1' else '0';
    bline <= bword(20 downto 5);
-   setn  <= bline(12 downto 0) and smask;
-   t0    <= tag0(to_integer(setn));
-   t1    <= tag1(to_integer(setn));
-   t2    <= tag2(to_integer(setn));
+   setn  <= bline(12 downto 0) and smask and to_unsigned(TSETS - 1, 13);   -- the cap: G_SET_BITS
+   t0    <= pad(tag0(tix(setn)));
+   t1    <= pad(tag1(tix(setn)));
+   t2    <= pad(tag2(tix(setn)));
    hit0  <= '1' when mode = '1' and t0(17) = '1' and unsigned(t0(15 downto 0)) = bline else '0';
    hit1  <= '1' when mode = '1' and t1(17) = '1' and unsigned(t1(15 downto 0)) = bline else '0';
    hit2  <= '1' when t2(17) = '1' and unsigned(t2(15 downto 0)) = bline else '0';
@@ -285,10 +309,10 @@ begin
    psid    <= x"FF" when dbr_i = '0' else unsigned(dreg_i);
    st_cur  <= stl(to_integer(psid));
    pf_head <= pfq(to_integer(pf_rp(2 downto 0)));
-   pf_set  <= unsigned(pf_head(12 downto 0)) and smask;
-   p0      <= tag0(to_integer(pf_set));
-   p1      <= tag1(to_integer(pf_set));
-   p2      <= tag2(to_integer(pf_set));
+   pf_set  <= unsigned(pf_head(12 downto 0)) and smask and to_unsigned(TSETS - 1, 13);
+   p0      <= pad(tag0(tix(pf_set)));
+   p1      <= pad(tag1(tix(pf_set)));
+   p2      <= pad(tag2(tix(pf_set)));
    pf_hit  <= '1' when (p0(17) = '1' and p0(15 downto 0) = pf_head(15 downto 0)) or
                        (p1(17) = '1' and p1(15 downto 0) = pf_head(15 downto 0)) or
                        (p2(17) = '1' and p2(15 downto 0) = pf_head(15 downto 0)) else '0';
@@ -555,16 +579,16 @@ begin
                when "01" => smask <= to_unsigned(1023, 13);
                when "10" => smask <= to_unsigned(127, 13);
                when "11" => smask <= to_unsigned(15, 13);
-               when others => smask <= (others => '1');
+               when others => smask <= to_unsigned(2 ** G_SET_BITS - 1, 13);
             end case;
             mst <= M_FLUSH;
             flush_idx <= (others => '0');
             pf_rp <= pf_wp;
             w0 := false; w1 := false; w2 := false;
          end if;
-         if w0 then tag0(to_integer(wa)) <= wd0; end if;
-         if w1 then tag1(to_integer(wa)) <= wd1; end if;
-         if w2 then tag2(to_integer(wa)) <= wd2; end if;
+         if w0 then tag0(tix(wa)) <= wd0(TW - 1 downto 0); end if;
+         if w1 then tag1(tix(wa)) <= wd1(TW - 1 downto 0); end if;
+         if w2 then tag2(tix(wa)) <= wd2(TW - 1 downto 0); end if;
       end if;
    end process;
 

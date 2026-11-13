@@ -435,6 +435,16 @@ signal main_mbox              : std_logic_vector(511 downto 0) := (others => '0'
 signal main_dma_dbr           : std_logic;                       -- stage 2b prefetch: bus owner
 signal main_dma_reg           : std_logic_vector(8 downto 1);
 signal main_pf_en             : std_logic_vector(6 downto 0);
+-- K325T bitstream size: the cache's prefetchers (stage 2b; off at power-up, only stallmon switches them
+-- on) cost a second asynchronous read port of the three tag arrays (~17 k LUTs of LUT RAM) and with it
+-- ~0.6 MB of bitstream; without them the Radxa image fits flash slot 1.  false = built without them
+-- (pf_en tied to 0: the queue never fills and synthesis removes the prefetch path; the machine is the
+-- one that runs with the prefetchers off, the default); true = the research build with stallmon pf.
+constant C_CACHE_PREFETCH     : boolean := false;
+-- the cache's tag sets (2**n, 13 = 8192 = 1.5 MB with 3 ways and 64-byte lines; fewer = smaller tag LUT
+-- RAM and a smaller cache, machine time unchanged)
+constant C_CACHE_SET_BITS     : natural := 13;
+signal main_pf_en_c           : std_logic_vector(6 downto 0);
 signal main_afifo_en          : std_logic;                       -- stage 2b audio FIFO
 signal main_mach_cnt          : unsigned(31 downto 0);
 signal main_lag               : unsigned(31 downto 0);
@@ -1178,7 +1188,13 @@ begin
          under_o => open
       ); -- i_audio_fifo
 
+   main_pf_en_c <= main_pf_en when C_CACHE_PREFETCH else (others => '0');
+
    i_chip_cache : entity work.chip_cache
+      generic map (
+         G_PREFETCH => C_CACHE_PREFETCH,
+         G_SET_BITS => C_CACHE_SET_BITS
+      )
       port map (
          clk_i        => main_src_clk,
          -- stage 3 (P4): the mode is latched at an M2M reset AND at the cold boot that a change of
@@ -1197,7 +1213,7 @@ begin
          q_wait_o     => qnice_kick_wait,
          dbr_i        => main_dma_dbr,
          dreg_i       => main_dma_reg,
-         pf_en_i      => main_pf_en,
+         pf_en_i      => main_pf_en_c,
          pf_stats_o   => k325t_pf_stats_o,
          chip_sel_i   => main_cc_chip_sel,
          slow_sel_i   => main_cc_slow_sel,
