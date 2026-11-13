@@ -17,7 +17,11 @@ use work.types_pkg.all;
 
 entity qnice_wrapper is
 generic (
-   G_BOARD : string                                         -- Which platform are we running on.
+   G_BOARD : string;                                        -- Which platform are we running on.
+   -- K325T a1200-lxshell: false = no QNICE SoC (CPU, ROM, RAM, UART, SD controller): its registers and
+   -- its device bus are driven by the host master (the Linux module through the bridge); the device
+   -- decoders below stay as they are.  The menu strings ROM (config.vhd) goes with it.
+   G_QNICE_LOCAL : boolean := true
 );
 port (
    clk_i                     : in  std_logic;
@@ -195,6 +199,7 @@ end function str2data;
 begin
 
    -- QNICE Co-Processor (System-on-a-Chip) for On-Screen-Menu, Disk mounting/virtual drives, ROM loading, etc.
+   g_qnice_local : if G_QNICE_LOCAL generate
    QNICE_SOC : entity work.QNICE
       generic map (
          G_FIRMWARE              => QNICE_FIRMWARE,
@@ -265,8 +270,76 @@ begin
          ramrom_wait_i           => qnice_ramrom_wait,
          ramrom_we_o             => qnice_ramrom_we_o
       ); -- QNICE_SOC
+   end generate g_qnice_local;
+
+   g_qnice_host : if not G_QNICE_LOCAL generate
+   QNICE_HOST : entity work.qnice_host_stub
+      port map (
+         clk50_i                 => clk_i,
+         reset_n_i               => not rst_i,
+
+         -- serial communication (rxd, txd only; rts/cts are not available)
+         -- 115.200 baud, 8-N-1
+         uart_rxd_i              => uart_rxd_i,
+         uart_txd_o              => uart_txd_o,
+
+         -- Micro SD Connector (external slot at back of the cover)
+         sd_reset_o              => sd_reset_o,
+         sd_clk_o                => sd_clk_o,
+         sd_mosi_o               => sd_mosi_o,
+         sd_miso_i               => sd_miso_i,
+         sd_cd_i                 => sd_cd_i,
+
+         -- SD Connector (this is the slot at the bottom side of the case under the cover)
+         sd2_reset_o             => sd2_reset_o,
+         sd2_clk_o               => sd2_clk_o,
+         sd2_mosi_o              => sd2_mosi_o,
+         sd2_miso_i              => sd2_miso_i,
+         sd2_cd_i                => sd2_cd_i,
+
+         -- QNICE public registers
+         csr_reset_o             => qnice_csr_reset_o,
+         csr_pause_o             => qnice_csr_pause_o,
+         csr_osm_o               => qnice_osm_cfg_enable_o,
+         csr_keyboard_o          => qnice_csr_keyboard_on_o,
+         csr_joy1_o              => qnice_csr_joy1_on_o,
+         csr_joy2_o              => qnice_csr_joy2_on_o,
+         osm_xy_o                => qnice_osm_cfg_xy_o,
+         osm_dxdy_o              => qnice_osm_cfg_dxdy_o,
+
+         ascal_mode_i            => "0" & qnice_ascal_triplebuf_i & qnice_ascal_polyphase_i & qnice_ascal_mode_i,
+         ascal_mode_o            => qnice_ascal_mode_o,
+
+         -- Keyboard input for the firmware and Shell (see sysdef.asm)
+         keys_n_i                => qnice_qnice_keys_n_i,
+
+         -- 256-bit General purpose control flags
+         -- "d" = directly controled by the firmware
+         -- "m" = indirectly controled by the menu system
+         control_d_o             => qnice_gp_reg_o,
+         control_m_o             => qnice_osm_control_m_o,
+
+         -- 16-bit special-purpose and 16-bit general-purpose input flags
+         -- Special-purpose flags are having a given semantic when the "Shell" firmware is running,
+         -- but right now they are reserved and not used, yet.
+         special_i               => (others => '0'),
+         general_i               => (others => '0'),
+
+         -- QNICE MMIO 4k-segmented access to RAMs, ROMs and similarily behaving devices
+         -- ramrom_dev_o: 0 = VRAM data, 1 = VRAM attributes, > 256 = free to be used for any "RAM like" device
+         -- ramrom_addr_o is 28-bit because we have a 16-bit window selector and a 4k window: 65536*4096 = 268.435.456 = 2^28
+         ramrom_dev_o            => qnice_ramrom_dev_o,
+         ramrom_addr_o           => qnice_ramrom_addr_o,
+         ramrom_data_o           => qnice_ramrom_data_out_o,
+         ramrom_data_i           => qnice_ramrom_data_in,
+         ramrom_ce_o             => qnice_ramrom_ce_o,
+         ramrom_wait_i           => qnice_ramrom_wait,
+         ramrom_we_o             => qnice_ramrom_we_o
+      ); -- QNICE_HOST
+   end generate g_qnice_host;
 
    -- Shell configuration file config.vhd
+   g_cfg_local : if G_QNICE_LOCAL generate
    shell_cfg : entity work.config
       port map (
          clk_i                   => clk_i,
@@ -277,6 +350,11 @@ begin
          -- config data
          data_o                  => qnice_config_data
       ); -- shell_cfg
+   end generate g_cfg_local;
+   -- host master: the menu strings live on the Linux module (a file generated from config.vhd)
+   g_cfg_host : if not G_QNICE_LOCAL generate
+      qnice_config_data <= (others => '0');
+   end generate g_cfg_host;
 
    -- QNICE devices selected via qnice_ramrom_dev
    --    Devices with IDs < x"0100" are framework devices
