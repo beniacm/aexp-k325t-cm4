@@ -136,6 +136,10 @@ architecture synthesis of amiga_fastram is
    signal m_qv         : std_logic_vector(7 downto 0) := (others => '0');  -- entries not yet written
    signal m_ack_rpg_d  : std_logic_vector(3 downto 0) := (others => '0');
    signal m_ack_rpg_dd : std_logic_vector(3 downto 0) := (others => '0');
+   -- the Gray pointers must stay registers of their own (their MSB equals the binary pointer's MSB:
+   -- Vivado merged m_req_wpg(3) into m_wp(3), and the CDC path lost its max-delay constraint)
+   attribute dont_touch : string;
+   attribute dont_touch of m_req_wpg  : signal is "true";
    attribute async_reg of m_ack_rpg_d  : signal is "true";
    attribute async_reg of m_ack_rpg_dd : signal is "true";
    signal m_rps        : unsigned(3 downto 0);
@@ -146,6 +150,7 @@ architecture synthesis of amiga_fastram is
    signal hr_wpg_dd    : std_logic_vector(3 downto 0) := (others => '0');
    signal hr_rp        : unsigned(3 downto 0) := (others => '0');
    signal hr_ack_rpg   : std_logic_vector(3 downto 0) := (others => '0');
+   attribute dont_touch of hr_ack_rpg : signal is "true";
    signal hr_wps       : unsigned(3 downto 0);
    signal hr_qi        : integer range 0 to 7;
 
