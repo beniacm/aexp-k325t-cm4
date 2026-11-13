@@ -583,6 +583,31 @@ int main(int argc, char** argv) {
     if (cyc == 200) top->rst_ext = 0;
     // --host-link: the core is held while the master's CSR b0 is set (QNICE's csr_reset)
     if (host && !reset_cyc && cyc >= 200) top->rst_ext = top->h_csr & 1;
+    // --host-link: at every release, the menu bits (CFM) must describe the machine the bench's options
+    // configure (the bench does not decode CFM itself: mega65.vhd's decode is checked on the board);
+    // the expected userio payloads as mega65.vhd p_topo + amiga_config.vhd derive them
+    if (host) {
+      static bool held = true;
+      bool now = top->h_csr & 1;
+      if (held && !now) {
+        auto bit = [&](int n) -> unsigned { return (top->h_cfm[n / 32] >> (n % 32)) & 1; };
+        unsigned c512 = bit(73), c1m = bit(74), ecs = bit(77), aga = bit(78), f2 = bit(80), f4 = bit(81),
+                 f8 = bit(82), z3 = bit(83), c020 = bit(86), ide = bit(87);
+        unsigned c2m = aga;                                  // AGA = 2 MB chip in the cache (stage 3)
+        unsigned slow = !c512 && !c1m && !c2m;
+        unsigned fs = f8 ? 3 : (f4 || z3) ? 2 : f2 ? 1 : 0;
+        unsigned e_chip = ((ecs || c1m || c2m) ? 8 : 0) | ((aga && c2m) ? 16 : 0);
+        unsigned e_cpu = c020 ? 3 : 0;
+        unsigned e_mem = (slow ? 4 : 0) | ((c1m || c2m) ? 1 : 0) | (c2m ? 2 : 0) | (fs << 4);
+        bool ok = e_chip == (top->cfg_chipset & 0x18) && e_cpu == (top->cfg_cpu & 3) &&
+                  e_mem == (top->cfg_mem & 0x37) && (bool)ide == (bool)top->ide_on;
+        fprintf(stderr, "--host-link: release at frame %u: CFM topology -> chipset %02x cpu %02x mem %02x ide %u; "
+                "bench options chipset %02x cpu %02x mem %02x ide %u: %s\n", g_frame, e_chip, e_cpu, e_mem, ide,
+                top->cfg_chipset, top->cfg_cpu, top->cfg_mem, top->ide_on, ok ? "match" : "MISMATCH");
+        if (!ok) { fprintf(stderr, "FAIL: the menu bits and the bench configuration disagree\n"); exit(2); }
+      }
+      held = now;
+    }
     if (reset_cyc && cyc == reset_cyc + 200) { top->rst_ext = 0; reset_cyc = 0; }
     int vpos = top->o_vpos;
     if (cput && (int)g_frame >= cput_from && (int)g_frame <= cput_to) {
