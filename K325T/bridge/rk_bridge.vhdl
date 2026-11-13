@@ -1,6 +1,11 @@
 --------------------------------------------------------------------------------
 -- rk_bridge.vhdl -- Rockchip (CM4 socket) <-> MEGA65 service bridge.
 --
+-- AExp (Amiga) COPY, diverged on purpose from the master copy mega65-core/src/vhdl/rk_bridge.vhdl
+-- (base 0705ce35): + HOST_FIFOS and the host master's opcodes 0x80..0x82 / STATUS 72..81 for the
+-- Linux shell (a1200-lxshell, user decision 2026-11-13: the Linux menu is for the Amiga only, the
+-- MEGA65 core and mega65-core stay untouched).  Syncing the two copies is a conscious step.
+--
 -- The Rockchip is SPI master on spi3-m1 (/dev/spidev3.0, mode 0, MSB first).
 -- The SPI slave, command decoder, FIFOs and UART engine run in a FAST clock
 -- (clk, 162 MHz on the K325T = 4 x cpuclock from the same MMCM).  SCK is

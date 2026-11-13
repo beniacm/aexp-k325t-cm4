@@ -38,7 +38,7 @@ for f in [os.path.join(here, 'top_qmtech_k325t_cm4.vhd'), os.path.join(here, 'av
           os.path.join(here, 'amiga_fastram.vhd'), os.path.join(here, 'stall_ctrl.vhd'),
           os.path.join(here, 'mig_arb.vhd'), os.path.join(here, 'lat_meter.vhd'), os.path.join(here, 'chip_cache.vhd'), os.path.join(here, 'hdd_spi.vhd'), os.path.join(here, 'host_menu_pkg.vhd'), os.path.join(here, 'qnice_host.vhd'), os.path.join(here, 'audio_fifo.vhd'),
           os.path.join(mc, 'sd_emu.vhdl'),
-          os.path.join(here, 'bridge/rk_bridge.vhdl'),   # = the master copy + HOST_FIFOS (to be merged)
+          os.path.join(here, 'bridge/rk_bridge.vhdl'),   # Amiga-only copy: master 0705ce35 + HOST_FIFOS (diverged on purpose)
            os.path.join(mc, 'rk_iprog.vhdl')]:
     assert os.path.exists(f), f
     out.append('add_files -norecurse {%s}; set_property FILE_TYPE {VHDL 2008} [get_files {%s}]' % (f, f))
