@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "hddsrv_core.h"
+#include "census.h"   // a1200-pistorm: --census FILE (aexp13 M0)
 #include <deque>
 
 // a1200-lxshell bench link (--host-link REQ RSP): the Linux shell's bridge commands from a named pipe,
@@ -307,6 +308,8 @@ static bool load_rom(const char* fn, uint16_t* dst, size_t words) {
   return true;
 }
 
+static Census g_census;
+
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
   const char* kick = nullptr; const char* ext = nullptr; const char* out = nullptr;
@@ -360,6 +363,7 @@ int main(int argc, char** argv) {
     else if (a == "--preload") { preload_fn = nx(); preload_addr = strtoul(nx(), 0, 0); }
     else if (a == "--dump") { dump_addr = strtoul(nx(), 0, 0); dump_len = strtoul(nx(), 0, 0); dump_fn = nx(); }
     else if (a == "--stop") { stop_addr = strtoll(nx(), 0, 0); stop_val = strtoul(nx(), 0, 0); }
+    else if (a == "--census") g_census.open(nx());
     else if (a == "--cputrace") { cput_fn = nx(); cput_from = atoi(nx()); cput_to = atoi(nx()); }
     else if (a == "--adf") adf_fn = nx();
     else if (a == "--adf2") { adf2_frame = atoi(nx()); adf2_fn = nx(); }
@@ -610,6 +614,7 @@ int main(int argc, char** argv) {
     }
     if (reset_cyc && cyc == reset_cyc + 200) { top->rst_ext = 0; reset_cyc = 0; }
     int vpos = top->o_vpos;
+    g_census.step(g_tick, g_frame, top->o_cpustate, top->o_cpu_addr32, top->o_cpu_ack);
     if (cput && (int)g_frame >= cput_from && (int)g_frame <= cput_to) {
       // one line per CPU request: start tick, ack tick, state, address, beam position at start
       int cs = top->o_cpustate;
@@ -646,6 +651,7 @@ int main(int argc, char** argv) {
     if (vpos != g_last_vpos) {
       col = 0;
       if (vpos == 0 && g_last_vpos > 0) {
+        g_census.frame_end(g_frame);
         g_frame++;
         g_frame_a = g_frame;
         if (g_frame % 10 == 0) fprintf(stderr, "frame %u tick %llu recs %llu pc %06x\n", g_frame,
@@ -725,6 +731,7 @@ int main(int argc, char** argv) {
     }
   }
   if (cput) fclose(cput);
+  g_census.close();
   if (dump_fn) {
     uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];
     FILE* f = fopen(dump_fn, "wb");
