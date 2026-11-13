@@ -35,6 +35,25 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "hddsrv_core.h"
+#include <deque>
+
+// a1200-lxshell bench link (--host-link REQ RSP): the Linux shell's bridge commands from a named pipe,
+// one request per line, one answer line each (ext/aexp9_lxshell/PROTOCOL.md "bench link"):
+//   S          -> the 82 STATUS bytes as hex (the bridge's layout: 0..2 signature, 52 core id,
+//                 72 master version, 73/74 PUT free, 75/76 GET fill, 77 flags, 78..81 menu id)
+//   P <hex>    -> HOST_PUT of those bytes (into the 8 KB PUT queue); answer "OK"
+//   G <n>      -> HOST_GET of n bytes (0x00 past the fill level), as hex
+//   R          -> HOST_RESET; answer "OK"
+//   W <ticks>  -> run the machine clock (28.375 MHz ticks; the master's 50 MHz clock runs with it);
+//                 answer "OK <frame> <tick>" when done
+//   Q          -> quit; EOF on REQ quits too
+// The bridge's SPI and FIFO RTL are not in this bench (sim tb_host_link.vhd covers them): the queues
+// here stand in for its PUT / GET FIFOs, the master and the devices behind it are the real RTL.
+static FILE *g_hreq = nullptr, *g_hrsp = nullptr;
+static std::deque<uint8_t> g_putq, g_getq;
+static bool g_hovf = false, g_hclr = false;
+static uint64_t g_hbudget = 0; static bool g_hwait = false;
+static uint32_t g_menu_id = 0;
 
 struct Rec {               // 16 bytes
   uint32_t tick;           // 28 MHz tick of the first active tick
@@ -298,6 +317,7 @@ int main(int argc, char** argv) {
   unsigned chipset = 0x00, mem = 0x03, cpu = 0x00;
   std::vector<int> shot_frames; bool px28 = false;
   bool use_cache = false, stock020 = false; int shrink = 0, lat_min = 20, lat_span = 40;
+  const char* hreq_fn = nullptr; const char* hrsp_fn = nullptr;
   const char* preload_fn = nullptr; uint32_t preload_addr = 0;
   const char* dump_fn = nullptr; uint32_t dump_addr = 0, dump_len = 0;
   int64_t stop_addr = -1; uint32_t stop_val = 0;
@@ -332,6 +352,8 @@ int main(int argc, char** argv) {
         shot_frames.push_back(atoi(l.substr(p, q - p).c_str())); p = q + 1; } }
     else if (a == "--px28") px28 = true;
     else if (a == "--cache") use_cache = true;
+    else if (a == "--host-link") { hreq_fn = nx(); hrsp_fn = nx(); }
+    else if (a == "--menu-id") g_menu_id = strtoul(nx(), 0, 16);
     else if (a == "--stock") stock020 = true;
     else if (a == "--shrink") shrink = atoi(nx());
     else if (a == "--lat") { lat_min = atoi(nx()); lat_span = atoi(nx()); }
@@ -360,7 +382,8 @@ int main(int argc, char** argv) {
     // 1.25M.., the cache's kick lines); 256 KB images mirrored like the ROM model
     uint16_t* km = (uint16_t*)&r->tb_top->kickmem[0];
     uint16_t* dd = (uint16_t*)&r->tb_top->ddr[0];
-    for (size_t i = 0; i < 262144; i++) dd[0x140000 + i] = km[i];
+    if (!hreq_fn) for (size_t i = 0; i < 262144; i++) dd[0x140000 + i] = km[i];
+    else fprintf(stderr, "--host-link: %s only as the cache check's shadow; DDR3 gets the Kickstart from the master\n", kick);
     top->kick512 = g_rom_bytes > 262144;
   }
   if (ext)  load_rom(ext,  (uint16_t*)&r->tb_top->extmem[0], 262144);
@@ -433,13 +456,38 @@ int main(int argc, char** argv) {
   // the machine clock is the source clock gated like the BUFGCE: a source edge reaches clk only
   // when the cache's combinational miss is low just before it.  Machine time (g_tick) counts the
   // machine edges only, so pictures and traces are in machine time as without the cache.
-  const uint64_t SRC_H = 15969, UI_H = 5000;   // half periods in ps
-  uint64_t t_src = SRC_H, t_ui = UI_H, src_edges = 0, stalled = 0;
-  bool src_lvl = false, ui_lvl = false;
+  const uint64_t SRC_H = 15969, UI_H = 5000, Q_H = 10000;   // half periods in ps
+  uint64_t t_src = SRC_H, t_ui = UI_H, t_q = Q_H, src_edges = 0, stalled = 0, q_edges = 0;
+  bool src_lvl = false, ui_lvl = false, q_lvl = false;
+  const bool host = hreq_fn != nullptr;
+  if (host) {
+    if (!use_cache) { fprintf(stderr, "--host-link needs --cache (the Kickstart port is the cache's)\n"); return 1; }
+    fprintf(stderr, "--host-link: waiting for the client on %s / %s\n", hreq_fn, hrsp_fn);
+    g_hreq = fopen(hreq_fn, "r"); g_hrsp = fopen(hrsp_fn, "w");
+    if (!g_hreq || !g_hrsp) { perror("--host-link"); return 1; }
+    top->host_on = 1; top->q_rst = 1;
+    frames = 1 << 30;
+  }
+  // the master's clock: the PUT queue's front is presented first-word-fall-through; s_pop (set at the
+  // previous edge) takes it, m_push (set at the previous edge) delivers an answer byte
+  auto q_edge = [&]() {
+    q_lvl = !q_lvl; t_q += Q_H;
+    if (q_lvl) {
+      if (top->hs_pop && !g_putq.empty()) g_putq.pop_front();
+      if (top->hm_push) g_getq.push_back(top->hm_data);
+      top->hs_valid = !g_putq.empty();
+      top->hs_data = g_putq.empty() ? 0 : g_putq.front();
+      top->hm_full = g_getq.size() >= 4092;
+      top->h_clr = g_hclr; g_hclr = false;
+      if (++q_edges == 16) top->q_rst = 0;
+    }
+    top->q_clk = q_lvl; top->eval();
+  };
   int inj_left = 0; uint64_t inj_n = 0;
   auto machine_edge = [&]() {
     if (!use_cache) { top->clk = 0; top->eval(); top->clk = 1; top->eval(); if (hdf_fn) spi_step(top); return; }
     for (;;) {
+      if (host && t_q <= t_ui && t_q <= t_src) { q_edge(); continue; }
       if (t_ui <= t_src) {
         ui_lvl = !ui_lvl; top->ui_clk = ui_lvl; top->eval(); t_ui += UI_H;
         if (ui_lvl && hdf_fn) spi_step(top);
@@ -468,7 +516,55 @@ int main(int argc, char** argv) {
   int rst_kind = !rs ? 0 : strstr(rs, "kbd") ? 1 : strstr(rs, "cpu") ? 2 : 0;
   uint64_t kbd_until = 0;
   top->kbd_rst = 0; top->cpu_rst = 0;
+  auto hex_line = [&](const std::vector<uint8_t>& b) {
+    std::string o; o.reserve(b.size() * 2 + 1);
+    static const char* H = "0123456789ABCDEF";
+    for (uint8_t v : b) { o += H[v >> 4]; o += H[v & 15]; }
+    fprintf(g_hrsp, "%s\n", o.c_str()); fflush(g_hrsp);
+  };
+  // one request; false = quit
+  auto host_cmd = [&]() -> bool {
+    static std::vector<char> line(1 << 20);
+    if (!fgets(line.data(), line.size(), g_hreq)) return false;
+    char c = line[0]; const char* arg = line.data() + 1; while (*arg == ' ') arg++;
+    if (c == 'S') {
+      std::vector<uint8_t> st(82, 0);
+      st[0] = 0x4D; st[1] = 0x65; st[2] = 0x04; st[52] = 0x03; st[72] = 0x01;
+      unsigned fr = 8192 - g_putq.size(), fl = g_getq.size();
+      st[73] = fr >> 8; st[74] = fr & 255; st[75] = fl >> 8; st[76] = fl & 255;
+      st[77] = (top->h_flags & 0xFE) | (g_hovf ? 1 : 0);
+      st[78] = g_menu_id >> 24; st[79] = g_menu_id >> 16; st[80] = g_menu_id >> 8; st[81] = g_menu_id;
+      hex_line(st);
+    } else if (c == 'P') {
+      for (const char* p = arg; isxdigit(p[0]) && isxdigit(p[1]); p += 2) {
+        unsigned v; sscanf(p, "%2x", &v);
+        if (g_putq.size() < 8192) g_putq.push_back(v); else g_hovf = true;
+      }
+      fprintf(g_hrsp, "OK\n"); fflush(g_hrsp);
+    } else if (c == 'G') {
+      size_t n = strtoul(arg, 0, 0); std::vector<uint8_t> b(n, 0);
+      for (size_t i = 0; i < n && !g_getq.empty(); i++) { b[i] = g_getq.front(); g_getq.pop_front(); }
+      hex_line(b);
+    } else if (c == 'R') {
+      g_putq.clear(); g_getq.clear(); g_hovf = false; g_hclr = true;
+      fprintf(g_hrsp, "OK\n"); fflush(g_hrsp);
+    } else if (c == 'W') {
+      g_hbudget = strtoull(arg, 0, 0); g_hwait = true;
+      if (!g_hbudget) { fprintf(g_hrsp, "OK %u %llu\n", g_frame, (unsigned long long)g_tick); fflush(g_hrsp); g_hwait = false; }
+    } else if (c == 'Q') return false;
+    else { fprintf(g_hrsp, "ERR\n"); fflush(g_hrsp); }
+    return true;
+  };
   for (uint64_t cyc = cyc0;; cyc++) {
+    if (host) {
+      if (g_hwait && g_hbudget == 0) {
+        fprintf(g_hrsp, "OK %u %llu\n", g_frame, (unsigned long long)g_tick); fflush(g_hrsp); g_hwait = false;
+      }
+      bool quit = false;
+      while (g_hbudget == 0) if (!host_cmd()) { quit = true; break; }
+      if (quit) { fprintf(stderr, "--host-link: client gone at frame %u tick %llu\n", g_frame, (unsigned long long)g_tick); break; }
+      g_hbudget--;
+    }
     machine_edge();
     if (rst_cmd > 0 && rst_base < 0 && (long)g_hdd.cmds >= rst_cmd) rst_base = (long)(g_hdd.rd_sect + g_hdd.wr_sect);
     if (rst_cmd > 0 && rst_base >= 0 && (long)(g_hdd.rd_sect + g_hdd.wr_sect) >= rst_base + rst_sect) {
@@ -483,6 +579,8 @@ int main(int argc, char** argv) {
     if (kbd_until && cyc >= kbd_until) { top->kbd_rst = 0; top->cpu_rst = 0; kbd_until = 0; }
     g_tick++;
     if (cyc == 200) top->rst_ext = 0;
+    // --host-link: the core is held while the master's CSR b0 is set (QNICE's csr_reset)
+    if (host && !reset_cyc && cyc >= 200) top->rst_ext = top->h_csr & 1;
     if (reset_cyc && cyc == reset_cyc + 200) { top->rst_ext = 0; reset_cyc = 0; }
     int vpos = top->o_vpos;
     if (cput && (int)g_frame >= cput_from && (int)g_frame <= cput_to) {

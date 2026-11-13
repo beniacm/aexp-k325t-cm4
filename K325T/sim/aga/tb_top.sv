@@ -42,6 +42,21 @@ module tb_top (
   // df0: the core's adf_track_engine, image words served by the C++ driver (DPI adf_rd)
   input  wire        disk_mounted,
   input  wire [7:0]  disk_tracks,
+  // a1200-lxshell bench link: the host master (host_bench.vhd: qnice_host + the Kickstart port's
+  // decode) on its own 50 MHz clock; main.cpp's --host-link feeds its streams from a named pipe
+  input  wire        q_clk,
+  input  wire        q_rst,
+  input  wire        host_on,         // the Kickstart reaches the cache's DDR3 only through the master
+  input  wire [7:0]  hs_data,
+  input  wire        hs_valid,
+  output wire        hs_pop,
+  output wire [7:0]  hm_data,
+  output wire        hm_push,
+  input  wire        hm_full,
+  input  wire        h_clr,
+  output wire [7:0]  h_flags,
+  output wire [5:0]  h_csr,
+  output wire [255:0] h_cfm,
   // backdoor memory port (C++ writes test programs while the CPU runs)
   input  wire        bd_we,
   input  wire [20:0] bd_addr,       // chip word address
@@ -204,12 +219,20 @@ module tb_top (
   wire [511:0] cc_wdata;
   wire [127:0] lp_rdata;
   wire        cc_mode;
+  wire        kq_we, kq_wait, kick512_h;
+  wire [18:0] kq_addr;
+  wire [7:0]  kq_data;
+  host_bench i_host (.q_clk(q_clk), .q_rst(q_rst), .s_data(hs_data), .s_valid(hs_valid), .s_pop(hs_pop),
+    .m_data(hm_data), .m_push(hm_push), .m_full(hm_full), .clr(h_clr), .flags(h_flags), .csr(h_csr),
+    .cfm(h_cfm), .kq_we(kq_we), .kq_addr(kq_addr), .kq_data(kq_data), .kq_wait(kq_wait),
+    .kick512(kick512_h));
   chip_cache i_cache (
     .clk_i(src_clk), .reset_i(cache_reset), .cache_on_i(cache_on), .shrink_i(shrink), .chip1m_i(1'b0),
     .chip_sel_i(use_cache & is_chip), .slow_sel_i(1'b0),
     // stage 2b: the Kickstart lives in DDR3 behind the cache (bank 2 / the kick lines); the bench
     // preloads it into the DDR3 model where the QNICE load port would put it (backing words 1.25M..)
-    .kick_sel_i(use_cache & is_kick), .kick512_i(kick512),
+    .kick_sel_i(use_cache & is_kick), .kick512_i(host_on ? kick512_h : kick512),
+    .q_clk_i(q_clk), .q_we_i(kq_we), .q_addr_i(kq_addr), .q_data_i(kq_data), .q_wait_o(kq_wait),
     .dbr_i(mm_dma_dbr), .dreg_i(mm_dma_reg), .pf_en_i(pf_en), .pf_stats_o(pf_stats),
     .addr_i(ram_addr[20:1]), .wdata_i(ram_wdata),
     .we_n_i(ram_we_n), .oe_n_i(ram_oe_n), .bhe_n_i(ram_bhe_n), .ble_n_i(ram_ble_n),

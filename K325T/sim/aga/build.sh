@@ -65,6 +65,11 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # a1200-ide: the hard disk SPI slave + engine -> Verilog
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -frelaxed --out=verilog "$root/K325T/hdd_spi.vhd" \
     -e hdd_spi > hdd_spi.v 2> ghdl_hdd.log) || { cat "$OUT/ghdl_hdd.log" >&2; exit 1; }
+# a1200-lxshell: the host master (qnice_host + the Kickstart port's device decode) -> Verilog, for
+# --host-link; the menu id / defaults package from menu_gen.py as in the FPGA build
+python3 -I "$root/K325T/menu_gen.py" "$root" "$OUT/bench.menu" --vhdl "$OUT/host_menu_pkg.vhd" > "$OUT/menu_gen.log"
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -frelaxed --out=verilog "$OUT/host_menu_pkg.vhd" \
+    "$root/K325T/qnice_host.vhd" "$here/host_bench.vhd" -e host_bench > host_bench.v 2> ghdl_host.log) || { cat "$OUT/ghdl_host.log" >&2; exit 1; }
 # FAST_A500=1: the 68020 (TG68K) and the chip cache replaced by stubs -- for A500 runs (fx68k, ideal
 # memory) only; --cpu 3 and --cache do not work in such a build
 if [ -n "${FAST_A500:-}" ]; then
@@ -75,7 +80,7 @@ fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/adf_engine.v $OUT/hdd_spi.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \
