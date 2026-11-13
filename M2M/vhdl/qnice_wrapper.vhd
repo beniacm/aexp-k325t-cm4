@@ -199,7 +199,7 @@ end function str2data;
 begin
 
    -- QNICE Co-Processor (System-on-a-Chip) for On-Screen-Menu, Disk mounting/virtual drives, ROM loading, etc.
-   g_qnice_local : if G_QNICE_LOCAL generate
+   gen_soc_local : if G_QNICE_LOCAL generate
    QNICE_SOC : entity work.QNICE
       generic map (
          G_FIRMWARE              => QNICE_FIRMWARE,
@@ -270,9 +270,9 @@ begin
          ramrom_wait_i           => qnice_ramrom_wait,
          ramrom_we_o             => qnice_ramrom_we_o
       ); -- QNICE_SOC
-   end generate g_qnice_local;
+   end generate gen_soc_local;
 
-   g_qnice_host : if not G_QNICE_LOCAL generate
+   gen_soc_host : if not G_QNICE_LOCAL generate
    QNICE_HOST : entity work.qnice_host_stub
       port map (
          clk50_i                 => clk_i,
@@ -336,7 +336,7 @@ begin
          ramrom_wait_i           => qnice_ramrom_wait,
          ramrom_we_o             => qnice_ramrom_we_o
       ); -- QNICE_HOST
-   end generate g_qnice_host;
+   end generate gen_soc_host;
 
    -- Shell configuration file config.vhd
    g_cfg_local : if G_QNICE_LOCAL generate
