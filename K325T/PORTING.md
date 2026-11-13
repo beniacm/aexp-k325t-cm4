@@ -2221,3 +2221,28 @@ With it off Gayle's $DA0000 decoding is off (`hdc_ena`), hdd_spi drives nothing:
   617 KB/s (the 68EC020's PIO loop is the limit; FS-UAE 680), write 406 KB/s (fill and drain in
   series: ide.v has no fast write), link 859 KB/s each way.  Domination does not run from a hard disk
   (black; FS-UAE too), only from floppy.
+
+## The combined builds on both boards (2026-11-13; a1200-ide = a1200-aga 73c16d5 + 365ac08 + e76c513 + the hard disk)
+
+The settings file is 94 bytes now (OPTM_SIZE 94: the IDE line at offset 87).  START_CARD checks the
+size, so a 93-byte file from an earlier build gives the factory defaults (the A500 profile); profile
+files for these builds: insert one byte at offset 87 (0 = IDE off, 1 = on).  The IDE line is machine
+topology like the memory radios: held while QNICE restarts; switching it on or off cold-boots the Amiga.
+
+- build4_radxa (94aa462, WNS +0.091 / WHS +0.029, 437.5 BRAM tiles) and build5_radxa (30f6f2a = +
+  e76c513, WNS +0.081 / WHS +0.029, 437.5): A1200 + IDE settings, JTAG load, no stallmon write, the
+  server running across the loads: Workbench 3.1 from DH0 on 10 of 10 loads each (21-22 s after the
+  load); hdtest read 617 / write 406 / read-back 595 KB/s; 24 server kills during disk traffic, 0 data
+  errors (reads and writes resumed from the RAM record); 10/10 resets during disk traffic; IDE off in
+  the menu while running: one cold boot, on again: one cold boot and DH0 boots; A500 settings with IDE
+  off: determinism 6b9c877b / 2649b948, E fff52892, 0 mismatches; a 93-byte settings file: factory
+  defaults.  build5 only: the card away for 30 s / 60 s across a full reset: "Waiting for the SD card"
+  on the screen, core held, the card's profile boots 6 s after the card is back, no further reset;
+  kick.rom missing: the fatal message, core held.
+- build5_luckfox (the Luckfox pin variant of the same commit, G_HDD off; WNS +0.029 / WHS +0.024,
+  433.5): 10/10 JTAG loads with the A1200 profile, card away 30 s (held, then boots), kick.rom missing
+  (held), 10/10 resets with 4 MB fast, cputime2 44/44 rows equal to the reference, A500 gate pass, IDE
+  on with no drive: Kickstart finds nothing at once and the floppy boots.  The Luckfox has no hard disk
+  link: hdd_spi's pins are the module's BT1120 video lines there (inputs tied idle in that top).
+- Domination from a hard disk shows a black picture on the board and in FS-UAE alike (it runs from
+  floppy); not a defect of the port.
