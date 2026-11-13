@@ -41,7 +41,12 @@ port (
    hr_byteenable: out std_logic_vector(1 downto 0);
    hr_readdata  : in  std_logic_vector(15 downto 0);
    hr_readdatavalid : in std_logic;
-   hr_waitrequest   : in std_logic
+   hr_waitrequest   : in std_logic;
+   -- the track engine's dirty-track events (toggle handshake; the bench passes them straight across,
+   -- mega65.vhd uses cdc_stable both ways)
+   wrt_track    : in  std_logic_vector(7 downto 0);
+   wrt_req      : in  std_logic;
+   wrt_ack      : out std_logic
 );
 end entity;
 
@@ -90,7 +95,7 @@ begin
                 qnice_ce_i => adf_ce, qnice_we_i => we, qnice_data_o => adf_rd, qnice_wait_o => adf_wt,
                 qnice_disk_mounted_o => disk_mounted, qnice_disk_tracks_o => disk_tracks,
                 qnice_write_en_o => write_en, qnice_any_dirty_o => open,
-                qnice_wrt_track_i => (others => '0'), qnice_wrt_req_i => '0', qnice_wrt_ack_o => open,
+                qnice_wrt_track_i => wrt_track, qnice_wrt_req_i => wrt_req, qnice_wrt_ack_o => wrt_ack,
                 hr_clk_i => q_clk, hr_rst_i => q_rst, hr_write_o => hr_write, hr_read_o => hr_read,
                 hr_address_o => hr_address, hr_writedata_o => hr_writedata, hr_byteenable_o => hr_byteenable,
                 hr_burstcount_o => open, hr_readdata_i => hr_readdata, hr_readdatavalid_i => hr_readdatavalid,

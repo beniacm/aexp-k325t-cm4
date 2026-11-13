@@ -135,15 +135,25 @@ module tb_top (
   reg  [15:0] avm_rdata = 0;
   reg         avm_rvalid = 0;
   import "DPI-C" function int adf_rd(input int addr);
+  wire [7:0]  eng_wr_track;
+  wire        eng_wr_req, eng_wr_ack;
+  wire [1:0]  avm_be;
   adf_engine_tb i_adf (
     .clk(clk), .reset(rst_ext), .bus_grant(done), .disk_mounted(host_on ? h_mounted : disk_mounted),
     .disk_tracks(host_on ? h_tracks : disk_tracks),
+    .write_en(host_on & h_wr_en), .wr_track(eng_wr_track), .wr_req(eng_wr_req), .wr_ack(host_on & eng_wr_ack),
+    .avm_byteenable(avm_be),
     .io_fpga(io_fpga), .io_strobe(eng_strobe), .io_din(eng_din), .io_dout(io_dout), .io_wait(io_wait),
     .avm_write(avm_write), .avm_read(avm_read), .avm_address(avm_address), .avm_writedata(avm_writedata),
     .avm_readdata(avm_rdata), .avm_readdatavalid(avm_rvalid), .avm_waitrequest(1'b0));
   always @(posedge clk) begin
     avm_rvalid <= 0;
     if (avm_read) begin avm_rdata <= host_on ? adfmem[avm_address[18:0]] : adf_rd(avm_address)[15:0]; avm_rvalid <= 1; end
+    // the engine commits verified sectors into the image (the wrapper's write-back reads them there)
+    if (host_on && avm_write) begin
+      if (avm_be[0]) adfmem[avm_address[18:0]][7:0]  <= avm_writedata[7:0];
+      if (avm_be[1]) adfmem[avm_address[18:0]][15:8] <= avm_writedata[15:8];
+    end
   end
   // +flpdbg: the first floppy-channel frames and image reads
   reg flpdbg = 0; initial flpdbg = $test$plusargs("flpdbg");
@@ -238,7 +248,8 @@ module tb_top (
     .kick512(kick512_h),
     .disk_mounted(h_mounted), .disk_tracks(h_tracks), .write_en(h_wr_en),
     .hr_write(hr_write), .hr_read(hr_read), .hr_address(hr_address), .hr_writedata(hr_writedata),
-    .hr_byteenable(hr_be), .hr_readdata(hr_rdata), .hr_readdatavalid(hr_rvalid), .hr_waitrequest(1'b0));
+    .hr_byteenable(hr_be), .hr_readdata(hr_rdata), .hr_readdatavalid(hr_rvalid), .hr_waitrequest(1'b0),
+    .wrt_track(eng_wr_track), .wrt_req(eng_wr_req), .wrt_ack(eng_wr_ack));
   // the ADF image in "HyperRAM" (adf_mount_wrapper's word 0 = the track engine's word 0 in this bench):
   // written by the wrapper with byte enables, read back by it (2 q_clk latency) and by the engine
   reg  [15:0] adfmem [0:524287] /*verilator public*/;

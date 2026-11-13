@@ -12,6 +12,12 @@ entity adf_engine_tb is
       bus_grant           : in  std_logic;
       disk_mounted        : in  std_logic;
       disk_tracks         : in  std_logic_vector(7 downto 0);
+      -- a1200-lxshell bench: the write-back path to adf_mount_wrapper (defaults = write protected)
+      write_en            : in  std_logic := '0';
+      wr_track            : out std_logic_vector(7 downto 0);
+      wr_req              : out std_logic;
+      wr_ack              : in  std_logic := '0';
+      avm_byteenable      : out std_logic_vector(1 downto 0);
       io_fpga             : out std_logic;
       io_strobe           : out std_logic;
       io_din              : out std_logic_vector(15 downto 0);
@@ -39,10 +45,10 @@ begin
          bus_grant_i         => bus_grant,
          disk_mounted_i      => disk_mounted,
          disk_tracks_i       => disk_tracks,
-         write_en_i          => '0',          -- write protected
-         wr_track_o          => open,
-         wr_req_o            => open,
-         wr_ack_i            => '0',
+         write_en_i          => write_en,
+         wr_track_o          => wr_track,
+         wr_req_o            => wr_req,
+         wr_ack_i            => wr_ack,
          io_fpga_o           => io_fpga,
          io_strobe_o         => io_strobe,
          io_din_o            => io_din,
@@ -52,7 +58,7 @@ begin
          avm_read_o          => avm_read,
          avm_address_o       => avm_address,
          avm_writedata_o     => avm_writedata,
-         avm_byteenable_o    => open,
+         avm_byteenable_o    => avm_byteenable,
          avm_burstcount_o    => open,
          avm_readdata_i      => avm_readdata,
          avm_readdatavalid_i => avm_readdatavalid,
