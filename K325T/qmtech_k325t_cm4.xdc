@@ -138,7 +138,11 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/hr_ack_rpg*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/m_ack_rpg_d_reg*}]
 ## a1200-fastclk: the fast-RAM master select follows the fast setting (machine clock -> memory clock)
-set_max_delay 10 -datapath_only -to [get_cells -hierarchical -filter {NAME =~ CORE/hr_fc_s_reg[0]}]
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_main/cpu_fast_reg}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/hr_fc_s_reg[0]}]
+## a1200-fastclk: the write queue's Gray write pointer (live in this instance: wq_i = 1) to the memory clock
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/m_wp_reg*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/hr_wpg_d_reg*}]
 
 ## ---------------------------------------------------------------- configuration flash / multiboot
 ## QSPI flash (S25FL128L), written by the Rockchip through rk_bridge; CCLK via STARTUPE2.
