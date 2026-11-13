@@ -1542,11 +1542,11 @@ begin
    -- stray beats), W4 (memory-state age & blocked clocks), W5 (select: on, sel, fix, quiet count,
    -- select changes, hr_fast_on falls; the fix bit reads 1)
    -- $FB (stage 3, P4): W0 = stall controller registers r7..r0, W1 = pf_en & afifo & override,
-   -- W2 = the memory mode in effect: 24..16 topology (P2), 9..8 shrink, 7 override, 6 ECS, 5 AGA,
+   -- W2 = the memory mode in effect: 25 IDE (a1200-ide), 24..16 topology (P2), 9..8 shrink, 7 override, 6 ECS, 5 AGA,
    -- 4 2 MB chip, 3 cache mode latched, 2 2 MB requested, 1 cache requested, 0 AGA radio (held)
    k325t_fast_dbg_o <= main_stall_regs(40 downto 9) &
                        "00000000000000000000000" & main_stall_regs(8 downto 0) &
-                       "0000000" & main_topo & "000000" & main_cache_cfg(0) & main_cache_cfg(3) &
+                       "000000" & main_topo & "000000" & main_cache_cfg(0) & main_cache_cfg(3) &
                        main_memovr & main_chip_ecs & main_chip_aga & main_mem_chip2m & main_cache_on &
                        main_cc_2m_req & main_cc_on_req & main_topo(5) &
                        main_fast_dbg(143 downto 48) &

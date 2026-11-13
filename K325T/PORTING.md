@@ -2175,3 +2175,44 @@ every configuration: a flashed core could not come up as an A1200 at all.
 - NOT as described under P1: when the card is never served, the waiting message stays (seen for 75 s,
   the 21-s bound does not end it) and the core is not held meanwhile (the framework releases it before
   PREP_START; it runs with the default bits).  The same happens without these changes.  Open.
+
+# Roadmap step 2: the A1200 hard disk (branch a1200-ide, 2026-11-12/13)
+
+The A1200's own IDE port (Gayle, MiSTer's `ide.v`) with the drive served by `hddsrv` on the Linux
+module over a second SPI of its own, so Kickstart 3.1's scsi.device finds it with no extra driver.
+Opt-in: menu line 87 "IDE Hard Disk" (RAM submenu; OPTM_SIZE 93 -> 94: settings files insert one byte
+at offset 87, 1 = on; old 93-byte files are the wrong size and give factory defaults).  The line is
+machine topology like the memory radios: held while QNICE restarts, a change cold-boots the Amiga.
+With it off Gayle's $DA0000 decoding is off (`hdc_ena`), hdd_spi drives nothing: the stock machine.
+
+- RTL: patches 0133 (one IDE unit, 16-sector buffer, 2 block RAM tiles), 0134 (minimig_m65 exposes
+  ide.v's host port), 0135 (ide.v's buffer RAMs get their enable/cs ports: Vivado tied the open
+  VHDL-default ports of `bram.vhd`'s dpram to 0 -- every buffer word read FFFF); `K325T/hdd_spi.vhd`
+  (SPI slave in clk162 with rk_bridge's early MISO, 33 MHz; a 16-sector dual-clock block-RAM buffer;
+  an engine in the gated main clock doing ide.v's mgmt accesses; toggle handshakes; a collision
+  flag; `x"DEAD"` when the Amiga resets under an engine command; protocol in its header);
+  `main.vhd` exports minimig's reset to hdd_spi (Gayle resets ide.v only with a one-clock strobe);
+  `amiga_config.vhd` userio 0xF8 = `100011` when IDE is on (Gayle, master drive, no MiSTer fast IDE:
+  the 68020 reaches Gayle over the chip bus).  Pins only with the top generic G_HDD (radxacm3).
+- Pins (Radxa CM3 SPI0 M0): CLK BCM3 D18, MOSI BCM2 C18, MISO BCM6 D10, CS BCM13 E10, attention
+  BCM7 B12 (GPIO4_C5, gpiochip4 line 21).  Module change, done once on the Radxa rig (2026-11-12
+  23:40): `mv /boot/dtbo/rk3568-spi0-m0-cs0-spidev.dtbo.disabled /boot/dtbo/rk3568-spi0-m0-cs0-spidev.dtbo;
+  u-boot-update; reboot` (extlinux.conf: the fdtoverlays line gains that overlay).  Revert: rename it
+  back to `.dtbo.disabled`, `u-boot-update`, reboot.  The harness branch amiga-hdd has it as an
+  opt-in (`M65_HDD=1 install`).
+- Server `K325T/hddsrv/` (hddsrv_core.c shared with the Verilator bench, hddsrv_linux.c): ATA command
+  set, IDENTIFY in IDE-bus byte order, multiple mode 16 by default, ide.v's fast read (DRQ first, the
+  CPU waits on Gayle's nrdy), batched SPI transfers with a STATUS after every engine step (a race with
+  a stalled Amiga clock redoes the block the slow verified way), a read in its data phase recorded in
+  RAM (`/dev/shm/hddsrv.state`) so a restarted server resumes it, survives the core going away
+  (waits, comes back).  Run by hand: `hddsrv /dev/shm/IMAGE.hdf [-r read-only] [-v] [-s HZ] [-L N link
+  test]`; plain buffered writes, no fsync, nothing periodic; no service is installed.
+- Images: `K325T/tools/mk_hdf.py` (512 MB RDB, DH0 63 MB boot + DH1 447 MB, FFS, files from host
+  directories or ADFs), `mk_hdtest.py` (the read/write test with its $C0 mailbox).
+- Results (ext/aexp8_hdd/FINDINGS.md): Kickstart 3.1 boots DH0; Workbench 3.1 (built from the user's
+  ADFs, verified in FS-UAE first) reaches the Workbench screen; soak 116,510 sectors read / 38,639
+  written, 0 errors; 10/10 resets during disk traffic; keyboard, mouse, menu and floppy work during
+  disk traffic; 24 server kills during hdtest without a data error.  Speed (hdtest, 33 MHz): read
+  617 KB/s (the 68EC020's PIO loop is the limit; FS-UAE 680), write 406 KB/s (fill and drain in
+  series: ide.v has no fast write), link 859 KB/s each way.  Domination does not run from a hard disk
+  (black; FS-UAE too), only from floppy.
