@@ -1507,6 +1507,7 @@ begin
          sel_i               => main_fast_sel,
          pulse_i             => main_fast_pulse,
          quick_i             => main_fast_quick,
+         wq_i                => main_fast_quick,   -- a1200-fastcpu F2: the write queue
          addr_i              => main_fast_ddr,
          we_i                => main_fast_we,
          uds_n_i             => main_fast_uds_n,

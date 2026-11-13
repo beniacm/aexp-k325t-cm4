@@ -37,6 +37,14 @@
 -- answered one clock earlier, from the data array read at the address of the request (M_IDLE ->
 -- M_SERVED: ready in the clock after the request, 2 clocks per access instead of 3).  quick_i = '0'
 -- is the design as before, clock for clock.
+-- K325T a1200-fastcpu F2: with quick_i and wq_i writes go into an 8-entry write queue (m_req_q*) and are answered
+-- at once while it has room; the memory side drains it in order before it serves a line fill (a read
+-- miss waits until the queue is empty), and a read hit waits while a queued write goes to the same
+-- data-array word.  The memory side updates the cache line of a queued write that hit (tags only change
+-- with fills, which wait for the queue), so hits read the written data.  Across resets the queue keeps
+-- draining (a reset never drops an accepted write; hr_rst repeats the write in flight).  quick_i = '0':
+-- the queue is unused and the write path is the one-request toggle handshake as before (wq_i = '0'
+-- with quick_i = '1' is stage F1: the old write path with 2-clock read hits).
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -49,6 +57,7 @@ entity amiga_fastram is
       sel_i              : in  std_logic;                      -- ramsel: fast RAM bus cycle
       pulse_i            : in  std_logic := '0';               -- 1 = TG68K handshake (see above)
       quick_i            : in  std_logic := '0';               -- 1 = read hits in 2 clocks (fast 68020)
+      wq_i               : in  std_logic := '0';               -- 1 = the write queue (F2; with quick_i)
       addr_i             : in  std_logic_vector(26 downto 0);  -- DDR3 word address
       we_i               : in  std_logic;                      -- 1 = write
       uds_n_i            : in  std_logic;                      -- upper byte (15:8), active low
@@ -112,12 +121,54 @@ architecture synthesis of amiga_fastram is
    attribute async_reg of m_ack_d  : signal is "true";
    attribute async_reg of m_ack_dd : signal is "true";
 
+   -- F2 write queue (core side writes the entries and the Gray write pointer; the memory side reads them
+   -- after its synchronised copy of the pointer has passed them, and returns its read pointer in Gray)
+   type t_qa is array (0 to 7) of std_logic_vector(26 downto 0);
+   type t_qd is array (0 to 7) of std_logic_vector(15 downto 0);
+   type t_qb is array (0 to 7) of std_logic_vector(1 downto 0);
+   signal m_req_qa     : t_qa := (others => (others => '0'));
+   signal m_req_qd     : t_qd := (others => (others => '0'));
+   signal m_req_qb     : t_qb := (others => "00");
+   signal m_req_qh     : std_logic_vector(7 downto 0) := (others => '0');  -- the write hit the cache
+   signal m_req_wpg    : std_logic_vector(3 downto 0) := (others => '0');  -- write pointer, Gray
+   signal m_wp         : unsigned(3 downto 0) := (others => '0');
+   signal m_rpc        : unsigned(3 downto 0) := (others => '0');          -- entries known as written
+   signal m_qv         : std_logic_vector(7 downto 0) := (others => '0');  -- entries not yet written
+   signal m_ack_rpg_d  : std_logic_vector(3 downto 0) := (others => '0');
+   signal m_ack_rpg_dd : std_logic_vector(3 downto 0) := (others => '0');
+   attribute async_reg of m_ack_rpg_d  : signal is "true";
+   attribute async_reg of m_ack_rpg_dd : signal is "true";
+   signal m_rps        : unsigned(3 downto 0);
+   signal q_full       : std_logic;
+   signal q_empty      : std_logic;
+   signal q_match      : std_logic;
+   signal hr_wpg_d     : std_logic_vector(3 downto 0) := (others => '0');
+   signal hr_wpg_dd    : std_logic_vector(3 downto 0) := (others => '0');
+   signal hr_rp        : unsigned(3 downto 0) := (others => '0');
+   signal hr_ack_rpg   : std_logic_vector(3 downto 0) := (others => '0');
+   signal hr_wps       : unsigned(3 downto 0);
+   signal hr_qi        : integer range 0 to 7;
+
+   function g2b(g : std_logic_vector(3 downto 0)) return unsigned is
+      variable b : unsigned(3 downto 0);
+   begin
+      b(3) := g(3);
+      for i in 2 downto 0 loop
+         b(i) := b(i + 1) xor g(i);
+      end loop;
+      return b;
+   end function g2b;
+   function b2g(b : unsigned(3 downto 0)) return std_logic_vector is
+   begin
+      return std_logic_vector(b xor ('0' & b(3 downto 1)));
+   end function b2g;
+
    signal tag_q        : std_logic_vector(14 downto 0);
    signal hit          : std_logic;
    signal busy         : std_logic;
 
    -- memory side
-   type t_hstate is (H_QUIET, H_IDLE, H_FILL_CMD, H_FILL_DATA, H_WRITE_CMD);
+   type t_hstate is (H_QUIET, H_IDLE, H_FILL_CMD, H_FILL_DATA, H_WRITE_CMD, H_QWRITE);
    signal hr_state     : t_hstate := H_IDLE;
    signal hr_req_d     : std_logic := '0';
    signal hr_req_dd    : std_logic := '0';
@@ -159,12 +210,36 @@ begin
 
    rdata_o <= m_rdata;
    m_rd_a  <= addr_i(12 downto 0) when m_state = M_IDLE else m_rd_addr;
+   -- F2 write queue state on the core side
+   m_rps   <= g2b(m_ack_rpg_dd);
+   -- full / empty against m_rpc (the entries whose valid bit has been cleared), so that an entry is
+   -- reused only after its bit is clear (m_rpc follows m_rps one entry per clock)
+   q_full  <= '1' when m_wp - m_rpc = 8 else '0';
+   q_empty <= '1' when m_wp = m_rpc else '0';
+   q_match_proc : process (m_qv, m_req_qa, addr_i)
+      variable v : std_logic;
+   begin
+      v := '0';
+      for i in 0 to 7 loop
+         if m_qv(i) = '1' and m_req_qa(i)(12 downto 0) = addr_i(12 downto 0) then
+            v := '1';
+         end if;
+      end loop;
+      q_match <= v;
+   end process q_match_proc;
    ready_o <= m_ready;
 
    core_proc : process (clk_i)
    begin
       if rising_edge(clk_i) then
          m_ack_d  <= hr_ack_tgl;
+         -- F2: the memory side's read pointer; entries it has passed are no longer queued
+         m_ack_rpg_d  <= hr_ack_rpg;
+         m_ack_rpg_dd <= m_ack_rpg_d;
+         if m_rpc /= m_rps then
+            m_qv(to_integer(m_rpc(2 downto 0))) <= '0';
+            m_rpc <= m_rpc + 1;
+         end if;
          m_dbg_in <= sel_i & we_i & pulse_i & '1';
          m_ack_dd <= m_ack_d;
          -- the data array, read asynchronously (stable: written only for lines this side
@@ -180,7 +255,32 @@ begin
                -- start on a data strobe, not on the address strobe: in a 68000 write cycle
                -- /AS falls in S2 but the data bus is driven in S3 and /UDS,/LDS fall in S4
                -- (in a read cycle /AS and /DS fall together)
-               if m_start = '1' and busy = '0' then
+               if quick_i = '1' and wq_i = '1' and pulse_i = '1' then
+                  -- F2 (fast 68020): writes through the queue, read hits unless a queued write goes to
+                  -- the same word, read misses once the queue is empty
+                  if m_start = '1' and we_i = '1' and q_full = '0' then
+                     m_req_qa(to_integer(m_wp(2 downto 0))) <= addr_i;
+                     m_req_qd(to_integer(m_wp(2 downto 0))) <= wdata_i;
+                     m_req_qb(to_integer(m_wp(2 downto 0))) <= (not uds_n_i) & (not lds_n_i);
+                     m_req_qh(to_integer(m_wp(2 downto 0))) <= hit;
+                     m_qv(to_integer(m_wp(2 downto 0)))     <= '1';
+                     m_wp       <= m_wp + 1;
+                     m_req_wpg  <= b2g(m_wp + 1);
+                     m_nreq     <= m_nreq + 1;
+                     m_ready    <= '1';
+                     m_state    <= M_SERVED;
+                  elsif m_start = '1' and we_i = '0' and hit = '1' and q_match = '0' then
+                     m_ready    <= '1';             -- m_rdata is loaded at this edge (m_rd_a)
+                     m_state    <= M_SERVED;
+                  elsif m_start = '1' and we_i = '0' and hit = '0' and busy = '0' and q_empty = '1' then
+                     m_req_fill <= '1';
+                     m_req_hit  <= '0';
+                     m_req_addr <= addr_i;
+                     m_req_tgl  <= not m_req_tgl;
+                     m_nreq     <= m_nreq + 1;
+                     m_state    <= M_FILL;
+                  end if;
+               elsif m_start = '1' and busy = '0' then
                   if we_i = '1' then
                      -- posted write: DDR3 and (on a hit) the cache line, in the memory domain
                      m_req_fill <= '0';
@@ -259,14 +359,20 @@ begin
    ---------------------------------------------------------------------------
    -- memory clock domain
    ---------------------------------------------------------------------------
-   hr_we_u  <= '1' when (hr_state = H_FILL_DATA and avm_readdatavalid_i = '1') or
+   hr_qi    <= to_integer(hr_rp(2 downto 0));
+   hr_wps   <= g2b(hr_wpg_dd);
+   hr_we_u  <= '1' when (hr_state = H_QWRITE and avm_waitrequest_i = '0' and m_req_qh(hr_qi) = '1' and m_req_qb(hr_qi)(1) = '1') or
+                        (hr_state = H_FILL_DATA and avm_readdatavalid_i = '1') or
                         (hr_state = H_WRITE_CMD and avm_waitrequest_i = '0' and m_req_hit = '1' and m_req_be(1) = '1')
                else '0';
-   hr_we_l  <= '1' when (hr_state = H_FILL_DATA and avm_readdatavalid_i = '1') or
+   hr_we_l  <= '1' when (hr_state = H_QWRITE and avm_waitrequest_i = '0' and m_req_qh(hr_qi) = '1' and m_req_qb(hr_qi)(0) = '1') or
+                        (hr_state = H_FILL_DATA and avm_readdatavalid_i = '1') or
                         (hr_state = H_WRITE_CMD and avm_waitrequest_i = '0' and m_req_hit = '1' and m_req_be(0) = '1')
                else '0';
-   hr_waddr <= hr_line & std_logic_vector(hr_beat) when hr_state = H_FILL_DATA else m_req_addr(12 downto 0);
-   hr_wdata <= avm_readdata_i when hr_state = H_FILL_DATA else m_req_data;
+   hr_waddr <= hr_line & std_logic_vector(hr_beat) when hr_state = H_FILL_DATA else
+               m_req_qa(hr_qi)(12 downto 0) when hr_state = H_QWRITE else m_req_addr(12 downto 0);
+   hr_wdata <= avm_readdata_i when hr_state = H_FILL_DATA else
+               m_req_qd(hr_qi) when hr_state = H_QWRITE else m_req_data;
 
    dram_proc : process (hr_clk_i)
    begin
@@ -286,6 +392,8 @@ begin
       if rising_edge(hr_clk_i) then
          hr_req_d  <= m_req_tgl;
          hr_req_dd <= hr_req_d;
+         hr_wpg_d  <= m_req_wpg;            -- F2: the queue's write pointer
+         hr_wpg_dd <= hr_wpg_d;
          word := resize(unsigned(m_req_addr), 32);
 
          case hr_state is
@@ -300,7 +408,14 @@ begin
             when H_IDLE =>
                avm_wr <= '0';
                avm_rd  <= '0';
-               if hr_req_dd /= hr_ack_tgl then   -- a request; m_req_* are stable now
+               if hr_wps /= hr_rp then           -- F2: a queued write (entries before hr_wps are stable)
+                  avm_wr           <= '1';
+                  avm_address_o    <= std_logic_vector(resize(unsigned(m_req_qa(hr_qi)), 32));
+                  avm_writedata_o  <= m_req_qd(hr_qi);
+                  avm_byteenable_o <= m_req_qb(hr_qi);
+                  avm_burstcount_o <= x"01";
+                  hr_state         <= H_QWRITE;
+               elsif hr_req_dd /= hr_ack_tgl then   -- a request; m_req_* are stable now
                   hr_line <= m_req_addr(12 downto 3);
                   hr_beat <= (others => '0');
                   if m_req_fill = '1' then
@@ -333,6 +448,14 @@ begin
                      hr_nack    <= hr_nack + 1;
                      hr_state   <= H_IDLE;
                   end if;
+               end if;
+
+            when H_QWRITE =>
+               if avm_waitrequest_i = '0' then     -- accepted (and the cache word written)
+                  avm_wr     <= '0';
+                  hr_rp      <= hr_rp + 1;
+                  hr_ack_rpg <= b2g(hr_rp + 1);
+                  hr_state   <= H_IDLE;
                end if;
 
             when H_WRITE_CMD =>

@@ -123,6 +123,10 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_* || NAME =~ CORE/i_amiga_fastram/FSM_*hr_state* || NAME =~ CORE/i_amiga_fastram/avm_* || NAME =~ CORE/i_amiga_fastram/dram_*}]
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_ack_tgl*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_ack_d_reg*}]
+## a1200-fastcpu F2: the write queue's read pointer (Gray) back to the core clock (its entries and the
+## Gray write pointer are m_req_* registers, covered above)
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_ack_rpg*}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_ack_rpg_d_reg*}]
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/dram_*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_rdata_reg*}]
 

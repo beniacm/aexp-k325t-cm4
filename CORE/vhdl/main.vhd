@@ -143,7 +143,7 @@ entity main is
       -- port must answer with a one-clock ready pulse per access
       fast_sel_o              : out std_logic;
       fast_pulse_o            : out std_logic;
-      fast_quick_o            : out std_logic;      -- a1200-fastcpu: amiga_fastram quick_i
+      fast_quick_o            : out std_logic;      -- a1200-fastcpu: amiga_fastram quick_i and wq_i
       fast_addr_o             : out std_logic_vector(28 downto 1);
       fast_we_o               : out std_logic;
       fast_uds_n_o            : out std_logic;
@@ -588,7 +588,8 @@ begin
 
          -- K325T: 00 = 68000 (fx68k), 11 = 68020 (TG68K); stage 3: b2 = 68EC020 stock timing (AGA)
          -- a1200-fastcpu: b3 = the fast 68020 (no cycle-table throttle; everything else as b2 says)
-         cpucfg          => '0' & cpu_fast & cpu_ec020 & cpucfg,
+         -- F2: b4 = its look-ahead cache lookup (with b3; both from the one menu line)
+         cpucfg          => cpu_fast & cpu_fast & cpu_ec020 & cpucfg,
          ntsc            => '0',
          fastramcfg      => fast_z3_i & fast_size_i, -- K325T: Zorro II fast RAM (autoconfig), 000 = none;
                                                  -- 110 = Zorro III 128 MB (68020; 8 MB Z2 with the 68000)

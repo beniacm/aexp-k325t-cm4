@@ -11,19 +11,25 @@ then runs 4x slower than the stock A1200 (every opcode word a chip-bus cycle).  
   for the lookup (ramsel held off), a hit is answered through the chip FSM's ic_take path (fic_take),
   a miss goes to the fast RAM, and the high + low word fetches of one longword fill its entry (ff_*).
   fr_busy keeps ramsel up while a fast-RAM access is open (the parent answers every started access).
-With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM as before).
+Kickstart code ($F80000-$FFFFFF) is cached too in the fast setting (ifrom; fills by the chip FSM's
+32-bit ROM reads, patch 0132).  Stage F2: cpucfg bit 4 (set with bit 3 by the parent) = the look-ahead
+lookup: when a fetch of a low word completes, the cache is read for the next longword, so sequential
+code is fetched at one clock per word.
+With cpucfg[4:3] = 0 the module is unchanged (fifch = 0, lk_a = the current address: ramsel, nf_v,
+the lookup and the FSM as before).
 --- a/rtl/cpu_wrapper.v
 +++ b/rtl/cpu_wrapper.v
-@@ -66,6 +66,8 @@
+@@ -66,6 +66,9 @@
  	input             ph2,
  
  	input       [4:0] cpucfg,     // K325T stage 3: MiSTer's 5 bits (b2 = 68EC020 stock-speed timing)
 +	                              // K325T a1200-fastcpu: b3 = fast 68020 (the stock-speed throttle off;
-+	                              // MiSTer's 68030 bits b4:b3 are not used in this port, b4 stays 0)
++	                              // MiSTer's 68030 bits b4:b3 are not used in this port), b4 = its
++	                              // stage F2 (look-ahead cache lookup); the parent sets both together
  	input             ntsc,
  	input       [2:0] fastramcfg,
  	input       [2:0] cachecfg,
-@@ -233,6 +235,11 @@
+@@ -233,6 +236,11 @@
  reg  [23:2] if_a;
  reg  [15:0] if_hi, if_lw;
  reg         nf_v, nf_s;
@@ -35,7 +41,7 @@ With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM 
  reg  [23:2] nf_a;
  reg  [15:0] cpu_dout;
  wire [15:0] cpu_din = ramsel ? ramdat : fastchip_selack ? fastchip_dout : {sel_autoconfig ? autocfg_data : chip_data[15:12], chip_data[11:0]};
-@@ -422,7 +429,10 @@
+@@ -422,7 +430,10 @@
  end
  
  // K325T stage 3 (MiSTer #276): the 68EC020 cycle model holds the TG68K by the cycles of the real CPU
@@ -47,7 +53,21 @@ With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM 
  wire skip_rd     = skipfetch & (cpustate_p == 2) & ~ramsel_i & ~fastchip_selack;
  wire cyc_hold;
  
-@@ -488,6 +498,20 @@
+@@ -480,7 +491,12 @@
+ 
+ always @(posedge clk) chip_dout2_p <= chip_dout2;
+ 
+-wire        ifch = ic_ena & ~|cpustate_p & ~|cpu_addr_m[23:21];
++//wire        ifch = ic_ena & ~|cpustate_p & ~|cpu_addr_m[23:21];
++// K325T a1200-fastcpu: the fast 68020 caches Kickstart code ($F80000-$FFFFFF) as well (a real 68020
++// caches every fetch; the stock model only chip RAM, see nf_v); the fill is the chip FSM's 32-bit
++// fetch, ROM included since patch 0132 (ram_long for the Kickstart bank)
++wire        ifrom = cpucfg[3] & (&cpu_addr_m[23:19]);
++wire        ifch = ic_ena & ~|cpustate_p & (~|cpu_addr_m[23:21] | ifrom);
+ 
+ wire        ih_hit  = ih_v & (ih_a == cpu_addr_m[23:2]);
+ wire        ic_rdy  = ic_qv & (ic_qa == cpu_addr_m[23:2]);
+@@ -488,22 +504,48 @@
  wire [31:0] ic_q    = ih_hit ? ih_d : ic_dq;
  wire        ic_take = ifch & ~req_gate & ~if_go & ~cacr_wr & ~nf_v & (ih_hit | ic_hit);
  wire        if_ok   = ~cacr_wr & ~nf_v & (~cacr_x[0] | ic_rdy);
@@ -66,19 +86,43 @@ With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM 
 +	else        fr_busy <= ramsel & ~ramready;
 +end
  wire [15:0] if_lw2  = if_l ? chip_dout2_p : if_lw;
++// a1200-fastcpu F2: look-ahead lookup.  When the fast 68020 completes the fetch of the low word of a
++// longword, the cache is read for the NEXT longword (sequential code), so that its high word is a hit
++// in the very next clock (one clock per word on sequential code, the low word comes from ih); any
++// other clock reads the current address as before.  Stock (cpucfg[4:3] = 0): lk_a = the current address.
++wire        lk_next = cpucfg[4] & cpucfg[3] & clkena_p_throttled & ~|cpustate_p & cpu_addr_m[1];
++wire [23:2] lk_a    = lk_next ? cpu_addr_m[23:2] + 22'd1 : cpu_addr_m[23:2];
  
  always @(posedge clk) begin
-@@ -503,7 +527,8 @@
- 	ic_vq <= ic_val[cpu_addr_m[7:2]];
- 	ic_qa <= cpu_addr_m[23:2];
- 	ic_qv <= ~clkena_p_throttled & ~ic_we & ~ic_clr & ~ic_clre;
+ 	if (ic_we) begin
+ 		ic_tag[ic_wa] <= ic_wt;
+ 		ic_dat[ic_wa] <= ic_wd;
+ 	end
+-	ic_tq <= ic_tag[cpu_addr_m[7:2]];
+-	ic_dq <= ic_dat[cpu_addr_m[7:2]];
++	//ic_tq <= ic_tag[cpu_addr_m[7:2]];
++	//ic_dq <= ic_dat[cpu_addr_m[7:2]];
++	ic_tq <= ic_tag[lk_a[7:2]];   // a1200-fastcpu F2: the look-ahead address (= cpu_addr_m[23:2] in stock)
++	ic_dq <= ic_dat[lk_a[7:2]];
+ end
+ 
+ always @(posedge clk) begin
+-	ic_vq <= ic_val[cpu_addr_m[7:2]];
+-	ic_qa <= cpu_addr_m[23:2];
+-	ic_qv <= ~clkena_p_throttled & ~ic_we & ~ic_clr & ~ic_clre;
 -	nf_v  <= ec020 & clkena_p_throttled & ~|cpustate_p & |cpu_addr_m[23:21];
++	//ic_vq <= ic_val[cpu_addr_m[7:2]];
++	//ic_qa <= cpu_addr_m[23:2];
++	//ic_qv <= ~clkena_p_throttled & ~ic_we & ~ic_clr & ~ic_clre;
++	ic_vq <= ic_val[lk_a[7:2]];
++	ic_qa <= lk_a;
++	ic_qv <= (~clkena_p_throttled | lk_next) & ~ic_we & ~ic_clr & ~ic_clre;
 +	// a1200-fastcpu: not for fast-RAM fetches of the fast 68020, which fill real entries (ff_*)
-+	nf_v  <= ec020 & clkena_p_throttled & ~|cpustate_p & |cpu_addr_m[23:21] & ~(cpucfg[3] & ramsel_i);
++	nf_v  <= ec020 & clkena_p_throttled & ~|cpustate_p & |cpu_addr_m[23:21] & ~(cpucfg[3] & ramsel_i) & ~ifrom;
  	nf_a  <= cpu_addr_m[23:2];
  	nf_s  <= fc_p[2];
  	if (~reset) ic_val <= 0;
-@@ -540,6 +565,7 @@
+@@ -540,6 +582,7 @@
  		ic_clr <= 0;
  		ic_clre <= 0;
  		ic_nq <= 0;
@@ -86,7 +130,7 @@ With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM 
  	end
  	else begin
  		if (ph2n) begin
-@@ -578,7 +604,7 @@
+@@ -578,7 +621,7 @@
  				now = 1;
  			end
  		end
@@ -95,7 +139,7 @@ With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM 
  			chipdout_i <= cpu_addr_m[1] ? ic_q[15:0] : ic_q[31:16];
  			ih_v <= 1;
  			ih_a <= cpu_addr_m[23:2];
-@@ -587,6 +613,30 @@
+@@ -587,6 +630,30 @@
  			now = 1;
  		end
  
@@ -126,7 +170,7 @@ With cpucfg[3] = 0 the module is unchanged (fifch = 0: ramsel, nf_v and the FSM 
  		chipready <= now;
  		if (ph1n) begin
  			chipready <= now | ready;
-@@ -860,6 +910,7 @@
+@@ -860,6 +927,7 @@
  
  // K325T phase 2: fast RAM select (see the comment at the top of the module body)
  assign ramsel_i = cpu_req & ~sel_nmi_vector & sel_zram;
