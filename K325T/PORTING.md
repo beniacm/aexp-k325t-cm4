@@ -2332,3 +2332,51 @@ dea77080760aebdb501c95c9fc6101c1), both 9060b41, stay the board-verified bitstre
 before the constraint files and the gate, but their routed netlists contain none of the cells the
 constraints they did not match name (QNICE_SOC, EAE, sd_card, sd_emu, the prefetch counters; hdd_spi on
 the Luckfox), so they lost no constraint, and they are not rebuilt just for the gate.
+
+# Roadmap step 3: an Akiko-style chunky-to-planar helper (branch a1200-akiko, 2026-11-13)
+
+Opt-in expansion of the A1200 machine: the CD32's Akiko ID and chunky-to-planar (C2P) register for the
+68020, so that software that finds `GfxBase->ChunkyToPlanarPtr` (graphics.library V40) or probes the
+chip converts 8-bit chunky pixels to bitplanes in hardware.  Desk work and bench only (no board, no
+Vivado run yet).
+
+- What was there: the submodule has MiSTer's `rtl/akiko.v` (C2P only) inside `rtl/fastchip.v`, which
+  only MiSTer's `Minimig.sv` instantiates; this port ties cpu_wrapper's fastchip port off (main.vhd,
+  tb_top.sv) and builds neither file.  The fastchip port exists only for the 68020 (fastchip_sel = 0
+  with the fx68k).
+- Registers (`K325T/akiko_c2p.v`, own design): `$B80000.L` reads `$C0CACAFE`; `$B80038.L`: write 8
+  longwords of chunky pixels (pixel n = byte n, the first pixel in bits 31..24 of the first longword),
+  then read 8 longwords, plane 0 first, bit 31 = pixel 0.  High word / low word of the register: the
+  low word moves the longword index; any write zeroes the read index, any read the write index (both
+  mod 8); byte strobes honoured; reads are non-destructive (a 9th read gives plane 0 again).  Only
+  these 8 bytes are claimed; the rest of `$B8xxxx` goes the way it went before.  The unit answers in
+  the clock it is selected; the 68EC020 cycle model charges `$B8xxxx` like a chip-region access.
+- patch 0137: cpu_wrapper exports the CPU's own address (`fastchip_addr`).  MiSTer's fastchip.v decodes
+  `chip_addr`, which shows a posted 32-bit chip write's or an instruction fill's address while one is
+  pending.
+- Menu: line 88 " Akiko C2P" in the RAM submenu, default off (`C_MENU_AKIKO`, `OPTM_G_AKIKO` = 16);
+  OPTM_SIZE 94 -> 95.  Machine topology like the IDE line: held while QNICE restarts, a change
+  cold-boots the Amiga (graphics.library looks for the chip only at its start).  lat_meter $FB W2 b26 =
+  Akiko in effect.  QNICE menu heap 1511 of 1536 words.
+- Settings files: 95 bytes, the Akiko byte at offset 88 (0 = off); a 94-byte file from an earlier build
+  is the wrong size and gives the factory defaults.  Linux shell: the menu file changes, so the menu id
+  changes (662bc8b E6132EE0 -> 709F4102; factory CFM words unchanged); the shell must use the `.menu`
+  built with the bitstream, and treat line 88 as a topology line (change it only with the core held,
+  like 72..87).
+- Bench: `tb_top.sv` wires the unit as main.vhd does; `obj_dir/tb --akiko` (+akdbg prints every Akiko
+  access).  Test: `tools/mk_akikotest.py build DIR` (akikotest.bin for the boot ROM path, akikotest.adf
+  for Kickstart; `check DUMP [FRAME]` compares the dump and the picture with the Python reference).
+- Bench results (2026-11-13, ext/aexp10_akiko/FINDINGS.md): ID found; 7512 planar longwords (15,024
+  words: long, word, partial and repeated reads of 923 blocks: zero, ones, ramp, 0..255, every single bit,
+  random) 0 wrong; a 320x256 chunky picture through the unit to an 8-plane FMODE 3 screen: 81,920 of
+  81,920 pixels equal the reference.  Machine time (68EC020 stock, DMA off): 61.3 CCK per 32 pixels with
+  the data from and to chip RAM (65.3 with a chip RAM longword in place of the register); the whole
+  picture into 8 separate planes 160,686 CCK = 45.3 ms (2.3 frames).  The same under Kickstart 3.1 from
+  the ADF.
+- **Kickstart 3.1 on the A1200 does not install the pointer**: graphics.library 40.24 leaves
+  `GfxBase->ChunkyToPlanarPtr` (offset $1FC) at 0 with the chip present; its WriteChunkyPixels uses the
+  pointer when it is set (`tst.l $1FC(a6)`).  Software that goes through GfxBase needs a small tool that
+  checks the chip and sets the pointer (MiSTer ships "SetAkiko" for this); software that probes
+  `$B80000` itself finds the chip directly.
+- Off = unchanged: with the line off the unit never acknowledges.  Bench, old (662bc8b) vs new: A500
+  gate and the stock A1200 timing probe byte-identical (mailbox, ticks, final frame), IDE off and on.
