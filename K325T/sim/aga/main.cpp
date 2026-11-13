@@ -61,7 +61,9 @@ struct SpiMaster {
   int state = 0, byte = 0, bit = 0, cnt = 0; uint8_t inb = 0;
   std::atomic<int> att{0};
   uint64_t xfers = 0, bytes = 0;
+  long idle = 0;                     // pending == 2: an idle wait of this many fclk cycles (batch delays)
 } g_spi;
+static int g_fclk_mhz = 100;         // fclk cycles per microsecond (ui_clk with --cache, else the machine clock)
 static int g_hdd_fd = -1;
 static std::atomic<int> g_hdd_stop{0};
 
@@ -71,6 +73,10 @@ static void spi_step(Vtb_top* top) {
   if (a != s.att.load()) { s.att = a; if (a) { std::lock_guard<std::mutex> l(s.m); s.att_cv.notify_all(); } }
   switch (s.state) {
     case 0:
+      if (s.pending.load() == 2) {
+        if (--s.idle <= 0) { std::lock_guard<std::mutex> l(s.m); s.pending = 0; s.done = 1; s.cv.notify_all(); }
+        break;
+      }
       if (s.pending.load()) { top->hd_cs_n = 0; top->hd_sck = 0; s.cnt = 2 * SPI_H; s.byte = 0; s.bit = 0; s.state = 1; }
       break;
     case 1:
@@ -112,6 +118,19 @@ static int b_xfer(void*, const uint8_t* tx, uint8_t* rx, int len) {
   g_spi.cv.wait(l, [] { return g_spi.done || g_hdd_stop.load(); });
   return g_hdd_stop.load() ? -1 : 0;
 }
+static int b_xfer_batch(void* c, const struct hdd_seg* seg, int n) {
+  for (int i = 0; i < n; i++) {
+    static uint8_t scratch[513];
+    if (b_xfer(c, seg[i].tx, seg[i].rx ? seg[i].rx : scratch, seg[i].len)) return -1;
+    if (seg[i].delay_us) {
+      std::unique_lock<std::mutex> l(g_spi.m);
+      g_spi.idle = (long)seg[i].delay_us * g_fclk_mhz; g_spi.done = 0; g_spi.pending = 2;
+      g_spi.cv.wait(l, [] { return g_spi.done || g_hdd_stop.load(); });
+      if (g_hdd_stop.load()) return -1;
+    }
+  }
+  return 0;
+}
 static int b_wait_att(void*, int ms) {
   std::unique_lock<std::mutex> l(g_spi.m);
   if (g_spi.att.load()) return 1;
@@ -141,13 +160,19 @@ restart:
           g_hdd.cyls, g_hdd.heads, g_hdd.spt, (unsigned long long)g_tick);
   if (getenv("HDD_LINKTEST")) {          // loopback through hdd_spi + ide.v's buffer, no Amiga involved
     int rounds = atoi(getenv("HDD_LINKTEST")), bad = 0, errs = 0;
-    uint8_t a[512], b[512];
+    unsigned ns = getenv("HDD_LINKN") ? (unsigned)atoi(getenv("HDD_LINKN")) : 1;   // sectors per round (1..16)
+    static uint8_t a[16 * 512], b[16 * 512];
+    if (ns < 1 || ns > 16) ns = 1;
     for (int i = 0; i < rounds; i++) {
-      for (int k = 0; k < 512; k++) a[k] = (uint8_t)(k * 7 + i * 13 + (k >> 3));
-      if (hdd_engine(&g_hdd, 0x32, 0, 0, 0) || hdd_put(&g_hdd, a) || hdd_engine(&g_hdd, 0x32, 0, 0, 0) ||
-          hdd_get(&g_hdd, b)) { errs++; continue; }
-      for (int k = 0; k < 512; k++) if (a[k] != b[k]) { if (bad < 8) fprintf(stderr, "  byte %d: %02x -> %02x\n", k, a[k], b[k]); bad++; }
+      for (unsigned k = 0; k < 512 * ns; k++) a[k] = (uint8_t)(k * 7 + i * 13 + (k >> 3) + (k >> 9) * 29);
+      int r1 = hdd_engine(&g_hdd, 0x32, 0, 0, 0), r2 = r1 ? 9 : hdd_put_n(&g_hdd, a, ns);
+      int r3 = r2 ? 9 : hdd_engine(&g_hdd, 0x32, 0, 0, 0), r4 = r3 ? 9 : hdd_get_n(&g_hdd, b, ns);
+      if (r1 || r2 || r3 || r4) {
+        errs++; fprintf(stderr, "linktest round %d: ptr0 %d put %d ptr0 %d get %d\n", i, r1, r2, r3, r4); continue;
+      }
+      for (unsigned k = 0; k < 512 * ns; k++) if (a[k] != b[k]) { if (bad < 8) fprintf(stderr, "  byte %u: %02x -> %02x\n", k, a[k], b[k]); bad++; }
     }
+    fprintf(stderr, "linktest: %u sectors per round, batch retries %llu\n", ns, (unsigned long long)g_hdd.batch_retries);
     fprintf(stderr, "linktest: %d rounds, %d engine errors, %d bytes differ (tick %llu)\n", rounds, errs, bad,
             (unsigned long long)g_tick);
   }
@@ -335,7 +360,12 @@ int main(int argc, char** argv) {
     memset(&g_hdd, 0, sizeof g_hdd);
     g_hdd.io.xfer = b_xfer; g_hdd.io.wait_att = b_wait_att; g_hdd.io.rd = b_rd; g_hdd.io.wr = b_wr;
     g_hdd.io.log = b_log;
-    g_hdd.nblk = (uint64_t)lseek(g_hdd_fd, 0, SEEK_END) / 512; g_hdd.ro = hdf_ro; g_hdd.verbose = hdd_verbose;
+    g_hdd.nblk = (uint64_t)lseek(g_hdd_fd, 0, SEEK_END) / 512; g_hdd.ro = hdf_ro; g_hdd.verbose = getenv("HDD_VV") ? 2 : hdd_verbose;
+    g_hdd.fast = getenv("HDD_SLOW") ? 0 : 1;          // HDD_SLOW: reads without ide.v's fast mode
+    g_hdd.batch = getenv("HDD_NOBATCH") ? 0 : 1;      // HDD_NOBATCH: one transaction per call
+    g_hdd.delay_cut = getenv("HDD_DELAYCUT") ? atoi(getenv("HDD_DELAYCUT")) : 0;   // tests of the batch fallback
+    g_hdd.io.xfer_batch = b_xfer_batch;
+    g_fclk_mhz = use_cache ? 100 : 28;
     hdd_th = std::thread(hdd_thread);
     fprintf(stderr, "hdf: %s, %llu sectors%s\n", hdf_fn, (unsigned long long)g_hdd.nblk, hdf_ro ? " (read-only)" : "");
   }

@@ -7,9 +7,25 @@
 extern "C" {
 #endif
 
+/* one SPI transaction of a batch; CS goes high after it (after delay_us with CS still low) */
+struct hdd_seg {
+    const uint8_t *tx;
+    uint8_t *rx;
+    uint16_t len, delay_us;
+};
+/* spidev's default bufsiz (4096) limits the bytes of one batch per direction, and it counts each
+   transfer rounded up to the DMA alignment (ARCH_KMALLOC_MINALIGN = 128 on arm64): a 5-byte STATUS
+   costs 128.  rx = NULL / tx = NULL: that direction is not needed (no bounce buffer used). */
+#define HDD_BATCH_BYTES 4096
+#define HDD_BATCH_ALIGN 128
+#define HDD_AL(n) (((n) + HDD_BATCH_ALIGN - 1) / HDD_BATCH_ALIGN * HDD_BATCH_ALIGN)
+
 struct hdd_io {
     /* one SPI transaction (CS low .. high), len bytes out and in; returns 0 or -1 */
     int (*xfer)(void *ctx, const uint8_t *tx, uint8_t *rx, int len);
+    /* optional: n transactions in one go (one system call); NULL = one xfer each, delays ignored
+       (the core checks every result, so a delay only buys speed, never correctness) */
+    int (*xfer_batch)(void *ctx, const struct hdd_seg *seg, int n);
     /* wait until the attention line is high or timeout_ms passed; returns 1 high, 0 timeout, -1 error */
     int (*wait_att)(void *ctx, int timeout_ms);
     /* the disk image: whole 512-byte sectors; return 0 or -1 */
@@ -27,8 +43,12 @@ struct hdd {
     unsigned cur_heads, cur_spt;        /* INITIALIZE DEVICE PARAMETERS */
     unsigned multiple;                  /* SET MULTIPLE MODE (sectors per block for xx MULTIPLE) */
     int verbose;
+    int fast;               /* reads in ide.v's fast mode (DRQ first, data streamed; the CPU waits) */
     /* statistics */
-    uint64_t cmds, rd_sect, wr_sect, errors, resets, timeouts;
+    uint64_t cmds, rd_sect, wr_sect, errors, resets, timeouts, links_lost;
+    uint64_t batch_retries;             /* a batched step found the engine still busy and resumed */
+    int batch;                          /* use batches (default 1; 0 = the old one-step-per-call path) */
+    int delay_cut;                      /* tests: batch delays shortened by this many percent (0..100) */
 };
 
 #define HDD_MAX_MULTIPLE 16
@@ -42,6 +62,9 @@ int  hdd_poll(struct hdd *h, int timeout_ms);
 int  hdd_status(struct hdd *h, uint8_t *flags, uint16_t *result);
 int  hdd_put(struct hdd *h, const uint8_t *amiga512);
 int  hdd_get(struct hdd *h, uint8_t *amiga512);
+/* n sectors into / out of ide.v's buffer from its current pointer, batched (PUT+COMMIT / FETCH+GET) */
+int  hdd_put_n(struct hdd *h, const uint8_t *amiga, unsigned n);
+int  hdd_get_n(struct hdd *h, uint8_t *amiga, unsigned n);
 int  hdd_engine(struct hdd *h, uint8_t cmd, int has_data, uint16_t data, uint16_t *result);
 
 #ifdef __cplusplus

@@ -21,6 +21,7 @@
 
 #define ST_BSY  (1u << 15)
 #define ST_DRDY (1u << 14)
+#define ST_FAST (1u << 13)   /* ide.v fast read: DRQ before the data, the CPU waits (Gayle nrdy) */
 #define ST_DSC  (1u << 12)
 #define ST_DRQ  (1u << 11)
 #define ST_IRQ  (1u << 10)
@@ -43,7 +44,10 @@ int hdd_status(struct hdd *h, uint8_t *flags, uint16_t *result)
 {
     uint8_t tx[5] = {0}, rx[5];
     if (h->io.xfer(h->io.ctx, tx, rx, 5)) return -1;
-    if (rx[1] != 0xA1) return -1;
+    if (rx[1] != 0xA1) {
+        if (h->verbose > 1) lg(h, "STATUS answer %02x %02x %02x %02x", rx[1], rx[2], rx[3], rx[4]);
+        return -1;
+    }
     if (flags) *flags = rx[2];
     if (result) *result = (uint16_t)(rx[3] << 8 | rx[4]);
     return 0;
@@ -70,7 +74,7 @@ int hdd_engine(struct hdd *h, uint8_t cmd, int has_data, uint16_t data, uint16_t
 /* an engine error: -1 link, -2 the Amiga is in reset (result x"DEAD"): passed up unchanged */
 #define TRY(x) do { int rc_ = (x); if (rc_) return rc_; } while (0)
 
-static int regrd(struct hdd *h, unsigned a, uint16_t *v) { return hdd_engine(h, 0x10 | a, 0, 0, v); }
+
 static int regwr(struct hdd *h, unsigned a, uint16_t v)  { return hdd_engine(h, 0x20 | a, 1, v, 0); }
 static int ptr0(struct hdd *h)                           { return hdd_engine(h, 0x32, 0, 0, 0); }
 
@@ -99,6 +103,159 @@ int hdd_get(struct hdd *h, uint8_t *s)
         s[2 * i + 1] = rx[1 + 2 * i];
         s[2 * i] = rx[2 + 2 * i];
     }
+    return 0;
+}
+
+/* ---- batches: several transactions per system call.  A STATUS (5 bytes) after each engine
+   command reports whether it finished in time.  If one did not (a long stall of the Amiga clock),
+   the rest of the batch raced it: hdd_spi ignores commands and PUT data only WHILE the engine is
+   busy, so a later command may or may not have been taken and ide.v's buffer pointer is unknown.
+   Then the whole block is redone the slow way from the start (PTR0, one verified step at a time):
+   writing or reading the same sectors again is harmless (in fast read mode the CPU just waits
+   until the pointer is ahead of it again). */
+#define D_REG    2       /* us after a register access (the engine needs ~5 main clocks) */
+#define D_COMMIT 30      /* us after COMMIT (256 words x 3 main clocks = 27 us; +10 us CS gap) */
+#define D_FETCH  40      /* us after FETCH (256 words x 5 main clocks = 45 us; +10 us CS gap) */
+#define DL(h, d) ((uint16_t)((d) * (100 - (h)->delay_cut) / 100))   /* tests: shortened delays */
+
+static int batch(struct hdd *h, const struct hdd_seg *seg, int n)
+{
+    static uint8_t scratch[513];
+    int i;
+    if (h->io.xfer_batch) return h->io.xfer_batch(h->io.ctx, seg, n);
+    for (i = 0; i < n; i++)
+        if (h->io.xfer(h->io.ctx, seg[i].tx, seg[i].rx ? seg[i].rx : scratch, seg[i].len)) return -1;
+    return 0;
+}
+
+/* a STATUS reply: 1 finished (result in *res), 0 still busy / not acknowledged, -1 link error */
+static int st_done(const uint8_t *rx, uint16_t *res)
+{
+    if (rx[1] != 0xA1) return -1;
+    if (!(rx[2] & 0x80) && (rx[2] & 0x40)) {
+        if (res) *res = (uint16_t)(rx[3] << 8 | rx[4]);
+        return 1;
+    }
+    return 0;
+}
+
+/* wait for the running engine command (after a "busy" STATUS in a batch) */
+static int engine_wait(struct hdd *h)
+{
+    uint8_t fl;
+    uint16_t res;
+    int i;
+    h->batch_retries++;
+    for (i = 0; i < 100000; i++) {
+        if (hdd_status(h, &fl, &res)) return -1;
+        if (!(fl & 0x80) && (fl & 0x40)) return res == 0xDEAD ? -2 : 0;
+    }
+    h->timeouts++;
+    lg(h, "engine_wait: timeout", 0, 0, 0, 0);
+    return -1;
+}
+
+static const uint8_t st_tx[5] = {0, 0, 0, 0, 0};
+static const uint8_t commit_tx[1] = {0x31};
+static const uint8_t fetch_tx[1] = {0x40};
+
+#define PER_PUT  (HDD_AL(513) + HDD_AL(1) + HDD_AL(5))     /* tx bytes per sector (the larger side) */
+#define MAX_K    (HDD_BATCH_BYTES / PER_PUT)               /* 4 sectors per batch */
+
+int hdd_put_n(struct hdd *h, const uint8_t *s, unsigned n)
+{
+    uint8_t tx[MAX_K][513], srx[MAX_K][5];
+    struct hdd_seg seg[3 * MAX_K];
+    unsigned done = 0, k, m, i;
+    uint16_t res;
+    if (!h->batch) goto slow;
+    while (done < n) {
+        m = n - done < MAX_K ? n - done : MAX_K;
+        for (k = 0; k < m; k++) {
+            const uint8_t *p = s + 512 * (done + k);
+            tx[k][0] = 0x30;
+            for (i = 0; i < 256; i++) { tx[k][1 + 2 * i] = p[2 * i + 1]; tx[k][2 + 2 * i] = p[2 * i]; }
+            seg[3 * k]     = (struct hdd_seg){tx[k], NULL, 513, 0};
+            seg[3 * k + 1] = (struct hdd_seg){commit_tx, NULL, 1, DL(h, D_COMMIT)};
+            seg[3 * k + 2] = (struct hdd_seg){st_tx, srx[k], 5, 0};
+        }
+        if (batch(h, seg, 3 * (int)m)) return -1;
+        for (k = 0; k < m; k++) {
+            int r = st_done(srx[k], &res);
+            if (r < 0) { lg(h, "put batch: bad STATUS %02x %02x after sector %u", srx[k][1], srx[k][2], done + k, 0); return -1; }
+            if (r == 0) { TRY(engine_wait(h)); TRY(ptr0(h)); goto slow; }
+            if (res == 0xDEAD) return -2;
+        }
+        done += m;
+    }
+    return 0;
+slow:
+    for (k = 0; k < n; k++) TRY(hdd_put(h, s + 512 * k));
+    return 0;
+}
+
+
+int hdd_get_n(struct hdd *h, uint8_t *s, unsigned n)
+{
+    uint8_t gtx[513], rx[MAX_K][513], srx[MAX_K][5];
+    struct hdd_seg seg[3 * MAX_K];
+    unsigned done = 0, k, m, i;
+    uint16_t res;
+    if (!h->batch) goto slow;
+    memset(gtx, 0, sizeof gtx);
+    gtx[0] = 0x41;
+    while (done < n) {
+        m = n - done < MAX_K ? n - done : MAX_K;
+        for (k = 0; k < m; k++) {
+            seg[3 * k]     = (struct hdd_seg){fetch_tx, NULL, 1, DL(h, D_FETCH)};
+            seg[3 * k + 1] = (struct hdd_seg){st_tx, srx[k], 5, 0};
+            seg[3 * k + 2] = (struct hdd_seg){gtx, rx[k], 513, 0};
+        }
+        if (batch(h, seg, 3 * (int)m)) return -1;
+        for (k = 0; k < m; k++) {
+            int r = st_done(srx[k], &res);
+            if (r < 0) { lg(h, "get batch: bad STATUS %02x %02x before sector %u", srx[k][1], srx[k][2], done + k, 0); return -1; }
+            if (r == 0) { TRY(engine_wait(h)); TRY(ptr0(h)); goto slow; }
+            if (res == 0xDEAD) return -2;
+            for (i = 0; i < 256; i++) { s[512 * (done + k) + 2 * i + 1] = rx[k][1 + 2 * i];
+                                        s[512 * (done + k) + 2 * i] = rx[k][2 + 2 * i]; }
+        }
+        done += m;
+    }
+    return 0;
+slow:
+    for (k = 0; k < n; k++) TRY(hdd_get(h, s + 512 * k));
+    return 0;
+}
+
+/* register accesses in one batch: ops[i] = 0x1a (read, result into v[i]), 0x2a (write v[i]) or 0x32
+   (PTR0).  Only for IDEMPOTENT sequences (task file reads, block size + PTR0): if one step is found
+   unfinished, all of them are done again one verified step at a time.  The status write that arms
+   DRQ / raises the interrupt is never batched (doing it twice would restart the CPU's transfer). */
+static int regs_batch(struct hdd *h, const uint8_t *ops, uint16_t *v, int n)
+{
+    uint8_t tx[8][3], srx[8][5];
+    struct hdd_seg seg[16];
+    int i, r;
+    if (!h->batch) goto slow;
+    for (i = 0; i < n; i++) {
+        tx[i][0] = ops[i]; tx[i][1] = (uint8_t)(v[i] >> 8); tx[i][2] = (uint8_t)v[i];
+        seg[2 * i]     = (struct hdd_seg){tx[i], NULL, (uint16_t)((ops[i] & 0xF0) == 0x20 ? 3 : 1), DL(h, D_REG)};
+        seg[2 * i + 1] = (struct hdd_seg){st_tx, srx[i], 5, 0};
+    }
+    if (batch(h, seg, 2 * n)) return -1;
+    for (i = 0; i < n; i++) {
+        uint16_t res;
+        r = st_done(srx[i], &res);
+        if (r < 0) return -1;
+        if (r == 0) { TRY(engine_wait(h)); goto slow; }
+        if (res == 0xDEAD) return -2;
+        if ((ops[i] & 0xF0) == 0x10) v[i] = res;
+    }
+    return 0;
+slow:
+    for (i = 0; i < n; i++)
+        TRY((ops[i] & 0xF0) == 0x20 ? hdd_engine(h, ops[i], 1, v[i], 0) : hdd_engine(h, ops[i], 0, 0, &v[i]));
     return 0;
 }
 
@@ -187,7 +344,7 @@ static int wait_block(struct hdd *h)
 
 static int do_reset(struct hdd *h)
 {
-    h->multiple = 0;
+    h->multiple = HDD_MAX_MULTIPLE;          /* see hdd_init */
     h->cur_heads = h->heads;
     h->cur_spt = h->spt;
     TRY(regwr(h, 6, 0x0009));      /* drive 0 present, no LBA48 */
@@ -205,7 +362,12 @@ static int command(struct hdd *h)
     uint8_t buf[HDD_MAX_MULTIPLE * 512];
     int lbamode, rc, write, multi;
 
-    TRY(regrd(h, 1, &r1)); TRY(regrd(h, 2, &r2)); TRY(regrd(h, 5, &r5));
+    {
+        static const uint8_t ops[3] = {0x11, 0x12, 0x15};
+        uint16_t v[3] = {0, 0, 0};
+        TRY(regs_batch(h, ops, v, 3));
+        r1 = v[0]; r2 = v[1]; r5 = v[2];
+    }
     cmd = r5 >> 8;
     drv = r5 & 0xFF;
     count = r1 & 0xFF;
@@ -249,26 +411,39 @@ static int command(struct hdd *h)
         if (write && h->ro) return fail(h, ER_ABRT);
         block = multi ? h->multiple : 1;
         for (i = 0; i < total; i += n) {
-            unsigned k, last;
+            unsigned last;
             n = total - i < block ? total - i : block;
             last = i + n >= total;
             if (!write) {
                 if (h->io.rd(h->io.ctx, lba + i, n, buf)) return fail(h, ER_UNC);
-                TRY(regwr(h, 0, (uint16_t)n)); TRY(ptr0(h));
-                for (k = 0; k < n; k++)
-                    if ((rc = hdd_put(h, buf + 512 * k))) return rc;
-                TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | (last ? ST_LAST : 0)));
+                if (h->fast) {
+                    /* fast read: block size + DRQ + interrupt first (the status write also zeroes
+                       ide.v's buffer pointers), then the sectors; the CPU starts reading at once and
+                       Gayle holds its bus cycle (nrdy) whenever it catches up with the data so far */
+                    TRY(regwr(h, 0, (uint16_t)n));
+                    TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | ST_FAST | (last ? ST_LAST : 0)));
+                    TRY(hdd_put_n(h, buf, n));
+                } else {
+                    TRY(regwr(h, 0, (uint16_t)n));
+                    TRY(ptr0(h));
+                    TRY(hdd_put_n(h, buf, n));
+                    TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | (last ? ST_LAST : 0)));
+                }
                 h->rd_sect += n;
                 if (!last && (rc = wait_block(h))) return rc;
             } else {
                 /* PIO out: DRQ for the block (no interrupt before the first block), the CPU fills
                    the buffer, request 101, the data comes back here */
-                TRY(regwr(h, 0, (uint16_t)n)); TRY(ptr0(h));
+                {
+                    static const uint8_t ops[2] = {0x20, 0x32};          /* block size, PTR0 */
+                    uint16_t v[2];
+                    v[0] = (uint16_t)n; v[1] = 0;
+                    TRY(regs_batch(h, ops, v, 2));
+                }
                 TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | (i ? ST_IRQ : 0)));
                 if ((rc = wait_block(h))) return rc;
                 TRY(ptr0(h));
-                for (k = 0; k < n; k++)
-                    if ((rc = hdd_get(h, buf + 512 * k))) return rc;
+                TRY(hdd_get_n(h, buf, n));
                 if (h->io.wr(h->io.ctx, lba + i, n, buf)) return fail(h, ER_UNC);
                 h->wr_sect += n;
                 if (last) return finish(h, ST_DRDY | ST_DSC | ST_IRQ, 0);
@@ -300,11 +475,19 @@ int hdd_init(struct hdd *h)
     if (h->cyls > 16383) h->cyls = 16383;
     h->cur_heads = h->heads;
     h->cur_spt = h->spt;
-    h->multiple = 0;
+    h->multiple = HDD_MAX_MULTIPLE;   /* ATA allows multiple mode on at power-up (IDENTIFY word 59
+                                         reports it); a server restarted under a running Amiga then
+                                         still matches the SET MULTIPLE 16 Kickstart issued */
     /* the drive appears; an idle unit gets the ready status, a pending request (a command the Amiga
        issued while no server ran, or a reset) is left for the serve loop */
     if (regwr(h, 6, 0x0009) || hdd_status(h, &fl, 0)) return -1;
-    return (fl & 7) ? 0 : regwr(h, 5, ST_DRDY | ST_DSC);
+    if (fl & 7) return 0;
+    /* idle unit: ready, but WITH the error bit (ABRT).  If this server replaces one that died in the
+       middle of a fast read, the CPU is waiting inside the block (Gayle nrdy); this status write
+       releases it with stale words, and the error makes the driver retry instead of taking them.
+       Between commands the error bit is harmless: the next command's status replaces it. */
+    if (regwr(h, 0, (uint16_t)(ER_ABRT << 8 | 1))) return -1;
+    return regwr(h, 5, ST_DRDY | ST_DSC | ST_ERR);
 }
 
 int hdd_poll(struct hdd *h, int timeout_ms)
