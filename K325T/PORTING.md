@@ -2379,4 +2379,6 @@ Vivado run yet).
   checks the chip and sets the pointer (MiSTer ships "SetAkiko" for this); software that probes
   `$B80000` itself finds the chip directly.
 - Off = unchanged: with the line off the unit never acknowledges.  Bench, old (662bc8b) vs new: A500
-  gate and the stock A1200 timing probe byte-identical (mailbox, ticks, final frame), IDE off and on.
+  gate and the stock A1200 timing probe byte-identical (mailbox, ticks, final frame); the A1200 probe also with the IDE bit on (the A500 gate with IDE on was not run).
+- Status (2026-11-13): shelved when the roadmap turned towards a PiStorm-style design (CPU and expansions
+  on the Linux module).  Not done: the bench run of the WriteChunkyPixels phase, a Vivado build, a board.
