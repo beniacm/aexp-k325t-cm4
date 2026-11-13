@@ -2270,6 +2270,37 @@ link: `ext/aexp9_lxshell/PROTOCOL.md`; the Linux side: `DESIGN.md` / `INVENTORY.
   LUTs of LUT RAM.  Useful again only with a cache much smaller than chip RAM.  lat_meter $FB W2
   b31 = 1 = not built; `stallmon pf` says so.
 - `SLIM=1`: the lean lat_meter (only $FB and the mailbox $E0-$E5, what stallmon cache / mbox read).
+  lat_meter $FB W2 b30 = 1 = the lean meter; `stallmon lat / avm / fdbg` say "not built" instead of
+  printing zeros.  Without the prefetchers the cache also stores 4 tag bits fewer (bits 21..18 are
+  only the prefetchers'; they read as 0).
+- Machine time is unchanged by all of this: the A500 gate (check 1 rows 6b9c877b / 2649b948, E
+  fff52892) and cputime2 are the measures on the boards.
+
+Build flags (environment of `K325T/build.sh [radxacm3]`; no argument = the Luckfox pins, `radxacm3` =
+the Radxa CM3 pins + the hard disk link `G_HDD`):
+
+| flag | effect | default |
+|---|---|---|
+| `LXSHELL=1` | `G_LXSHELL`: the host master instead of QNICE_SOC (the shell runs in m65d) | local QNICE |
+| `SLIM=1` | `G_LATMETER=false`: the lean lat_meter | full meter |
+| `PREFETCH=1` | `G_PREFETCH=true`: the cache prefetchers (research build) | not built |
+| `VIVADO_JOBS=n` | Vivado threads / jobs per build | 4 |
+
+The flash candidate is `LXSHELL=1 SLIM=1 K325T/build.sh radxacm3` (Luckfox: without the argument).
+`K325T/build.sh radxacm3` alone is today's design with the local QNICE (prefetchers off);
+`PREFETCH=1 K325T/build.sh radxacm3` is build5's configuration.
+
+Constraints and the build gate (7ce53ac).  With QNICE inside a generate (`gen_soc_local`) and sd_emu
+inside `g_sd_emu`, the old constraint names matched nothing and Vivado dropped them with only a
+critical warning: the local-QNICE build lost QNICE's EAE multicycle and missed timing by 15 ns
+(build B).  Constraints of parts that a flag leaves out are now in their own files, which
+`build.tcl` adds only when the part is built: `qnice_local.xdc` (unless `LXSHELL=1`), `hdd.xdc`
+(`G_HDD`, the Radxa variant; its three set_max_delay had matched nothing in every Luckfox build,
+where hdd_spi does not exist) and `prefetch.xdc` (`PREFETCH=1`).  `build.sh` ends with
+`K325T/check_build_log.py`: the build fails on any "No valid object(s)" critical warning, on
+critical warnings outside a short allow-list, and when the timing summary does not say that all
+constraints are met.  The LX builds lost nothing they needed: the routed netlists of build_lx1 have
+none of the cells those constraints name.
 
 Sizes, Radxa variant (flash slot 1 = 8,388,608 B, m65flash.py adds a 4 KB prefix):
 
@@ -2279,3 +2310,20 @@ Sizes, Radxa variant (flash slot 1 = 8,388,608 B, m65flash.py adds a 4 KB prefix
 | build6 (QNICE, prefetch out) | 8,629,616 | 245,104 over | 78,447 | -- | +0.059 / +0.051 |
 | size1 (QNICE removed by a stub, prefetch in) | 8,606,364 | 221,852 over | 78,914 | 416 | +0.072 / +0.046 |
 | **A** (host master, prefetch out, tags trimmed, lean meter) | **7,877,212** | **507,300 under** | 58,399 | 418 | +0.073 / +0.039 |
+| **lx1** (as A + the capability bits, 9060b41) | **7,780,136** | **604,376 under** | 58,453 | 418 | +0.075 / +0.021 |
+| B (QNICE, prefetch in, 97d2efe; constraints lost) | 8,931,976 | 547,464 over | 92,540 | 437.5 | **-15.342** / +0.051 |
+| B2 (as B with the constraint fix, 7ce53ac) | 8,977,380 | 592,868 over | 92,367 | 437.5 | +0.045 / +0.050 |
+
+Luckfox variant of lx1 (same commit, no hard disk link): 7,589,976 B, 794,536 B under the slot,
+58,027 LUTs, 414 block RAM tiles, WNS +0.076 / WHS +0.013.  The configuration data of a build
+varies by tens of KB with placement alone: lx1 is 97 KB smaller than A, and the only logic between
+them is two constant bits in lat_meter's $FB word (b31 / b30) plus comments.  B2 against build5 (same
+configuration, 92,076 LUTs in build5_luckfox's hierarchy, no hard disk link there): block RAM equal,
+LUTs within 300, +94 KB of configuration data -- the same placement noise.
+
+On the boards (2026-11-13): build_lx1_radxa with the Linux shell is the Linux side's session (Radxa).
+build_lx1_luckfox, harness amiga-lxshell fd7b3a2: 10/10 JTAG loads and 10/10 long-press resets with
+the A1200 profile (one reload per press), Kickstart missing = core held with the message, starts when
+the file is back; a topology change in the menu = one cold boot; the menu read back over the host
+bus equals the shell's model cell by cell; cputime2 44/44 rows; A500 gate (6b9c877b / 2649b948, E
+fff52892) passes; the MEGA65 and C64 cores in flash answer as before.  Machine time unchanged.
