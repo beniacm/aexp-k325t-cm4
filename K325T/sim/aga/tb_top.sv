@@ -206,7 +206,7 @@ module tb_top (
   wire [2:0]  fc_ipl;
   wire [11:0] fc_zcfg;
   wire [3:0]  fc_cacr;
-  wire        fc_mb_req, fc_mb_wr, fc_mb_long, fc_mb_uds_n, fc_mb_lds_n, fc_mb_ack;
+  wire        fc_mb_req, fc_mb_wr, fc_mb_long, fc_mb_uds_n, fc_mb_lds_n, fc_mb_ack, fc_mb_sync;
   wire        fc_fr_sel, fc_fr_we, fc_fr_u, fc_fr_l, fc_fr_ready;
   reg  [31:0] fc_vbr_s = 0, fc_vbr_m = 0;
   reg  [3:0]  fc_cacr_s = 0, fc_cacr_m = 0;
@@ -245,14 +245,14 @@ module tb_top (
     .clk(cpu_clk), .rst_n_i(cpu_reset_n & fastclk),
     .cfg_z2_i(fc_zcfg[0]), .cfg_z3e0_i(fc_zcfg[1]), .cfg_z3e1_i(fc_zcfg[2]), .cfg_z3b0_i(fc_zcfg[7:3]),
     .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .ipl_i(fc_ipl),
-    .mb_req_o(fc_mb_req), .mb_addr_o(fc_mb_addr), .mb_wr_o(fc_mb_wr), .mb_long_o(fc_mb_long),
+    .mb_req_o(fc_mb_req), .mb_addr_o(fc_mb_addr), .mb_wr_o(fc_mb_wr), .mb_long_o(fc_mb_long), .mb_sync_o(fc_mb_sync),
     .mb_uds_n_o(fc_mb_uds_n), .mb_lds_n_o(fc_mb_lds_n), .mb_wdata_o(fc_mb_wdata),
     .mb_ack_i(fc_mb_ack), .mb_rdata_i(fc_mb_rdata),
     .fr_sel_o(fc_fr_sel), .fr_addr_o(fc_fr_a), .fr_we_o(fc_fr_we), .fr_uds_n_o(fc_fr_u), .fr_lds_n_o(fc_fr_l),
     .fr_wdata_o(fc_fr_wd), .fr_rdata_i(fc_fr_rd), .fr_ready_i(fc_fr_ready),
     .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o());
   fc_mbox i_fc_mbox (
-    .clk_i(clk), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long),
+    .clk_i(clk), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long), .mb_sync_i(fc_mb_sync),
     .mb_uds_n_i(fc_mb_uds_n), .mb_lds_n_i(fc_mb_lds_n), .mb_wdata_i(fc_mb_wdata), .mb_ack_o(fc_mb_ack),
     .mb_rdata_o(fc_mb_rdata), .ext_addr_o(fc_ext_addr), .ext_state_o(fc_ext_state), .ext_dout_o(fc_ext_dout),
     .ext_uds_n_o(fc_ext_uds_n), .ext_lds_n_o(fc_ext_lds_n), .ext_long_o(fc_ext_long), .ext_ack_i(fc_ext_ack),
@@ -279,7 +279,7 @@ module tb_top (
     .avm_waitrequest_i(~fa_acc | fastclk));
   // a1200-fastclk: the fast 68020's own amiga_fastram (mega65.vhd i_fc_fastram); the bench's setting is
   // static, so the Avalon select is a plain multiplexer here
-  amiga_fastram i_fc_fastram (
+  amiga_fastram_small i_fc_fastram (   // a1200-fastclk: G_IDX_BITS = 7 (256-byte cache)
     .clk_i(cpu_clk), .sel_i(fc_fr_sel), .pulse_i(1'b1), .quick_i(1'b1), .wq_i(1'b1), .addr_i(fc_fr_ddr),
     .we_i(fc_fr_we), .uds_n_i(fc_fr_u), .lds_n_i(fc_fr_l), .wdata_i(fc_fr_wd), .rdata_o(fc_fr_rd),
     .ready_o(fc_fr_ready), .rst_i(1'b0), .dbg_o(),

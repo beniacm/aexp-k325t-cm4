@@ -1561,6 +1561,7 @@ begin
    -- K325T a1200-fastclk: the fast 68020's own amiga_fastram (core side in its clock; read hits in 2
    -- clocks, the 8-entry write queue of a1200-fastcpu F2), the same DDR3 windows as the stock one
    i_fc_fastram : entity work.amiga_fastram
+      generic map (G_IDX_BITS => 7)   -- 256 bytes: fc_cpu has its own I/D caches
       port map (
          clk_i               => main_cpu_clk,
          sel_i               => fc_fr_sel,

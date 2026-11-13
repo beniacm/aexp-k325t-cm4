@@ -18,6 +18,10 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity fc_mbox is
+   generic (
+      G_SYNC       : integer := 8     -- machine clocks after an interrupt-register access before the answer:
+                                      -- cpu_wrapper registers the chip IPL at ph2 (every 4 clocks) + 1
+   );
    port (
       clk_i        : in  std_logic;                       -- main_clk (the machine clock)
       -- from fc_cpu (cpu_clk): toggle + fields stable while the request is open
@@ -25,6 +29,7 @@ entity fc_mbox is
       mb_addr_i    : in  std_logic_vector(31 downto 0);
       mb_wr_i      : in  std_logic;
       mb_long_i    : in  std_logic;
+      mb_sync_i    : in  std_logic;                       -- answer after the bus cycle + G_SYNC clocks
       mb_uds_n_i   : in  std_logic;
       mb_lds_n_i   : in  std_logic;
       mb_wdata_i   : in  std_logic_vector(31 downto 0);
@@ -44,7 +49,7 @@ end entity fc_mbox;
 
 architecture rtl of fc_mbox is
    signal req_s   : std_logic_vector(2 downto 0) := (others => '0');
-   type st_t is (S_IDLE, S_W1, S_W2);
+   type st_t is (S_IDLE, S_W1, S_W2, S_SYNC);
    signal st      : st_t := S_IDLE;
    signal ack_t   : std_logic := '0';
    signal a       : std_logic_vector(31 downto 0) := (others => '0');
@@ -55,6 +60,8 @@ architecture rtl of fc_mbox is
    signal wlo     : std_logic_vector(15 downto 0) := (others => '0');
    signal pend    : std_logic := '0';
    signal wr      : std_logic := '0';
+   signal sy      : std_logic := '0';
+   signal scnt    : integer range 0 to 15 := 0;
    attribute ASYNC_REG : string;
    attribute ASYNC_REG of req_s : signal is "TRUE";
 begin
@@ -68,8 +75,9 @@ begin
                if (req_s(2) xor req_s(1)) = '1' or pend = '1' then   -- fields stable until acknowledged
                   pend <= '0';
                   wr <= mb_wr_i;
+                  sy <= mb_sync_i;
                   wlo <= mb_wdata_i(15 downto 0);
-                  if mb_wr_i = '1' then ack_t <= not ack_t; end if;   -- a write is posted
+                  if mb_wr_i = '1' and mb_sync_i = '0' then ack_t <= not ack_t; end if;   -- a write is posted
                   a  <= mb_addr_i(31 downto 1) & '0';
                   lg <= mb_long_i;
                   if mb_long_i = '1' then
@@ -92,16 +100,31 @@ begin
                   else
                      rdata <= x"0000" & ext_din_i;
                      state <= "01";
-                     if wr = '0' then ack_t <= not ack_t; end if;
-                     st <= S_IDLE;
+                     if sy = '1' then
+                        scnt <= G_SYNC; st <= S_SYNC;
+                     else
+                        if wr = '0' then ack_t <= not ack_t; end if;
+                        st <= S_IDLE;
+                     end if;
                   end if;
+               end if;
+            when S_SYNC =>                                -- the new interrupt level reaches cpu_ipl
+               if scnt = 0 then
+                  ack_t <= not ack_t;
+                  st <= S_IDLE;
+               else
+                  scnt <= scnt - 1;
                end if;
             when S_W2 =>
                if ext_ack_i = '1' then
                   rdata(15 downto 0) <= ext_din_i;
                   state <= "01";
-                  if wr = '0' then ack_t <= not ack_t; end if;
-                  st <= S_IDLE;
+                  if sy = '1' then
+                     scnt <= G_SYNC; st <= S_SYNC;
+                  else
+                     if wr = '0' then ack_t <= not ack_t; end if;
+                     st <= S_IDLE;
+                  end if;
                end if;
          end case;
       end if;

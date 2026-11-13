@@ -38,7 +38,7 @@ grep -q 'out<=mem\[out_ptr' "$R/paula_floppy_fifo.v" || { echo "fifo fix" >&2; e
 [ "$(grep -c 'joy1enable <= ' "$R/userio.v")" -ge 2 ] || { echo "userio fix" >&2; exit 1; }
 # TG68K -> Verilog (generics as cpu_wrapper's instance)
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -fsynopsys -gsr_read=2 -gvbr_stackframe=2 \
-    -gextaddr_mode=2 -gmul_mode=2 -gdiv_mode=2 -gbitfield=2 --out=verilog \
+    -gextaddr_mode=2 -gmul_mode=2 -gdiv_mode=2 -gbitfield=2 -gmmu030_present=0 --out=verilog \
     "$TG/TG68K_Pack.vhd" "$TG/TG68K_ALU.vhd" "$root/K325T/cpu020/TG68K_MMU030.vhd" "$TG/TG68KdotC_Kernel.vhd" -e TG68KdotC_Kernel \
     > tg68k_raw.v 2> ghdl.log) || { cat "$OUT/ghdl.log" >&2; exit 1; }
 # VHDL names are case-insensitive: the kernel's ports as cpu_wrapper names them (lower case), and
@@ -51,7 +51,7 @@ m = s[i:j]; hdr = m[:m.index(');')]
 for name in set(re.findall(r'(?:input|output|inout)\s+(?:\[[^\]]*\]\s*)?(\w+)', hdr)):
     if name != name.lower():
         m = re.sub(r'\b' + name + r'\b', name.lower(), m)
-m = m.replace('module TG68KdotC_Kernel', 'module TG68KdotC_Kernel\n  #(parameter sr_read = 2, vbr_stackframe = 2, extaddr_mode = 2, mul_mode = 2, div_mode = 2, bitfield = 2)', 1)
+m = m.replace('module TG68KdotC_Kernel', 'module TG68KdotC_Kernel\n  #(parameter sr_read = 2, vbr_stackframe = 2, extaddr_mode = 2, mul_mode = 2, div_mode = 2, bitfield = 2, mmu030_present = 0)', 1)
 open(sys.argv[2], 'w').write(s[:i] + m + s[j:])
 PY
 # a1200-fastclk: the fast 68020 (fc_cpu: its own TG68K without MMU030, caches, store queue, mailbox
@@ -80,6 +80,10 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # a1200-fastcpu: the fast RAM port (amiga_fastram, 16 KB cache, Avalon master) -> Verilog
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/amiga_fastram.vhd" \
     -e amiga_fastram > amiga_fastram.v 2> ghdl_fastram.log) || { cat "$OUT/ghdl_fastram.log" >&2; exit 1; }
+# a1200-fastclk: the fast 68020's amiga_fastram with a 256-byte cache (G_IDX_BITS = 7) as module amiga_fastram_small
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -gg_idx_bits=7 --out=verilog "$root/K325T/amiga_fastram.vhd" \
+    -e amiga_fastram 2> ghdl_fastram_s.log | sed 's/\bamiga_fastram\b/amiga_fastram_small/' > amiga_fastram_small.v) \
+    || { cat "$OUT/ghdl_fastram_s.log" >&2; exit 1; }
 # a1200-ide: the hard disk SPI slave + engine -> Verilog
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -frelaxed --out=verilog "$root/K325T/hdd_spi.vhd" \
     -e hdd_spi > hdd_spi.v 2> ghdl_hdd.log) || { cat "$OUT/ghdl_hdd.log" >&2; exit 1; }
@@ -99,7 +103,7 @@ fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/fc_cpu.v $OUT/fc_mbox.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/amiga_fastram_small.v $OUT/fc_cpu.v $OUT/fc_mbox.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \

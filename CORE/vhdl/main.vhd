@@ -408,7 +408,7 @@ architecture synthesis of main is
    signal fc_rst_n         : std_logic;
    signal fc_zcfg          : std_logic_vector(11 downto 0);
    signal fc_ipl           : std_logic_vector(2 downto 0);
-   signal fc_mb_req, fc_mb_wr, fc_mb_long, fc_mb_uds_n, fc_mb_lds_n, fc_mb_ack : std_logic;
+   signal fc_mb_req, fc_mb_wr, fc_mb_long, fc_mb_uds_n, fc_mb_lds_n, fc_mb_ack, fc_mb_sync : std_logic;
    signal fc_mb_addr, fc_mb_wdata, fc_mb_rdata : std_logic_vector(31 downto 0);
    signal fc_fr_addr       : std_logic_vector(31 downto 0);
    signal fc_ext_addr      : std_logic_vector(31 downto 0);
@@ -718,6 +718,7 @@ begin
          mb_addr_o      => fc_mb_addr,
          mb_wr_o        => fc_mb_wr,
          mb_long_o      => fc_mb_long,
+         mb_sync_o      => fc_mb_sync,
          mb_uds_n_o     => fc_mb_uds_n,
          mb_lds_n_o     => fc_mb_lds_n,
          mb_wdata_o     => fc_mb_wdata,
@@ -749,6 +750,7 @@ begin
          mb_addr_i   => fc_mb_addr,
          mb_wr_i     => fc_mb_wr,
          mb_long_i   => fc_mb_long,
+         mb_sync_i   => fc_mb_sync,
          mb_uds_n_i  => fc_mb_uds_n,
          mb_lds_n_i  => fc_mb_lds_n,
          mb_wdata_i  => fc_mb_wdata,

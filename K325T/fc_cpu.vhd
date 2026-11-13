@@ -15,6 +15,11 @@
 --    not cleared by a CPU reset (accepted stores always reach memory);
 --  * a mailbox to the machine clock for everything else (custom chips, CIAs, chip RAM data, Gayle, the
 --    NMI vector): toggle handshake, one request at a time, request fields stable while it is open.
+--  * accesses that can change the interrupt level (writes to $DFF090-$DFF09F: INTENA, INTREQ, DMACON;
+--    any access to a CIA's ICR) are not posted: the machine side answers them after the bus cycle and
+--    the time Paula / the CIA need to show the new level on IPL, and the kernel continues only after
+--    the IPL synchroniser here has sampled it (else a handler's acknowledge followed by RTE takes the
+--    same interrupt again: music ran ahead in Domination, fc2 on the board);
 -- TG68K has one bus request at a time, so one controller serves both caches.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -41,6 +46,7 @@ entity fc_cpu is
       mb_addr_o      : out std_logic_vector(31 downto 0);
       mb_wr_o        : out std_logic;
       mb_long_o      : out std_logic;                       -- 1 = aligned longword (32 bits)
+      mb_sync_o      : out std_logic;                       -- 1 = an interrupt register: answered only when its effect is visible
       mb_uds_n_o     : out std_logic;
       mb_lds_n_o     : out std_logic;
       mb_wdata_o     : out std_logic_vector(31 downto 0);   -- word: 15..0
@@ -99,6 +105,10 @@ architecture rtl of fc_cpu is
    -- request decode
    signal req, rd, wr, fe : std_logic;
    signal is_fast, is_rom, is_chip, is_nmi : std_logic;
+   signal is_sync    : std_logic;
+   signal mb_s       : std_logic := '0';
+   signal sync_r     : std_logic := '0';
+   signal iplw       : unsigned(2 downto 0) := (others => '0');
    signal ic_ok, dc_ok   : std_logic;
    signal use_i, use_d   : std_logic;
 
@@ -147,7 +157,7 @@ architecture rtl of fc_cpu is
    signal st_wd  : std_logic_vector(127 downto 0);
 
    -- controller
-   type st_t is (S_RUN, S_FILLQ, S_FILL, S_FILLD, S_MBQ, S_MB, S_MBD);
+   type st_t is (S_RUN, S_FILLQ, S_FILL, S_FILLD, S_MBQ, S_MB, S_IPLW, S_MBD);
    signal st     : st_t := S_RUN;
    signal ack    : std_logic;
    signal fill_i : std_logic;                                -- 1 = I line, 0 = D line
@@ -258,6 +268,9 @@ begin
    is_rom  <= '1' when k_addr(31 downto 24) = x"00" and (k_addr(23 downto 19) = "11111" or k_addr(23 downto 19) = "11100") else '0';
    is_chip <= '1' when k_addr(31 downto 21) = "00000000000" else '0';
    is_nmi  <= '1' when k_addr(31 downto 2) = nmi_a else '0';
+   is_sync <= '1' when k_addr(31 downto 24) = x"00" and
+                       ((k_addr(23 downto 4) = x"DFF09" and wr = '1') or
+                        (k_addr(23 downto 16) = x"BF" and k_addr(11 downto 8) = "1101")) else '0';
    ic_ok   <= cacr_e and (is_rom or (is_chip and chipcode));
    dc_ok   <= (is_fast or is_rom) and not is_nmi;
    -- fast RAM is always cached: a fetch with the I-cache off (or no I-cache) goes through the D side
@@ -309,7 +322,7 @@ begin
                   k_lack <= k_lcand;
                elsif rd = '1' and k_skip = '1' then
                   ack <= '1';                                -- a discarded read: no bus cycle (as MiSTer)
-               elsif wr = '1' then
+               elsif wr = '1' and is_sync = '0' then
                   ack <= not q_full;
                   k_lack <= k_lcand and (is_fast or is_chip);   -- custom chips / CIAs: word by word
                end if;
@@ -418,7 +431,8 @@ begin
                      fill_mb <= not is_fast;
                      fill_a  <= k_addr(31 downto 4);
                      pend_q  <= '0';
-                  elsif use_i = '0' and use_d = '0' and wr = '0' and not (rd = '1' and k_skip = '1') then
+                  elsif use_i = '0' and use_d = '0' and (wr = '0' or is_sync = '1') and
+                        not (rd = '1' and k_skip = '1') then
                      st <= S_MBQ;
                      pend_q <= '0';
                   end if;
@@ -509,13 +523,23 @@ begin
                if q_empty = '1' and mb_open = '0' then
                   st <= S_MB;
                   mb_long_r <= k_lcand and is_chip and rd;
+                  sync_r <= is_sync;
                end if;
 
             when S_MB =>
                if mb_ev = '1' then
                   mb_q <= mb_rdata_i;
-                  st <= S_MBD;
+                  if sync_r = '1' then
+                     st <= S_IPLW;
+                     iplw <= (others => '0');
+                  else
+                     st <= S_MBD;
+                  end if;
                end if;
+
+            when S_IPLW =>                                   -- the IPL synchroniser samples the new level
+               iplw <= iplw + 1;
+               if iplw = 5 then st <= S_MBD; end if;
 
             when S_MBD =>
                st <= S_RUN;
@@ -532,7 +556,7 @@ begin
             dlb_v <= '0';
             pend_q <= '0';
             -- an open fill or mailbox read completes (its port answers later); its result is not used
-            if st /= S_FILL and st /= S_MB then st <= S_RUN; end if;
+            if st /= S_FILL and st /= S_MB and st /= S_IPLW then st <= S_RUN; end if;
          end if;
       end if;
    end process;
@@ -638,15 +662,15 @@ begin
          if mb_ev = '1' then mb_open <= '0'; end if;
          if mb_open = '0' then
             if dr_mb_go = '1' then
-               mb_a <= h_a; mb_w <= '1'; mb_l <= h_c(2); mb_u <= h_c(1); mb_lo <= h_c(0); mb_wd <= h_d;
+               mb_a <= h_a; mb_w <= '1'; mb_l <= h_c(2); mb_u <= h_c(1); mb_lo <= h_c(0); mb_wd <= h_d; mb_s <= '0';
                mb_t <= not mb_t; mb_open <= '1';
             elsif st = S_FILL and fill_mb = '1' and fill_go = '1' then
-               mb_a <= fill_a & std_logic_vector(fill_n(1 downto 0)) & "00"; mb_w <= '0'; mb_l <= '1';
+               mb_a <= fill_a & std_logic_vector(fill_n(1 downto 0)) & "00"; mb_w <= '0'; mb_l <= '1'; mb_s <= '0';
                mb_u <= '0'; mb_lo <= '0';
                mb_t <= not mb_t; mb_open <= '1';
             elsif st = S_MBQ and q_empty = '1' then
-               mb_a <= k_addr; mb_w <= '0'; mb_l <= k_lcand and is_chip and rd;
-               mb_u <= k_uds_n; mb_lo <= k_lds_n;
+               mb_a <= k_addr; mb_w <= wr; mb_l <= k_lcand and is_chip and rd;
+               mb_u <= k_uds_n; mb_lo <= k_lds_n; mb_wd <= x"0000" & k_dw; mb_s <= is_sync;
                mb_t <= not mb_t; mb_open <= '1';
             end if;
          end if;
@@ -654,5 +678,5 @@ begin
    end process;
    mb_ev <= ack_s(2) xor ack_s(1);
    mb_req_o <= mb_t; mb_addr_o <= mb_a; mb_wr_o <= mb_w; mb_long_o <= mb_l;
-   mb_uds_n_o <= mb_u; mb_lds_n_o <= mb_lo; mb_wdata_o <= mb_wd;
+   mb_uds_n_o <= mb_u; mb_lds_n_o <= mb_lo; mb_wdata_o <= mb_wd; mb_sync_o <= mb_s;
 end architecture rtl;

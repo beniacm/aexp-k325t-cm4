@@ -51,6 +51,11 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity amiga_fastram is
+   generic (
+      -- a1200-fastclk: the cache's size in 16-bit words = 2**G_IDX_BITS (13: 16 KB, the stock instance;
+      -- a CPU with caches of its own needs only a few lines: it reads a line's 8 words in a row)
+      G_IDX_BITS         : integer := 13
+   );
    port (
       -- core clock domain (28 MHz, cpu_wrapper)
       clk_i              : in  std_logic;
@@ -86,7 +91,7 @@ end entity amiga_fastram;
 architecture synthesis of amiga_fastram is
 
    -- data array: 8192 x 16 bit as two byte lanes (byte writes), written in hr_clk_i
-   type t_lane is array (0 to 8191) of std_logic_vector(7 downto 0);
+   type t_lane is array (0 to 2**G_IDX_BITS - 1) of std_logic_vector(7 downto 0);
    signal dram_u : t_lane := (others => (others => '0'));
    signal dram_l : t_lane := (others => (others => '0'));
    attribute ram_style : string;
@@ -94,7 +99,7 @@ architecture synthesis of amiga_fastram is
    attribute ram_style of dram_l : signal is "distributed";
 
    -- tags: valid & addr(26:14), written in clk_i
-   type t_tags is array (0 to 1023) of std_logic_vector(14 downto 0);
+   type t_tags is array (0 to 2**(G_IDX_BITS - 3) - 1) of std_logic_vector(27 - G_IDX_BITS downto 0);
    signal tags : t_tags := (others => (others => '0'));
    attribute ram_style of tags : signal is "distributed";
 
@@ -109,8 +114,8 @@ architecture synthesis of amiga_fastram is
    signal m_req_be     : std_logic_vector(1 downto 0) := "00";
    signal m_ack_d      : std_logic := '0';
    signal m_ack_dd     : std_logic := '0';
-   signal m_rd_addr    : std_logic_vector(12 downto 0) := (others => '0');
-   signal m_rd_a       : std_logic_vector(12 downto 0);                -- a1200-fastcpu: read address
+   signal m_rd_addr    : std_logic_vector(G_IDX_BITS - 1 downto 0) := (others => '0');
+   signal m_rd_a       : std_logic_vector(G_IDX_BITS - 1 downto 0);                -- a1200-fastcpu: read address
    signal m_start      : std_logic;
    signal m_rdata      : std_logic_vector(15 downto 0) := (others => '0');
    signal m_ready      : std_logic := '0';
@@ -163,7 +168,7 @@ architecture synthesis of amiga_fastram is
       return std_logic_vector(b xor ('0' & b(3 downto 1)));
    end function b2g;
 
-   signal tag_q        : std_logic_vector(14 downto 0);
+   signal tag_q        : std_logic_vector(27 - G_IDX_BITS downto 0);
    signal hit          : std_logic;
    signal busy         : std_logic;
 
@@ -177,10 +182,10 @@ architecture synthesis of amiga_fastram is
    attribute async_reg of hr_req_dd : signal is "true";
    signal hr_beat      : unsigned(2 downto 0) := (others => '0');
    signal hr_quiet     : unsigned(7 downto 0) := (others => '0');
-   signal hr_line      : std_logic_vector(9 downto 0) := (others => '0');
+   signal hr_line      : std_logic_vector(G_IDX_BITS - 4 downto 0) := (others => '0');
    signal hr_we_u      : std_logic;
    signal hr_we_l      : std_logic;
-   signal hr_waddr     : std_logic_vector(12 downto 0);
+   signal hr_waddr     : std_logic_vector(G_IDX_BITS - 1 downto 0);
    signal hr_wdata     : std_logic_vector(15 downto 0);
    -- debug (memory side)
    signal hr_rst_d     : std_logic := '0';
@@ -201,15 +206,15 @@ begin
    ---------------------------------------------------------------------------
    -- core clock domain
    ---------------------------------------------------------------------------
-   tag_q <= tags(to_integer(unsigned(addr_i(12 downto 3))));
-   hit   <= '1' when tag_q = '1' & addr_i(26 downto 13) else '0';
+   tag_q <= tags(to_integer(unsigned(addr_i(G_IDX_BITS - 1 downto 3))));
+   hit   <= '1' when tag_q = '1' & addr_i(26 downto G_IDX_BITS) else '0';
    busy  <= m_req_tgl xor m_ack_dd;               -- the previous request is not done yet
 
    -- fx68k: start on a data strobe (see M_IDLE); TG68K: its bus request is complete with sel_i
    m_start <= sel_i and (pulse_i or not uds_n_i or not lds_n_i);
 
    rdata_o <= m_rdata;
-   m_rd_a  <= addr_i(12 downto 0) when m_state = M_IDLE else m_rd_addr;
+   m_rd_a  <= addr_i(G_IDX_BITS - 1 downto 0) when m_state = M_IDLE else m_rd_addr;
    -- F2 write queue state on the core side
    m_rps   <= g2b(m_ack_rpg_dd);
    -- full / empty against m_rpc (the entries whose valid bit has been cleared), so that an entry is
@@ -221,7 +226,7 @@ begin
    begin
       v := '0';
       for i in 0 to 7 loop
-         if m_qv(i) = '1' and m_req_qa(i)(12 downto 0) = addr_i(12 downto 0) then
+         if m_qv(i) = '1' and m_req_qa(i)(G_IDX_BITS - 1 downto 0) = addr_i(G_IDX_BITS - 1 downto 0) then
             v := '1';
          end if;
       end loop;
@@ -251,7 +256,7 @@ begin
          case m_state is
             when M_IDLE =>
                m_ready   <= '0';
-               m_rd_addr <= addr_i(12 downto 0);
+               m_rd_addr <= addr_i(G_IDX_BITS - 1 downto 0);
                -- start on a data strobe, not on the address strobe: in a 68000 write cycle
                -- /AS falls in S2 but the data bus is driven in S3 and /UDS,/LDS fall in S4
                -- (in a read cycle /AS and /DS fall together)
@@ -308,7 +313,7 @@ begin
                      m_state    <= M_FILL;
                   end if;
                elsif m_start = '1' and pulse_i = '1' and we_i = '0' and hit = '1' and
-                     m_req_fill = '0' and m_req_addr(12 downto 0) /= addr_i(12 downto 0) then
+                     m_req_fill = '0' and m_req_addr(G_IDX_BITS - 1 downto 0) /= addr_i(G_IDX_BITS - 1 downto 0) then
                   -- TG68K: a read hit need not wait for a posted write to another word (the
                   -- memory side writes only that word of the data array; tags do not change)
                   if quick_i = '1' then
@@ -321,7 +326,7 @@ begin
 
             when M_FILL =>
                if busy = '0' then                  -- the line is in the data array
-                  tags(to_integer(unsigned(m_req_addr(12 downto 3)))) <= '1' & m_req_addr(26 downto 13);
+                  tags(to_integer(unsigned(m_req_addr(G_IDX_BITS - 1 downto 3)))) <= '1' & m_req_addr(26 downto G_IDX_BITS);
                   if m_orphan = '1' then          -- the line is complete; nobody waits for it
                      m_orphan <= '0';
                      m_state  <= M_IDLE;
@@ -370,7 +375,7 @@ begin
                         (hr_state = H_WRITE_CMD and avm_waitrequest_i = '0' and m_req_hit = '1' and m_req_be(0) = '1')
                else '0';
    hr_waddr <= hr_line & std_logic_vector(hr_beat) when hr_state = H_FILL_DATA else
-               m_req_qa(hr_qi)(12 downto 0) when hr_state = H_QWRITE else m_req_addr(12 downto 0);
+               m_req_qa(hr_qi)(G_IDX_BITS - 1 downto 0) when hr_state = H_QWRITE else m_req_addr(G_IDX_BITS - 1 downto 0);
    hr_wdata <= avm_readdata_i when hr_state = H_FILL_DATA else
                m_req_qd(hr_qi) when hr_state = H_QWRITE else m_req_data;
 
@@ -416,7 +421,7 @@ begin
                   avm_burstcount_o <= x"01";
                   hr_state         <= H_QWRITE;
                elsif hr_req_dd /= hr_ack_tgl then   -- a request; m_req_* are stable now
-                  hr_line <= m_req_addr(12 downto 3);
+                  hr_line <= m_req_addr(G_IDX_BITS - 1 downto 3);
                   hr_beat <= (others => '0');
                   if m_req_fill = '1' then
                      avm_rd       <= '1';
