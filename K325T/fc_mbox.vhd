@@ -12,6 +12,14 @@
 -- write rate); a read is acknowledged with its data.  One request is executed at a time, in order; a
 -- request that arrives while one is executing waits (its fields stay stable until its acknowledge).
 -- During a machine reset an open access simply waits (the chip-bus FSM answers after it).
+--
+-- Audio retrigger guard (a deliberate compatibility aid of the fast setting): when a DMACON write has
+-- switched an audio channel's DMA off, a later DMACON write that switches the same channel on again is
+-- held until G_RETRIG machine clocks (two raster lines) have passed since the off-write.  Paula's audio
+-- state machine needs that long to return to idle and reload the sample pointer; replay routines wait
+-- with fixed dbf loops that the fast CPU runs ~6x too fast (a retrigger was lost: silences in
+-- Domination).  Per channel; other bits and other writes are not affected.  DMACON writes are
+-- synchronous (fc_cpu), so the CPU simply waits; the cost is at most two lines per retrigger.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -19,8 +27,10 @@ use ieee.numeric_std.all;
 
 entity fc_mbox is
    generic (
-      G_SYNC       : integer := 8     -- machine clocks after an interrupt-register access before the answer:
+      G_SYNC       : integer := 8;    -- machine clocks after an interrupt-register access before the answer:
                                       -- cpu_wrapper registers the chip IPL at ph2 (every 4 clocks) + 1
+      G_RETRIG     : integer := 3632  -- audio retrigger guard: machine clocks an audio channel's DMA stays
+                                      -- off before a DMACON write may switch it on again (2 PAL lines)
    );
    port (
       clk_i        : in  std_logic;                       -- main_clk (the machine clock)
@@ -49,7 +59,9 @@ end entity fc_mbox;
 
 architecture rtl of fc_mbox is
    signal req_s   : std_logic_vector(2 downto 0) := (others => '0');
-   type st_t is (S_IDLE, S_W1, S_W2, S_SYNC);
+   type st_t is (S_IDLE, S_GUARD, S_W1, S_W2, S_SYNC);
+   type cnt_t is array (0 to 3) of integer range 0 to G_RETRIG;
+   signal aud_off : cnt_t := (others => 0);          -- clocks left before channel i may be switched on
    signal st      : st_t := S_IDLE;
    signal ack_t   : std_logic := '0';
    signal a       : std_logic_vector(31 downto 0) := (others => '0');
@@ -68,6 +80,9 @@ begin
    process (clk_i) begin
       if rising_edge(clk_i) then
          req_s <= req_s(1 downto 0) & mb_req_i;
+         for i in 0 to 3 loop
+            if aud_off(i) /= 0 then aud_off(i) <= aud_off(i) - 1; end if;
+         end loop;
          if (req_s(2) xor req_s(1)) = '1' then pend <= '1'; end if;
          case st is
             when S_IDLE =>
@@ -88,6 +103,28 @@ begin
                      dout <= mb_wdata_i(15 downto 0);
                   end if;
                   state <= '1' & mb_wr_i;                  -- 10 read, 11 write
+                  st <= S_W1;
+                  -- DMACON ($DFF096) writes: audio channels switched off start their guard; a write that
+                  -- switches a guarded channel on waits (state stays idle on the bus meanwhile)
+                  if mb_wr_i = '1' and mb_long_i = '0' and mb_addr_i(23 downto 1) = "11011111111100001001011" then   -- $DFF096
+                     if mb_wdata_i(15) = '0' then
+                        for i in 0 to 3 loop
+                           if mb_wdata_i(i) = '1' then aud_off(i) <= G_RETRIG; end if;
+                        end loop;
+                     else
+                        for i in 0 to 3 loop
+                           if mb_wdata_i(i) = '1' and aud_off(i) /= 0 then
+                              state <= "01";
+                              st <= S_GUARD;
+                           end if;
+                        end loop;
+                     end if;
+                  end if;
+               end if;
+            when S_GUARD =>                              -- the audio retrigger guard (see above)
+               if (aud_off(0) = 0 or wlo(0) = '0') and (aud_off(1) = 0 or wlo(1) = '0') and
+                  (aud_off(2) = 0 or wlo(2) = '0') and (aud_off(3) = 0 or wlo(3) = '0') then
+                  state <= "11";
                   st <= S_W1;
                end if;
             when S_W1 =>
