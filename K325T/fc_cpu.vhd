@@ -187,10 +187,13 @@ architecture rtl of fc_cpu is
    signal mb_ev  : std_logic;
 
    function wsel(l : std_logic_vector(127 downto 0); a : std_logic_vector(3 downto 1)) return std_logic_vector is
-      variable i : integer;
+      variable r : std_logic_vector(15 downto 0);
    begin
-      i := to_integer(unsigned(a));
-      return l(127 - 16 * i downto 112 - 16 * i);
+      r := l(127 downto 112);
+      for i in 1 to 7 loop
+         if to_integer(unsigned(a)) = i then r := l(127 - 16 * i downto 112 - 16 * i); end if;
+      end loop;
+      return r;
    end function;
 
 begin
@@ -377,7 +380,6 @@ begin
    process (clk)
       variable be  : std_logic_vector(15 downto 0);
       variable wd  : std_logic_vector(127 downto 0);
-      variable o   : integer;
       variable i_clr_idx, d_clr_idx : integer;
       variable i_clr, d_clr : std_logic;
    begin
@@ -433,17 +435,23 @@ begin
                -- a store: queue it, update the D line buffer, check the arrays in the next clock
                if wr = '1' and ack = '1' then
                   q_push <= '1';
-                  o := to_integer(unsigned(k_addr(3 downto 1))) * 2;
+                  -- be(b) = byte b of the line (b = 0: bits 127..120); words w = 0..7 of the line
                   be := (others => '0');
                   wd := (others => '0');
-                  if k_lack = '1' then
-                     be(o + 3 downto o) := "1111";            -- be(b) = byte b of the line (b = 0: bits 127..120)
-                     wd(127 - 8 * o downto 96 - 8 * o) := k_dw & k_dwlo;
-                  else
-                     be(o) := not k_uds_n;
-                     be(o + 1) := not k_lds_n;
-                     wd(127 - 8 * o downto 112 - 8 * o) := k_dw;
-                  end if;
+                  for w in 0 to 7 loop
+                     if to_integer(unsigned(k_addr(3 downto 1))) = w then
+                        wd(127 - 16 * w downto 112 - 16 * w) := k_dw;
+                        if k_lack = '1' then
+                           be(2 * w) := '1'; be(2 * w + 1) := '1';
+                        else
+                           be(2 * w) := not k_uds_n; be(2 * w + 1) := not k_lds_n;
+                        end if;
+                     end if;
+                     if k_lack = '1' and to_integer(unsigned(k_addr(3 downto 1))) + 1 = w then
+                        wd(127 - 16 * w downto 112 - 16 * w) := k_dwlo;
+                        be(2 * w) := '1'; be(2 * w + 1) := '1';
+                     end if;
+                  end loop;
                   st_v <= is_fast or is_rom or is_chip;
                   st_d <= is_fast;
                   st_a <= k_addr; st_be <= be; st_wd <= wd;
@@ -470,13 +478,17 @@ begin
                fill_go <= '0';
                if fill_mb = '0' then
                   if fr_ready_i = '1' then
-                     fill_b(127 - 16 * to_integer(fill_n) downto 112 - 16 * to_integer(fill_n)) <= fr_rdata_i;
+                     for w in 0 to 7 loop
+                        if to_integer(fill_n) = w then fill_b(127 - 16 * w downto 112 - 16 * w) <= fr_rdata_i; end if;
+                     end loop;
                      fill_n <= fill_n + 1;
                      if fill_n = 7 then st <= S_FILLD; end if;
                   end if;
                else
                   if mb_ev = '1' then
-                     fill_b(127 - 32 * to_integer(fill_n(1 downto 0)) downto 96 - 32 * to_integer(fill_n(1 downto 0))) <= mb_rdata_i;
+                     for w in 0 to 3 loop
+                        if to_integer(fill_n(1 downto 0)) = w then fill_b(127 - 32 * w downto 96 - 32 * w) <= mb_rdata_i; end if;
+                     end loop;
                      fill_n <= fill_n + 1;
                      if fill_n = 3 then st <= S_FILLD; else fill_go <= '1'; end if;
                   end if;
@@ -643,17 +655,4 @@ begin
    mb_ev <= ack_s(2) xor ack_s(1);
    mb_req_o <= mb_t; mb_addr_o <= mb_a; mb_wr_o <= mb_w; mb_long_o <= mb_l;
    mb_uds_n_o <= mb_u; mb_lds_n_o <= mb_lo; mb_wdata_o <= mb_wd;
-   -- pragma translate_off
-   process (clk) begin
-      if rising_edge(clk) then
-         if req = '1' and ack = '1' and (rd = '1' or fe = '1') and (is_x(k_din) or (k_lack = '1' and is_x(k_dinhi))) then
-            report "fc_cpu: X data to the kernel, st=" & st_t'image(st) & " use_i=" & std_logic'image(use_i) &
-                   " use_d=" & std_logic'image(use_d) & " ilb_hit=" & std_logic'image(ilb_hit) &
-                   " dlb_hit=" & std_logic'image(dlb_hit) & " i_hit=" & std_logic'image(i_hit) &
-                   " d_hit=" & std_logic'image(d_hit) & " lack=" & std_logic'image(k_lack) &
-                   " a=" & to_hstring(k_addr) & " dtq=" & to_hstring(d_tq) & " dq=" & to_hstring(d_dq) severity warning;
-         end if;
-      end if;
-   end process;
-   -- pragma translate_on
 end architecture rtl;

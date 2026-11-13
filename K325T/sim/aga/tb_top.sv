@@ -15,6 +15,8 @@ module tb_top (
   // ui_clk, so only with use_cache) and the "fast 68020" setting
   input  wire [2:0]  cfg_fast,
   input  wire        fastcpu,          // cpucfg b3: the stock-speed throttle off (main.vhd: menu line "Fast 68020")
+  input  wire        fastclk,          // a1200-fastclk: the fast 68020 is fc_cpu on cpu_clk (main.vhd: cpu_fast)
+  input  wire        cpu_clk,          // a1200-fastclk: its clock (51.59 MHz, not gated)
   input  wire        fr_quick,         // amiga_fastram quick_i: read hits in 2 clocks (main.vhd: with fastcpu)
   input  wire [7:0]  flat_min, flat_span, flat_wr,   // fast RAM Avalon model: read latency min + random(span), write accept
   input  wire        kick512,         // 512 KB Kickstart (the cache's kick512_i)
@@ -196,6 +198,24 @@ module tb_top (
   wire        fr_sel, fr_ready, fr_lds_n, fr_uds_n;
   wire [28:1] fr_addr;
   wire [15:0] fr_wdata, fr_rdata;
+  // a1200-fastclk (declared before their first use)
+  wire [31:0] fc_ext_addr, fc_mb_addr, fc_mb_wdata, fc_mb_rdata, fc_fr_a, fc_vbr;
+  wire [1:0]  fc_ext_state;
+  wire [15:0] fc_ext_dout, fc_ext_din, fc_fr_wd, fc_fr_rd;
+  wire        fc_ext_uds_n, fc_ext_lds_n, fc_ext_long, fc_ext_ack, fc_rso;
+  wire [2:0]  fc_ipl;
+  wire [11:0] fc_zcfg;
+  wire [3:0]  fc_cacr;
+  wire        fc_mb_req, fc_mb_wr, fc_mb_long, fc_mb_uds_n, fc_mb_lds_n, fc_mb_ack;
+  wire        fc_fr_sel, fc_fr_we, fc_fr_u, fc_fr_l, fc_fr_ready;
+  reg  [31:0] fc_vbr_s = 0, fc_vbr_m = 0;
+  reg  [3:0]  fc_cacr_s = 0, fc_cacr_m = 0;
+  reg         fc_rso_s = 1, fc_rso_m = 1;
+  wire        fs_write, fs_read, ff_write, ff_read;
+  wire [31:0] fs_address, ff_address;
+  wire [15:0] fs_writedata, ff_writedata;
+  wire [1:0]  fs_be, ff_be;
+  wire [7:0]  fs_burst, ff_burst;
   cpu_wrapper i_cpu (
     .reset(cpu_reset_n), .reset_out(cpu_reset_out_n), .clk(clk), .ph1(cpu_ph1), .ph2(cpu_ph2),
     // stage 3: MiSTer's cpucfg (b2 = 68EC020 stock timing), cachecfg b0 = its instruction cache
@@ -209,7 +229,35 @@ module tb_top (
     .fastchip_lw(), .fastchip_selack(1'b0), .fastchip_ready(1'b0),
     .ramsel(fr_sel), .ramaddr(fr_addr), .ramdin(fr_wdata), .ramdout(fr_rdata), .ramready(fr_ready),
     .ramlds(fr_lds_n), .ramuds(fr_uds_n),
-    .ramshared(), .toccata_ena(), .toccata_base(), .cpustate(cpustate), .cacr(), .nmi_addr(nmi_addr));
+    .ramshared(), .toccata_ena(), .toccata_base(), .cpustate(cpustate), .cacr(), .nmi_addr(nmi_addr),
+    // a1200-fastclk: the external CPU port (main.vhd)
+    .ext_en(fastclk), .ext_addr(fc_ext_addr), .ext_state(fc_ext_state), .ext_dout(fc_ext_dout),
+    .ext_uds_n(fc_ext_uds_n), .ext_lds_n(fc_ext_lds_n), .ext_long(fc_ext_long), .ext_vbr(fc_vbr_m),
+    .ext_cacr(fc_cacr_m), .ext_reset_out(fc_rso_m), .ext_ack(fc_ext_ack), .ext_din(fc_ext_din),
+    .ext_ipl(fc_ipl), .ext_zcfg(fc_zcfg));
+
+  // ---------------- a1200-fastclk: the fast 68020 on cpu_clk and its mailbox (as main.vhd) ----------------
+  always @(posedge clk) begin
+    fc_vbr_s <= fc_vbr; fc_vbr_m <= fc_vbr_s; fc_cacr_s <= fc_cacr; fc_cacr_m <= fc_cacr_s;
+    fc_rso_s <= fc_rso; fc_rso_m <= fc_rso_s;
+  end
+  fc_cpu i_fc_cpu (
+    .clk(cpu_clk), .rst_n_i(cpu_reset_n & fastclk),
+    .cfg_z2_i(fc_zcfg[0]), .cfg_z3e0_i(fc_zcfg[1]), .cfg_z3e1_i(fc_zcfg[2]), .cfg_z3b0_i(fc_zcfg[7:3]),
+    .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .ipl_i(fc_ipl),
+    .mb_req_o(fc_mb_req), .mb_addr_o(fc_mb_addr), .mb_wr_o(fc_mb_wr), .mb_long_o(fc_mb_long),
+    .mb_uds_n_o(fc_mb_uds_n), .mb_lds_n_o(fc_mb_lds_n), .mb_wdata_o(fc_mb_wdata),
+    .mb_ack_i(fc_mb_ack), .mb_rdata_i(fc_mb_rdata),
+    .fr_sel_o(fc_fr_sel), .fr_addr_o(fc_fr_a), .fr_we_o(fc_fr_we), .fr_uds_n_o(fc_fr_u), .fr_lds_n_o(fc_fr_l),
+    .fr_wdata_o(fc_fr_wd), .fr_rdata_i(fc_fr_rd), .fr_ready_i(fc_fr_ready),
+    .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o());
+  fc_mbox i_fc_mbox (
+    .clk_i(clk), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long),
+    .mb_uds_n_i(fc_mb_uds_n), .mb_lds_n_i(fc_mb_lds_n), .mb_wdata_i(fc_mb_wdata), .mb_ack_o(fc_mb_ack),
+    .mb_rdata_o(fc_mb_rdata), .ext_addr_o(fc_ext_addr), .ext_state_o(fc_ext_state), .ext_dout_o(fc_ext_dout),
+    .ext_uds_n_o(fc_ext_uds_n), .ext_lds_n_o(fc_ext_lds_n), .ext_long_o(fc_ext_long), .ext_ack_i(fc_ext_ack),
+    .ext_din_i(fc_ext_din));
+  wire [26:0] fc_fr_ddr = fc_fr_a[31:24] == 8'h00 ? {4'b0001, fc_fr_a[23:1]} : {1'b1, fc_fr_a[26:1]};
 
   // ---------------- a1200-fastcpu: fast RAM (amiga_fastram RTL, as mega65.vhd) ----------------
   // mega65.vhd: main_fast_ddr = "0001" & addr(23:1) for Zorro II, '1' & addr(26:1) for Zorro III
@@ -225,10 +273,26 @@ module tb_top (
     .clk_i(clk), .sel_i(fr_sel), .pulse_i(mm_cpucfg != 2'b00), .quick_i(fr_quick), .addr_i(fr_ddr), .we_i(cpustate == 2'b11),
     .uds_n_i(fr_uds_n), .lds_n_i(fr_lds_n), .wdata_i(fr_wdata), .rdata_o(fr_rdata), .ready_o(fr_ready),
     .rst_i(1'b0), .dbg_o(),
-    .hr_clk_i(ui_clk), .hr_rst_i(1'b0), .avm_write_o(fa_write), .avm_read_o(fa_read),
-    .avm_address_o(fa_address), .avm_writedata_o(fa_writedata), .avm_byteenable_o(fa_be),
-    .avm_burstcount_o(fa_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid),
-    .avm_waitrequest_i(~fa_acc));
+    .hr_clk_i(ui_clk), .hr_rst_i(1'b0), .avm_write_o(fs_write), .avm_read_o(fs_read),
+    .avm_address_o(fs_address), .avm_writedata_o(fs_writedata), .avm_byteenable_o(fs_be),
+    .avm_burstcount_o(fs_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & ~fastclk),
+    .avm_waitrequest_i(~fa_acc | fastclk));
+  // a1200-fastclk: the fast 68020's own amiga_fastram (mega65.vhd i_fc_fastram); the bench's setting is
+  // static, so the Avalon select is a plain multiplexer here
+  amiga_fastram i_fc_fastram (
+    .clk_i(cpu_clk), .sel_i(fc_fr_sel), .pulse_i(1'b1), .quick_i(1'b1), .wq_i(1'b1), .addr_i(fc_fr_ddr),
+    .we_i(fc_fr_we), .uds_n_i(fc_fr_u), .lds_n_i(fc_fr_l), .wdata_i(fc_fr_wd), .rdata_o(fc_fr_rd),
+    .ready_o(fc_fr_ready), .rst_i(1'b0), .dbg_o(),
+    .hr_clk_i(ui_clk), .hr_rst_i(1'b0), .avm_write_o(ff_write), .avm_read_o(ff_read),
+    .avm_address_o(ff_address), .avm_writedata_o(ff_writedata), .avm_byteenable_o(ff_be),
+    .avm_burstcount_o(ff_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & fastclk),
+    .avm_waitrequest_i(~fa_acc | ~fastclk));
+  assign fa_write = fastclk ? ff_write : fs_write;
+  assign fa_read = fastclk ? ff_read : fs_read;
+  assign fa_address = fastclk ? ff_address : fs_address;
+  assign fa_writedata = fastclk ? ff_writedata : fs_writedata;
+  assign fa_be = fastclk ? ff_be : fs_be;
+  assign fa_burst = fastclk ? ff_burst : fs_burst;
   // DDR3 behind avm_mig, 8 MB of fast RAM (word address bits 21:0): a command is accepted (waitrequest
   // low for one clock) after flat_wr clocks for a write, at once for a read; read data comes
   // flat_min + random(flat_span) clocks after the accept, the 8 beats of a burst back to back

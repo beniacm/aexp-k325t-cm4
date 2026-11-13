@@ -339,7 +339,7 @@ int main(int argc, char** argv) {
   double inj_p = 0; int inj_k = 0;   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   unsigned cfg_fast = 0; int flat_min = 26, flat_span = 10, flat_wr = 2;   // a1200-fastcpu
-  bool fastcpu = false, fr_quick = false;
+  bool fastcpu = false, fr_quick = false, fastclk = false;
   FILE* fhash = nullptr; int save_every = 0;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -390,6 +390,9 @@ int main(int argc, char** argv) {
     else if (a == "--save-every") save_every = atoi(nx());
     else if (a == "--fastcpu") { fastcpu = true; fr_quick = true; }
     else if (a == "--fastcpu-nothrottle") fastcpu = true;
+    // a1200-fastclk: the fast setting of this branch: fc_cpu on its own 51.59 MHz clock (cpucfg b3 too, as
+    // main.vhd sets both from the menu line); needs --cache (its fast RAM side runs in ui_clk)
+    else if (a == "--fastclk") { fastclk = true; fastcpu = true; }
     else if (a == "--fr-quick") fr_quick = true;
     else if (a == "--flat") { flat_min = atoi(nx()); flat_span = atoi(nx()); flat_wr = atoi(nx()); }
     else if (a == "--debug") { g_debug_ticks = atoi(nx()); g_debug_from = strtoull(nx(), 0, 0); }
@@ -471,7 +474,8 @@ int main(int argc, char** argv) {
   }
   top->pf_en = pf_mask;
   if (cfg_fast && !use_cache) { fprintf(stderr, "--fast needs --cache (amiga_fastram's memory side runs in ui_clk)\n"); return 1; }
-  top->fastcpu = fastcpu; top->fr_quick = fr_quick;
+  top->fastcpu = fastcpu; top->fr_quick = fr_quick; top->fastclk = fastclk;
+  if (fastclk && !use_cache) { fprintf(stderr, "--fastclk needs --cache\n"); return 1; }
   top->cfg_fast = cfg_fast; top->flat_min = flat_min; top->flat_span = flat_span; top->flat_wr = flat_wr;
   top->stock020 = stock020; top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
   top->lat_min = lat_min; top->lat_span = lat_span;
@@ -481,8 +485,11 @@ int main(int argc, char** argv) {
   // when the cache's combinational miss is low just before it.  Machine time (g_tick) counts the
   // machine edges only, so pictures and traces are in machine time as without the cache.
   const uint64_t SRC_H = 15969, UI_H = 5000, Q_H = 10000;   // half periods in ps
-  uint64_t t_src = SRC_H, t_ui = UI_H, t_q = Q_H, src_edges = 0, stalled = 0, q_edges = 0;
-  bool src_lvl = false, ui_lvl = false, q_lvl = false;
+  // a1200-fastclk: the fast 68020's clock, VCO 1135 MHz / 22 = 51.59 MHz (19.383 ns), never gated
+  const uint64_t CPU_H = 9692;
+  uint64_t t_src = SRC_H, t_ui = UI_H, t_q = Q_H, t_cpu = CPU_H, src_edges = 0, stalled = 0, q_edges = 0;
+  bool src_lvl = false, ui_lvl = false, q_lvl = false, cpu_lvl = false;
+  if (!fastclk) t_cpu = UINT64_MAX;   // the stock setting: fc_cpu is in reset, its clock is not simulated
   const bool host = hreq_fn != nullptr;
   if (host) {
     if (!use_cache) { fprintf(stderr, "--host-link needs --cache (the Kickstart port is the cache's)\n"); return 1; }
@@ -513,7 +520,11 @@ int main(int argc, char** argv) {
   auto machine_edge = [&]() {
     if (!use_cache) { top->clk = 0; top->eval(); top->clk = 1; top->eval(); if (hdf_fn) spi_step(top); return; }
     for (;;) {
-      if (host && t_q <= t_ui && t_q <= t_src) { q_edge(); continue; }
+      if (host && t_q <= t_ui && t_q <= t_src && t_q <= t_cpu) { q_edge(); continue; }
+      if (t_cpu <= t_ui && t_cpu <= t_src) {
+        cpu_lvl = !cpu_lvl; top->cpu_clk = cpu_lvl; top->eval(); t_cpu += CPU_H;
+        continue;
+      }
       if (t_ui <= t_src) {
         ui_lvl = !ui_lvl; top->ui_clk = ui_lvl; top->eval(); t_ui += UI_H;
         if (ui_lvl && hdf_fn) spi_step(top);

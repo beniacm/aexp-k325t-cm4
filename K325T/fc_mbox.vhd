@@ -7,8 +7,11 @@
 -- (PORTING "The CPU boundary of cpu_wrapper"): a word as one access; a longword as two word
 -- accesses with `longword` set, the high word first (so the chip-bus FSM merges an aligned chip-RAM
 -- longword into one 32-bit AGA cycle, as for the stock 68EC020).  Each access is held until
--- cpu_wrapper's one-clock acknowledge (ext_ack_i); then the answer data and an acknowledge toggle go
--- back.  During a machine reset an open access simply waits (the chip-bus FSM answers after it).
+-- cpu_wrapper's one-clock acknowledge (ext_ack_i).  A write is acknowledged as soon as it is captured
+-- (posted: the next request crosses while the bus cycle runs; the chip bus, not the crossing, sets the
+-- write rate); a read is acknowledged with its data.  One request is executed at a time, in order; a
+-- request that arrives while one is executing waits (its fields stay stable until its acknowledge).
+-- During a machine reset an open access simply waits (the chip-bus FSM answers after it).
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -49,16 +52,24 @@ architecture rtl of fc_mbox is
    signal dout    : std_logic_vector(15 downto 0) := (others => '0');
    signal u, l, lg: std_logic := '1';
    signal rdata   : std_logic_vector(31 downto 0) := (others => '0');
+   signal wlo     : std_logic_vector(15 downto 0) := (others => '0');
+   signal pend    : std_logic := '0';
+   signal wr      : std_logic := '0';
    attribute ASYNC_REG : string;
    attribute ASYNC_REG of req_s : signal is "TRUE";
 begin
    process (clk_i) begin
       if rising_edge(clk_i) then
          req_s <= req_s(1 downto 0) & mb_req_i;
+         if (req_s(2) xor req_s(1)) = '1' then pend <= '1'; end if;
          case st is
             when S_IDLE =>
                state <= "01";
-               if (req_s(2) xor req_s(1)) = '1' then      -- the fields have been stable since the toggle
+               if (req_s(2) xor req_s(1)) = '1' or pend = '1' then   -- fields stable until acknowledged
+                  pend <= '0';
+                  wr <= mb_wr_i;
+                  wlo <= mb_wdata_i(15 downto 0);
+                  if mb_wr_i = '1' then ack_t <= not ack_t; end if;   -- a write is posted
                   a  <= mb_addr_i(31 downto 1) & '0';
                   lg <= mb_long_i;
                   if mb_long_i = '1' then
@@ -76,12 +87,12 @@ begin
                   if lg = '1' then
                      rdata(31 downto 16) <= ext_din_i;
                      a <= std_logic_vector(unsigned(a) + 2);
-                     dout <= mb_wdata_i(15 downto 0);
+                     dout <= wlo;
                      st <= S_W2;
                   else
                      rdata <= x"0000" & ext_din_i;
                      state <= "01";
-                     ack_t <= not ack_t;
+                     if wr = '0' then ack_t <= not ack_t; end if;
                      st <= S_IDLE;
                   end if;
                end if;
@@ -89,7 +100,7 @@ begin
                if ext_ack_i = '1' then
                   rdata(15 downto 0) <= ext_din_i;
                   state <= "01";
-                  ack_t <= not ack_t;
+                  if wr = '0' then ack_t <= not ack_t; end if;
                   st <= S_IDLE;
                end if;
          end case;
