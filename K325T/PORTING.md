@@ -2332,3 +2332,46 @@ dea77080760aebdb501c95c9fc6101c1), both 9060b41, stay the board-verified bitstre
 before the constraint files and the gate, but their routed netlists contain none of the cells the
 constraints they did not match name (QNICE_SOC, EAE, sd_card, sd_emu, the prefetch counters; hdd_spi on
 the Luckfox), so they lost no constraint, and they are not rebuilt just for the gate.
+
+# Roadmap step 4, first stages: the "Fast 68020" setting (branch a1200-fastcpu, 2026-11-13)
+
+Menu line 88 "Fast 68020" (Amiga Hardware submenu, default off; machine topology: held while QNICE
+restarts, a change cold-boots the Amiga; OPTM_SIZE 95, group 17).  Off = the stock A1200, clock for
+clock.  On (with the 68020 selected) the parent sets cpu_wrapper's cpucfg bits 3 and 4 and
+amiga_fastram's quick_i / wq_i:
+
+- F1: the 68EC020's cycle-table throttle off (ec020, the 256-byte instruction cache and the 32-bit chip
+  cycles stay); the instruction cache also serves code in fast RAM and Kickstart code; fast-RAM read
+  hits in 2 clocks instead of 3.
+- F2: a look-ahead lookup of the instruction cache (sequential code at one clock per word); an 8-entry
+  fast-RAM write queue (writes answered at once, drained in order, before any fill; reads of a queued
+  word wait; the queue drains across resets).
+
+What "unthrottled" was before this: only cpucfg[2] = 0, i.e. the non-EC 68020 without the instruction
+cache, 4x SLOWER than the stock A1200 for chip-RAM code (add.l loop 5,717 CCK against 1,396); MiSTer's
+unthrottled 68020 (371) runs chip-RAM code and Kickstart through its SDRAM CPU cache (turbo chip/kick,
+forced on by minimig.v's `~ovl`), which this port does not have.
+
+Bench (`sim/aga`, now with the real amiga_fastram on an Avalon DDR3 model: `--fast N`, `--flat`,
+`--fastcpu`, `--fastcpu-f1`, `--census`, `--frame-hash`, `--save-every`; `tools/mk_cputime.py` builds
+`cputime_fc` / `cputime_ff`, the loops in fast RAM).  CCK per 2048 instructions, 2 MB fast RAM:
+
+| loop | stock | F1 | F2 |
+|---|---|---|---|
+| add.l, code in fast RAM | 1387 | 615 | 455 |
+| add.l, code in chip RAM | 1396 | 589 | 430 |
+| dbra, code in fast RAM | 3056 | 1318 | 1062 |
+| move.l (a0),d0, data in fast RAM | 3437 | 1642 | 1610 |
+| move.l d0,(a0), data in fast RAM | 2885 | 2726 | 1607 |
+| move.l d0,(a0)+, data in chip RAM (display off / 8 planes FMODE 3) | 4405 / 5225 | 4403 / 5214 | 4403 / 5214 |
+
+Chip-RAM writes stay bus-bound (2.15 CCK per 32-bit write): a 320x256x8 chunky-to-planar copy cannot
+take less than 12.4 ms (display off), 14.7 ms (8 planes FMODE 3) in any setting so far.  Stock checks
+after each stage: cputime2 44/44 rows unchanged, A500 gate 6b9c877b / 2649b948, E fff52892, frame md5
+568884d8 (OCS) unchanged; Kickstart 3.1 boots in the fast setting.  Full record, the F3 analysis (a
+turbo path for chip RAM through chip_cache's free port-A ticks) and the board session for Domination:
+`ext/aexp11_fastcpu/FINDINGS.md` (local).  Linux side: the menu id changes (E6132EE0 -> AA719CD5 for
+F1/F2), so m65d needs this build's .menu in its menu directory; settings are stored by item name, so
+existing amiga.settings keep working ("CPUFAST:Fast 68020" defaults to off); the shell's import of
+QNICE settings files (`LEGACY_SIZES` 94/93) needs 95 added (byte 88 = the new line) before 95-byte
+files from a local-QNICE build of this branch can be imported.
