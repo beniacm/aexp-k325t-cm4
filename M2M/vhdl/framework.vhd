@@ -34,7 +34,11 @@ generic (
    -- M2M-UPSTREAM audio-src-clock (K325T stage 2b): true = the core's audio samples are produced in
    -- main_audio_clk_i's domain, not main_clk_i's (a core whose main clock can stop keeps its audio
    -- running from an ungated clock, e.g. through a FIFO)
-   G_AUDIO_EXT_CLK : boolean := false
+   G_AUDIO_EXT_CLK : boolean := false;
+   -- K325T a1200-lxshell: true = the QNICE SoC runs the menu firmware here (upstream); false = the
+   -- menu processor runs on the Linux module and drives the same ports through the bridge (until
+   -- the bridge master exists: a size-measurement stub, qnice_host_stub.vhd)
+   G_QNICE_LOCAL : boolean := true
 );
 port (
    clk_i                   : in    std_logic;                  -- 100 MHz clock
@@ -652,6 +656,7 @@ begin
    -- QNICE Clock Domain: qnice_clk
    ---------------------------------------------------------------------------------------------------------------
 
+   g_qnice_local : if G_QNICE_LOCAL generate
    i_qnice_wrapper : entity work.qnice_wrapper
    generic map (
       G_BOARD => G_BOARD
@@ -738,6 +743,96 @@ begin
       qnice_ramrom_we_o         => qnice_ramrom_we_o,
       qnice_ramrom_wait_i       => qnice_ramrom_wait_i
    ); -- i_qnice_wrapper
+   end generate g_qnice_local;
+
+   g_qnice_host : if not G_QNICE_LOCAL generate
+   i_qnice_host : entity work.qnice_host_stub
+   generic map (
+      G_BOARD => G_BOARD
+   )
+   port map (
+      clk_i                     => qnice_clk,
+      rst_i                     => qnice_rst,
+      uart_rxd_i                => uart_rxd_i,
+      uart_txd_o                => uart_txd_o,
+      sd_reset_o                => sd_reset_o,
+      sd_clk_o                  => sd_clk_o,
+      sd_mosi_o                 => sd_mosi_o,
+      sd_miso_i                 => sd_miso_i,
+      sd_cd_i                   => sd_cd_i,
+      sd2_reset_o               => sd2_reset_o,
+      sd2_clk_o                 => sd2_clk_o,
+      sd2_mosi_o                => sd2_mosi_o,
+      sd2_miso_i                => sd2_miso_i,
+      sd2_cd_i                  => sd2_cd_i,
+      paddle_i                  => paddle_i,
+      paddle_drain_o            => paddle_drain_o,
+      qnice_osm_cfg_enable_o    => qnice_osm_cfg_enable,
+      qnice_osm_cfg_xy_o        => qnice_osm_cfg_xy,
+      qnice_osm_cfg_dxdy_o      => qnice_osm_cfg_dxdy,
+      qnice_hdmax_i             => qnice_hdmax,
+      qnice_vdmax_i             => qnice_vdmax,
+      qnice_interlaced_i        => qnice_interlaced,   -- M2M-UPSTREAM screen-center
+      qnice_h_pixels_i          => qnice_h_pixels,
+      qnice_v_pixels_i          => qnice_v_pixels,
+      qnice_h_pulse_i           => qnice_h_pulse,
+      qnice_h_bp_i              => qnice_h_bp,
+      qnice_h_fp_i              => qnice_h_fp,
+      qnice_v_pulse_i           => qnice_v_pulse,
+      qnice_v_bp_i              => qnice_v_bp,
+      qnice_v_fp_i              => qnice_v_fp,
+      qnice_h_freq_i            => qnice_h_freq,
+      qnice_ascal_mode_i        => qnice_ascal_mode_i,
+      qnice_ascal_polyphase_i   => qnice_ascal_polyphase_i,
+      qnice_ascal_triplebuf_i   => qnice_ascal_triplebuf_i,
+      qnice_flip_joyports_i     => qnice_flip_joyports_i,
+      qnice_osm_control_m_o     => qnice_osm_control_m_o,
+      qnice_gp_reg_o            => qnice_gp_reg_o,
+      qnice_csr_reset_o         => qnice_csr_reset,
+      qnice_csr_pause_o         => qnice_csr_pause,
+      qnice_csr_keyboard_on_o   => qnice_csr_keyboard_on,
+      qnice_csr_joy1_on_o       => qnice_csr_joy1_on,
+      qnice_csr_joy2_on_o       => qnice_csr_joy2_on,
+      qnice_ascal_mode_o        => qnice_ascal_mode,
+      qnice_poly_wr_o           => qnice_poly_wr,
+      qnice_vram_data_i         => qnice_vram_data,
+      qnice_vram_we_o           => qnice_vram_we,
+      qnice_vram_attr_we_o      => qnice_vram_attr_we,
+      qnice_qnice_keys_n_i      => qnice_qnice_keys_n,
+      qnice_pot1_x_n_o          => qnice_pot1_x_n,
+      qnice_pot1_y_n_o          => qnice_pot1_y_n,
+      qnice_pot2_x_n_o          => qnice_pot2_x_n,
+      qnice_pot2_y_n_o          => qnice_pot2_y_n,
+      qnice_avm_write_o         => qnice_avm_write,
+      qnice_avm_read_o          => qnice_avm_read,
+      qnice_avm_address_o       => qnice_avm_address,
+      qnice_avm_writedata_o     => qnice_avm_writedata,
+      qnice_avm_byteenable_o    => qnice_avm_byteenable,
+      qnice_avm_burstcount_o    => qnice_avm_burstcount,
+      qnice_avm_readdata_i      => qnice_avm_readdata,
+      qnice_avm_readdatavalid_i => qnice_avm_readdatavalid,
+      qnice_avm_waitrequest_i   => qnice_avm_waitrequest,
+      qnice_pps_i               => qnice_pps,
+      qnice_hdmi_clk_freq_i     => qnice_hdmi_clk_freq,
+      qnice_hr_count_long_i     => qnice_hr_count_long,
+      qnice_hr_count_short_i    => qnice_hr_count_short,
+      qnice_i2c_wait_i          => qnice_i2c_wait,
+      qnice_i2c_ce_o            => qnice_i2c_ce,
+      qnice_i2c_we_o            => qnice_i2c_we,
+      qnice_i2c_rd_data_i       => qnice_i2c_rd_data,
+      qnice_rtc_wait_i          => qnice_rtc_wait,
+      qnice_rtc_ce_o            => qnice_rtc_ce,
+      qnice_rtc_we_o            => qnice_rtc_we,
+      qnice_rtc_rd_data_i       => qnice_rtc_rd_data,
+      qnice_ramrom_dev_o        => qnice_ramrom_dev_o,
+      qnice_ramrom_addr_o       => qnice_ramrom_addr_o,
+      qnice_ramrom_data_out_o   => qnice_ramrom_data_out_o,
+      qnice_ramrom_data_in_i    => qnice_ramrom_data_in_i,
+      qnice_ramrom_ce_o         => qnice_ramrom_ce_o,
+      qnice_ramrom_we_o         => qnice_ramrom_we_o,
+      qnice_ramrom_wait_i       => qnice_ramrom_wait_i
+   ); -- i_qnice_host
+   end generate g_qnice_host;
 
    -- Determine HDMI clock frequency
    i_clock_counter : entity work.clock_counter

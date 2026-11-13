@@ -62,7 +62,8 @@ def remap(lines, table, extra_generics):
 fw = remap(fw, FW, '''         G_EXT_HR      => true,       -- memory bus from avm_mig (DDR3)
          G_TMDS_INVERT => "1010",     -- J11: green (D1) and clock pairs have P/N swapped
          G_NO_I2C      => true,
-         G_AUDIO_EXT_CLK => true      -- the core's audio comes from its ungated source clock''')
+         G_AUDIO_EXT_CLK => true,     -- the core's audio comes from its ungated source clock
+         G_QNICE_LOCAL => not G_LXSHELL  -- a1200-lxshell: the menu processor on the Linux module''')
 # framework: external memory ports (inserted before the last port line)
 last = max(k for k, l in enumerate(fw) if '=>' in l)
 fw[last] = fw[last].rstrip() + ','

@@ -36,7 +36,9 @@ entity qmtech_k325t_cm4 is
 generic (
    -- a1200-ide: the hard disk's SPI (Radxa CM3: SPI0 M0 on BCM2/3/6/13, attention on BCM7); build.tcl
    -- sets it for the radxacm3 variant only, elsewhere the hd_* pins stay inputs / high-impedance
-   G_HDD        : boolean := false
+   G_HDD        : boolean := false;
+   -- a1200-lxshell: the M2M menu processor (QNICE + firmware) runs on the Linux module, not here
+   G_LXSHELL    : boolean := false
 );
 port (
    clk_in       : in    std_logic;                     -- 50 MHz, F22
