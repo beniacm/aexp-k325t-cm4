@@ -32,8 +32,22 @@ struct hdd_io {
     int (*rd)(void *ctx, uint64_t lba, unsigned n, uint8_t *buf);
     int (*wr)(void *ctx, uint64_t lba, unsigned n, const uint8_t *buf);
     void (*log)(void *ctx, const char *msg);
+    /* optional: keep / fetch a small state record that survives a restart of the server (RAM:
+       a tmpfs file), so a server that died inside a read data phase resumes it transparently */
+    void (*persist)(void *ctx, const void *rec, int len);
+    int (*restore)(void *ctx, void *rec, int len);     /* 0 = got one */
     void *ctx;
 };
+
+/* a READ in progress (the only data phase a restarted server cannot just abort: in fast mode the
+   CPU may be waiting inside the block) */
+struct hdd_inflight {
+    uint32_t magic;                 /* HDD_INFLIGHT_MAGIC while a read has armed DRQ */
+    uint32_t phase;                 /* 1 block i about to be armed, 2 its DRQ status written */
+    uint64_t lba, nblk;
+    uint32_t total, block, i, n, fast;
+};
+#define HDD_INFLIGHT_MAGIC 0x48444452u
 
 struct hdd {
     struct hdd_io io;
@@ -47,6 +61,9 @@ struct hdd {
     /* statistics */
     uint64_t cmds, rd_sect, wr_sect, errors, resets, timeouts, links_lost;
     uint64_t batch_retries;             /* a batched step found the engine still busy and resumed */
+    uint64_t resumes;                   /* reads resumed after a server restart */
+    struct hdd_inflight inflight;
+    int resume;                         /* hdd_init found an in-flight read to resume */
     int batch;                          /* use batches (default 1; 0 = the old one-step-per-call path) */
     int delay_cut;                      /* tests: batch delays shortened by this many percent (0..100) */
 };

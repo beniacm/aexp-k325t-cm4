@@ -111,6 +111,13 @@ static int b_xfer(void*, const uint8_t* tx, uint8_t* rx, int len) {
   static long die_cmd = getenv("HDD_DIE_AT_CMD") ? atol(getenv("HDD_DIE_AT_CMD")) : -1, die_from = -1;
   if (die_cmd > 0 && (long)g_hdd.cmds >= die_cmd && die_from < 0) die_from = g_xfer_n + 40;   // mid data phase
   if (die_from > 0 && g_xfer_n + 1 == die_from) { g_die_at = die_from; die_cmd = -1; die_from = 0; }
+  static long die_put = getenv("HDD_DIE_IN_PUT") ? atol(getenv("HDD_DIE_IN_PUT")) : -1;
+  if (die_put > 0 && (long)g_hdd.cmds >= die_put && len > 500 && tx[0] == 0x30) {   // inside a data block
+    die_put = -1;
+    fprintf(stderr, "hddsrv: simulated crash at the first PUT of ATA command %llu (tick %llu)\n",
+            (unsigned long long)g_hdd.cmds, (unsigned long long)g_tick);
+    return -1;
+  }
   if (++g_xfer_n == g_die_at) { fprintf(stderr, "hddsrv: simulated crash at transaction %ld (tick %llu)\n", g_die_at,
                                         (unsigned long long)g_tick); return -1; }
   std::unique_lock<std::mutex> l(g_spi.m);
@@ -152,6 +159,9 @@ static int b_rd(void*, uint64_t lba, unsigned n, uint8_t* b) {
 static int b_wr(void*, uint64_t lba, unsigned n, const uint8_t* b) {
   return pwrite(g_hdd_fd, b, 512 * n, (off_t)(lba * 512)) == (ssize_t)(512 * n) ? 0 : -1;
 }
+static uint8_t g_state[64]; static int g_state_len = 0;     // the server's in-flight record (survives restarts)
+static void b_persist(void*, const void* rec, int len) { memcpy(g_state, rec, len); g_state_len = len; }
+static int b_restore(void*, void* rec, int len) { if (g_state_len != len) return -1; memcpy(rec, g_state, len); return 0; }
 static void b_log(void*, const char* m) { fprintf(stderr, "hddsrv: %s (tick %llu)\n", m, (unsigned long long)g_tick); }
 static std::atomic<unsigned> g_frame_a{0};
 static void hdd_thread() {
@@ -373,6 +383,7 @@ int main(int argc, char** argv) {
     memset(&g_hdd, 0, sizeof g_hdd);
     g_hdd.io.xfer = b_xfer; g_hdd.io.wait_att = b_wait_att; g_hdd.io.rd = b_rd; g_hdd.io.wr = b_wr;
     g_hdd.io.log = b_log;
+    g_hdd.io.persist = b_persist; g_hdd.io.restore = b_restore;
     g_hdd.nblk = (uint64_t)lseek(g_hdd_fd, 0, SEEK_END) / 512; g_hdd.ro = hdf_ro; g_hdd.verbose = getenv("HDD_VV") ? 2 : hdd_verbose;
     g_hdd.fast = getenv("HDD_SLOW") ? 0 : 1;          // HDD_SLOW: reads without ide.v's fast mode
     g_hdd.batch = getenv("HDD_NOBATCH") ? 0 : 1;      // HDD_NOBATCH: one transaction per call

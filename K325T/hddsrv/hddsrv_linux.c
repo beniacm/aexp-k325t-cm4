@@ -13,6 +13,8 @@
  * through PUT -> COMMIT -> PTR0 -> FETCH -> GET, compared; errors and throughput are printed.
  * -B: no batches (every SPI transaction its own system call, as the first version); -n N: sectors
  *     per link-test round (1..16, ide.v's buffer).
+ * -S FILE: the in-flight read record (default /dev/shm/hddsrv.state, RAM): a server restarted while
+ *     the Amiga is inside a read block resumes that read instead of leaving the CPU with stale data.
  * -F: reads without ide.v's fast mode (the whole block into the buffer before DRQ; slower, for comparison).
  * Ctrl+C / SIGTERM ends the server cleanly (statistics printed).
  */
@@ -32,7 +34,7 @@
 #include "hddsrv_core.h"
 
 struct ctx {
-    int spi, img, evfd;
+    int spi, img, evfd, statefd;
     unsigned speed;
     uint64_t xfers, bytes, ioctls;
     /* latency of a request woken by the attention edge (kernel event timestamp, CLOCK_MONOTONIC):
@@ -179,6 +181,18 @@ static int l_wr(void *c, uint64_t lba, unsigned n, const uint8_t *b)
     return pwrite(x->img, b, 512u * n, (off_t)(lba * 512)) == (ssize_t)(512u * n) ? 0 : -1;
 }
 
+static void l_persist(void *c, const void *rec, int len)
+{
+    struct ctx *x = c;
+    if (x->statefd >= 0 && pwrite(x->statefd, rec, (size_t)len, 0) != len) { /* RAM file: cannot fail */ }
+}
+
+static int l_restore(void *c, void *rec, int len)
+{
+    struct ctx *x = c;
+    return x->statefd >= 0 && pread(x->statefd, rec, (size_t)len, 0) == len ? 0 : -1;
+}
+
 static void l_log(void *c, const char *m) { (void)c; fprintf(stderr, "hddsrv: %s\n", m); }
 
 static double now(void)
@@ -233,12 +247,14 @@ int main(int argc, char **argv)
     const char *img = 0, *dev = "/dev/spidev0.0", *chip = "/dev/gpiochip4";
     int line = 21, ro = 0, verbose = 0, link = 0, slow = 0, nobatch = 0, nsec = 1, i;
     unsigned speed = 20000000;
-    struct ctx x = {.spi = -1, .img = -1, .evfd = -1};
+    struct ctx x = {.spi = -1, .img = -1, .evfd = -1, .statefd = -1};
+    const char *statefile = "/dev/shm/hddsrv.state";
     struct hdd h;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-r")) ro = 1;
         else if (!strcmp(argv[i], "-F")) slow = 1;
         else if (!strcmp(argv[i], "-B")) nobatch = 1;
+        else if (!strcmp(argv[i], "-S") && i + 1 < argc) statefile = argv[++i];
         else if (!strcmp(argv[i], "-n") && i + 1 < argc) nsec = atoi(argv[++i]);
         else if (!strcmp(argv[i], "-v")) verbose = 1;
         else if (!strcmp(argv[i], "-d") && i + 1 < argc) dev = argv[++i];
@@ -275,13 +291,16 @@ int main(int argc, char **argv)
     signal(SIGINT, onsig);
     signal(SIGTERM, onsig);
     memset(&h, 0, sizeof h);
-    h.io.xfer = l_xfer; h.io.xfer_batch = l_xfer_batch; h.io.wait_att = l_wait_att; h.io.rd = l_rd; h.io.wr = l_wr; h.io.log = l_log;
+    h.io.xfer = l_xfer; h.io.xfer_batch = l_xfer_batch;
+    h.io.persist = l_persist; h.io.restore = l_restore; h.io.wait_att = l_wait_att; h.io.rd = l_rd; h.io.wr = l_wr; h.io.log = l_log;
     h.io.ctx = &x;
     h.verbose = verbose;
     h.fast = !slow;
     h.batch = !nobatch;
     if (nsec < 1 || nsec > 16) nsec = 1;
     if (link) return linktest(&h, &x, link, nsec);
+    x.statefd = open(statefile, O_RDWR | O_CREAT, 0600);   /* a read in progress, for a restarted server */
+    if (x.statefd < 0) perror(statefile);
     x.img = open(img, ro ? O_RDONLY : O_RDWR);
     if (x.img < 0) { perror(img); return 1; }
     h.nblk = (uint64_t)lseek(x.img, 0, SEEK_END) / 512;
@@ -318,9 +337,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "\n");
     }
     fprintf(stderr, "hddsrv: %llu commands, %llu sectors read, %llu written, %llu errors, %llu resets, "
-            "%llu timeouts, %llu link losses, %llu SPI transactions, %llu bytes\n", (unsigned long long)h.cmds,
+            "%llu timeouts, %llu resumed reads, %llu link losses, %llu SPI transactions, %llu bytes\n", (unsigned long long)h.cmds,
             (unsigned long long)h.rd_sect, (unsigned long long)h.wr_sect, (unsigned long long)h.errors,
-            (unsigned long long)h.resets, (unsigned long long)h.timeouts, (unsigned long long)h.links_lost,
+            (unsigned long long)h.resets, (unsigned long long)h.timeouts, (unsigned long long)h.resumes, (unsigned long long)h.links_lost,
             (unsigned long long)x.xfers,
             (unsigned long long)x.bytes);
     return i ? 1 : 0;

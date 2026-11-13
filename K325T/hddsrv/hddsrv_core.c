@@ -419,6 +419,61 @@ static int do_reset(struct hdd *h)
     return 0;
 }
 
+static void keep(struct hdd *h, uint32_t phase, unsigned i, unsigned n)
+{
+    h->inflight.phase = phase;
+    h->inflight.i = i;
+    h->inflight.n = n;
+    h->inflight.magic = phase ? HDD_INFLIGHT_MAGIC : 0;
+    if (h->io.persist) h->io.persist(h->io.ctx, &h->inflight, (int)sizeof h->inflight);
+}
+
+/* the blocks of a READ from sector i0 on; phase0 2 = block i0's DRQ is already armed (resume after a
+   restart: only its data is written again, from the start of ide.v's buffer: the same words, the
+   CPU waits again until the pointer is ahead of it) */
+static int read_blocks(struct hdd *h, uint64_t lba, unsigned total, unsigned block, unsigned i0, int phase0)
+{
+    uint8_t buf[HDD_MAX_MULTIPLE * 512];
+    unsigned i, n, last;
+    int rc;
+    h->inflight.lba = lba; h->inflight.total = total; h->inflight.block = block;
+    h->inflight.nblk = h->nblk; h->inflight.fast = (uint32_t)h->fast;
+    for (i = i0; i < total; i += n) {
+        n = total - i < block ? total - i : block;
+        last = i + n >= total;
+        if (h->io.rd(h->io.ctx, lba + i, n, buf)) { keep(h, 0, 0, 0); return fail(h, ER_UNC); }
+        if (i == i0 && phase0 == 2) {
+            TRY(ptr0(h));
+            TRY(hdd_put_n(h, buf, n));
+        } else if (h->fast) {
+            /* fast read: block size + DRQ + interrupt first (the status write also zeroes ide.v's
+               buffer pointers), then the sectors; the CPU starts reading at once and Gayle holds its
+               bus cycle (nrdy) whenever it catches up with the data so far */
+            keep(h, 1, i, n);
+            TRY(regwr(h, 0, (uint16_t)n));
+            TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | ST_FAST | (last ? ST_LAST : 0)));
+            keep(h, 2, i, n);
+            TRY(hdd_put_n(h, buf, n));
+        } else {
+            keep(h, 1, i, n);
+            TRY(regwr(h, 0, (uint16_t)n));
+            TRY(ptr0(h));
+            TRY(hdd_put_n(h, buf, n));
+            TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | (last ? ST_LAST : 0)));
+            keep(h, 2, i, n);
+        }
+        h->rd_sect += n;
+        if (last) break;
+        if ((rc = wait_block(h))) {          /* a reset ends the read; a stop or link error keeps
+                                                the record for the next server */
+            if (rc == -2) keep(h, 0, 0, 0);
+            return rc;
+        }
+    }
+    keep(h, 0, 0, 0);
+    return 0;
+}
+
 static int command(struct hdd *h)
 {
     uint16_t r1, r2, r5;
@@ -475,28 +530,12 @@ static int command(struct hdd *h)
         if (lba + total > h->nblk) return fail(h, ER_IDNF);
         if (write && h->ro) return fail(h, ER_ABRT);
         block = multi ? h->multiple : 1;
+        if (!write) return read_blocks(h, lba, total, block, 0, 1);
         for (i = 0; i < total; i += n) {
             unsigned last;
             n = total - i < block ? total - i : block;
             last = i + n >= total;
-            if (!write) {
-                if (h->io.rd(h->io.ctx, lba + i, n, buf)) return fail(h, ER_UNC);
-                if (h->fast) {
-                    /* fast read: block size + DRQ + interrupt first (the status write also zeroes
-                       ide.v's buffer pointers), then the sectors; the CPU starts reading at once and
-                       Gayle holds its bus cycle (nrdy) whenever it catches up with the data so far */
-                    TRY(regwr(h, 0, (uint16_t)n));
-                    TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | ST_FAST | (last ? ST_LAST : 0)));
-                    TRY(hdd_put_n(h, buf, n));
-                } else {
-                    TRY(regwr(h, 0, (uint16_t)n));
-                    TRY(ptr0(h));
-                    TRY(hdd_put_n(h, buf, n));
-                    TRY(regwr(h, 5, ST_DRDY | ST_DSC | ST_DRQ | ST_IRQ | (last ? ST_LAST : 0)));
-                }
-                h->rd_sect += n;
-                if (!last && (rc = wait_block(h))) return rc;
-            } else {
+            {
                 /* PIO out: DRQ for the block (no interrupt before the first block), the CPU fills
                    the buffer, request 101, the data comes back here */
                 {
@@ -546,11 +585,23 @@ int hdd_init(struct hdd *h)
     /* the drive appears; an idle unit gets the ready status, a pending request (a command the Amiga
        issued while no server ran, or a reset) is left for the serve loop */
     if (regwr(h, 6, 0x0009) || hdd_status(h, &fl, 0)) return -1;
+    /* a read that a previous server left in its data phase (state record in RAM): idle (the CPU may
+       be waiting inside the block) or 101 (the CPU has read the block): resume it in hdd_serve */
+    h->resume = 0;
+    if (h->io.restore && !h->io.restore(h->io.ctx, &h->inflight, (int)sizeof h->inflight) &&
+        h->inflight.magic == HDD_INFLIGHT_MAGIC && h->inflight.nblk == h->nblk &&
+        ((fl & 7) == 0 || (fl & 7) == 5) && h->inflight.phase >= 1 && h->inflight.i < h->inflight.total) {
+        h->resume = (fl & 7) == 5 ? 3 : (int)h->inflight.phase;   /* 3: block i done, go on */
+        return 0;
+    }
+    if (h->io.persist) { memset(&h->inflight, 0, sizeof h->inflight); keep(h, 0, 0, 0); }
     if (fl & 7) return 0;
-    /* idle unit: ready, but WITH the error bit (ABRT).  If this server replaces one that died in the
-       middle of a fast read, the CPU is waiting inside the block (Gayle nrdy); this status write
-       releases it with stale words, and the error makes the driver retry instead of taking them.
-       Between commands the error bit is harmless: the next command's status replaces it. */
+    if (h->io.restore)                       /* idle, and no read to resume: just ready (an error bit
+                                                here would fail a command that had just completed,
+                                                if the driver had not read its status yet) */
+        return regwr(h, 5, ST_DRDY | ST_DSC);
+    /* no state record: ready WITH the error bit (ABRT) -- if the Amiga still waits inside a read
+       block, the driver may see the error and retry instead of taking stale words silently */
     if (regwr(h, 0, (uint16_t)(ER_ABRT << 8 | 1))) return -1;
     return regwr(h, 5, ST_DRDY | ST_DSC | ST_ERR);
 }
@@ -582,6 +633,22 @@ int hdd_poll(struct hdd *h, int timeout_ms)
 
 int hdd_serve(struct hdd *h, volatile int *stop)
 {
+    if (h->resume) {                         /* a read the previous server left in its data phase */
+        struct hdd_inflight f = h->inflight;
+        int r, fastsave = h->fast;
+        unsigned i0 = f.i, ph = (unsigned)h->resume;
+        lg(h, "resuming a read: lba %u, sector %u of %u, phase %u", (unsigned)f.lba, f.i, f.total, ph);
+        h->resumes++;
+        h->resume = 0;
+        h->fast = (int)f.fast;
+        if (ph == 3) {                       /* the CPU read block i; acknowledge with the next */
+            i0 = f.i + f.n;
+            ph = 1;
+        }
+        r = i0 < f.total ? read_blocks(h, f.lba, f.total, f.block, i0, (int)ph) : (keep(h, 0, 0, 0), 0);
+        h->fast = fastsave;
+        if (r == -1) return -1;
+    }
     while (!*stop) {
         int r = hdd_poll(h, 100);
         if (r < 0) {
