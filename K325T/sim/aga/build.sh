@@ -62,6 +62,9 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # the core's floppy service (adf_track_engine) -> Verilog, df0 for --adf
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/CORE/vhdl/adf_track_engine.vhd" \
     "$here/adf_engine_tb.vhd" -e adf_engine_tb > adf_engine.v 2> ghdl_adf.log) || { cat "$OUT/ghdl_adf.log" >&2; exit 1; }
+# a1200-fastcpu: the fast RAM port (amiga_fastram, 16 KB cache, Avalon master) -> Verilog
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/amiga_fastram.vhd" \
+    -e amiga_fastram > amiga_fastram.v 2> ghdl_fastram.log) || { cat "$OUT/ghdl_fastram.log" >&2; exit 1; }
 # a1200-ide: the hard disk SPI slave + engine -> Verilog
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -frelaxed --out=verilog "$root/K325T/hdd_spi.vhd" \
     -e hdd_spi > hdd_spi.v 2> ghdl_hdd.log) || { cat "$OUT/ghdl_hdd.log" >&2; exit 1; }
@@ -81,7 +84,7 @@ fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \

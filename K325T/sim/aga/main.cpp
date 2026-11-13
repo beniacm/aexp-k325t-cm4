@@ -15,6 +15,16 @@
 // Plusargs of tb_top.sv: +flpdbg (floppy-channel frames and image reads), +dskdbg (every disk DMA
 // write to chip RAM, address and data: decode them as MFM to check what Paula received),
 // +dout2init=HEX (start with that stale word A+1 of a 32-bit read, as after a reset on the board).
+// a1200-fastcpu: --fast N (cpu_wrapper's fastramcfg: 1 = 2 MB, 2 = 4 MB, 3 = 8 MB Zorro II; needs --cache:
+// amiga_fastram's memory side runs in ui_clk), --flat MIN SPAN WR (the fast RAM DDR3 model: read data
+// MIN + random(SPAN) ui clocks after the command, a write accepted after WR clocks; default 26 10 2).
+// --fastcpu: the "Fast 68020" setting (cpu_wrapper cpucfg b3: no cycle-table throttle; with fast RAM
+// also amiga_fastram's 2-clock read hits, as main.vhd / mega65.vhd wire it); --fastcpu-nothrottle
+// only the throttle off (fast RAM as in the stock machine), --fr-quick only the fast RAM change.
+// --frame-hash FILE: "frame hash" per frame of the picture buffer (FNV-1a 64), to count distinct frames.
+// --save-every N (with --save NAME): the state every N frames as NAME_<frame>; --restore one of them with
+// other CPU options (--fastcpu) continues the same machine state in the other setting (bench only: on the
+// board the setting is latched in the CPU's reset).
 #include "Vtb_top.h"
 #include "Vtb_top___024root.h"
 #include "Vtb_top_tb_top.h"
@@ -328,6 +338,9 @@ int main(int argc, char** argv) {
   const char* hdf_fn = nullptr; bool hdf_ro = false, ide_only = false, hdd_verbose = false;   // a1200-ide
   double inj_p = 0; int inj_k = 0;   // --reset-at FRAME: an Amiga reset (rst_ext) mid-run
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
+  unsigned cfg_fast = 0; int flat_min = 26, flat_span = 10, flat_wr = 2;   // a1200-fastcpu
+  bool fastcpu = false, fr_quick = false;
+  FILE* fhash = nullptr; int save_every = 0;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto nx = [&]() { return argv[++i]; };
@@ -372,6 +385,13 @@ int main(int argc, char** argv) {
     else if (a == "--shot-last") shot_last = true;
     else if (a == "--reset-at") reset_at = atoi(nx());
     else if (a == "--pf") pf_mask = strtoul(nx(), 0, 0);
+    else if (a == "--fast") cfg_fast = strtoul(nx(), 0, 0);
+    else if (a == "--frame-hash") fhash = fopen(nx(), "w");
+    else if (a == "--save-every") save_every = atoi(nx());
+    else if (a == "--fastcpu") { fastcpu = true; fr_quick = true; }
+    else if (a == "--fastcpu-nothrottle") fastcpu = true;
+    else if (a == "--fr-quick") fr_quick = true;
+    else if (a == "--flat") { flat_min = atoi(nx()); flat_span = atoi(nx()); flat_wr = atoi(nx()); }
     else if (a == "--debug") { g_debug_ticks = atoi(nx()); g_debug_from = strtoull(nx(), 0, 0); }
   }
   Vtb_top* top = new Vtb_top;
@@ -450,8 +470,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "restored %s at frame %u tick %llu\n", restore_fn, g_frame, (unsigned long long)g_tick);
   }
   top->pf_en = pf_mask;
+  if (cfg_fast && !use_cache) { fprintf(stderr, "--fast needs --cache (amiga_fastram's memory side runs in ui_clk)\n"); return 1; }
+  top->fastcpu = fastcpu; top->fr_quick = fr_quick;
+  top->cfg_fast = cfg_fast; top->flat_min = flat_min; top->flat_span = flat_span; top->flat_wr = flat_wr;
   top->stock020 = stock020; top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
-  top->lat_min = lat_min; top->lat_span = lat_span; top->cache_reset = use_cache;
+  top->lat_min = lat_min; top->lat_span = lat_span;
+  top->cache_reset = use_cache && !restore_fn;   // a1200-fastcpu: not after --restore (it would flush the cache)
   // stage 3, --cache: three clocks.  Source clock 31.310345 MHz (stall_clk.vhd), MIG ui_clk 100 MHz;
   // the machine clock is the source clock gated like the BUFGCE: a source edge reaches clk only
   // when the cache's combinational miss is low just before it.  Machine time (g_tick) counts the
@@ -592,7 +616,7 @@ int main(int argc, char** argv) {
       if (held && !now) {
         auto bit = [&](int n) -> unsigned { return (top->h_cfm[n / 32] >> (n % 32)) & 1; };
         unsigned c512 = bit(73), c1m = bit(74), ecs = bit(77), aga = bit(78), f2 = bit(80), f4 = bit(81),
-                 f8 = bit(82), z3 = bit(83), c020 = bit(86), ide = bit(87);
+                 f8 = bit(82), z3 = bit(83), c020 = bit(86), ide = bit(87), cfast = bit(88) && c020;
         unsigned c2m = aga;                                  // AGA = 2 MB chip in the cache (stage 3)
         unsigned slow = !c512 && !c1m && !c2m;
         unsigned fs = f8 ? 3 : (f4 || z3) ? 2 : f2 ? 1 : 0;
@@ -600,10 +624,11 @@ int main(int argc, char** argv) {
         unsigned e_cpu = c020 ? 3 : 0;
         unsigned e_mem = (slow ? 4 : 0) | ((c1m || c2m) ? 1 : 0) | (c2m ? 2 : 0) | (fs << 4);
         bool ok = e_chip == (top->cfg_chipset & 0x18) && e_cpu == (top->cfg_cpu & 3) &&
-                  e_mem == (top->cfg_mem & 0x37) && (bool)ide == (bool)top->ide_on;
-        fprintf(stderr, "--host-link: release at frame %u: CFM topology -> chipset %02x cpu %02x mem %02x ide %u; "
-                "bench options chipset %02x cpu %02x mem %02x ide %u: %s\n", g_frame, e_chip, e_cpu, e_mem, ide,
-                top->cfg_chipset, top->cfg_cpu, top->cfg_mem, top->ide_on, ok ? "match" : "MISMATCH");
+                  e_mem == (top->cfg_mem & 0x37) && (bool)ide == (bool)top->ide_on &&
+                  (bool)cfast == (bool)top->fastcpu;   // a1200-fastcpu: line 88 (with the 68020) = --fastcpu
+        fprintf(stderr, "--host-link: release at frame %u: CFM topology -> chipset %02x cpu %02x mem %02x ide %u fast %u; "
+                "bench options chipset %02x cpu %02x mem %02x ide %u fast %u: %s\n", g_frame, e_chip, e_cpu, e_mem, ide,
+                cfast, top->cfg_chipset, top->cfg_cpu, top->cfg_mem, top->ide_on, top->fastcpu, ok ? "match" : "MISMATCH");
         if (!ok) { fprintf(stderr, "FAIL: the menu bits and the bench configuration disagree\n"); exit(2); }
       }
       held = now;
@@ -662,6 +687,11 @@ int main(int argc, char** argv) {
         }
         if (adf2_fn && (int)g_frame == adf2_frame) { top->disk_mounted = 0; fprintf(stderr, "df0 ejected (frame %u)\n", g_frame); }
         if (adf2_fn && (int)g_frame == adf2_frame + 25) { top->disk_tracks = load_adf(adf2_fn); top->disk_mounted = 1; }
+        if (fhash) {   // a1200-fastcpu: one hash per frame (count the frames a demo effect draws)
+          uint64_t h = 1469598103934665603ull;
+          for (uint8_t v : fb) { h ^= v; h *= 1099511628211ull; }
+          fprintf(fhash, "%u %016llx\n", g_frame, (unsigned long long)h); fflush(fhash);
+        }
         bool want = shot && shot_every && g_frame % shot_every == 0;
         for (int f : shot_frames) if (shot && (int)g_frame == f) want = true;
         if (want) {
@@ -669,9 +699,11 @@ int main(int argc, char** argv) {
           FILE* f = fopen(fn, "wb");
           fprintf(f, "P6 %d %d 255\n", W, H); fwrite(fb.data(), 1, fb.size(), f); fclose(f);
         }
-        if ((int)g_frame == save_frame && save_fn) {
-          VerilatedSave os; os.open(save_fn); os << *top; os.close();
-          std::string sf = std::string(save_fn) + ".cpp";
+        if (save_fn && ((int)g_frame == save_frame || (save_every && g_frame % save_every == 0))) {
+          // a1200-fastcpu: --save-every N writes SAVE_<frame> (+ .cpp) every N frames
+          std::string sn = save_every ? std::string(save_fn) + "_" + std::to_string(g_frame) : std::string(save_fn);
+          VerilatedSave os; os.open(sn.c_str()); os << *top; os.close();
+          std::string sf = sn + ".cpp";
           FILE* f = fopen(sf.c_str(), "wb");
           fwrite(&g_tick, 8, 1, f); fwrite(&g_frame, 4, 1, f); fwrite(&g_last_vpos, 4, 1, f); fwrite(&g_phase, 4, 1, f);
           fclose(f);

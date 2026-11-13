@@ -20,8 +20,16 @@ bit cells (marker row $FFFFFFFF, then one row per result: condition << 24 | loop
 1 bitplane lores, cells 8 pixels x 4 lines (row pitch 5 lines), white = 1, so that an emulator screenshot can be
 decoded the same way (decode subcommand).
 The 68020 build turns the instruction cache on first (MOVEC CACR, as Kickstart does on an A1200).
+Fast RAM variants (a1200-fastcpu; need a Zorro II fast RAM board, 2 MB or more): the program
+configures the board itself (autoconfig register $48 at $E80048: the board appears at $200000, as
+Kickstart would put it) and copies the 11 loops to $200000 + their chip-RAM offset modulo 64 KB (the
+same alignment, so the same instruction-cache sets and fetch alignment): "fc" = code in fast RAM,
+data (a0) in chip RAM at $100000 as in the chip build; "ff" = code and data in fast RAM (a0 =
+$302000), so rows L2-L5, L9, L10 measure fast RAM accesses.  Everything else (timing, the results,
+the display) stays in chip RAM.  Without a fast RAM board the "fc"/"ff" programs do not work.
 Usage:  mk_cputime.py build OUTDIR      -> OUTDIR/cputime.bin (ORG, for the bench), cputime.adf,
-                                           cputime000.bin (68000 variant without MOVEC)
+                                           cputime000.bin (68000 variant without MOVEC),
+                                           cputime_fc.bin / .adf, cputime_ff.bin / .adf (fast RAM)
         mk_cputime.py decode FRAME.png [--xscale N] [--yscale N]
         mk_cputime.py dump FILE         (a --dump of RESULT from the bench)
         mk_cputime.py mbox "PAGE0 LONGS" "PAGE1 LONGS"   (two stallmon.py mbox readings, 16 hex longs
@@ -50,11 +58,37 @@ LOOPS = [
 CONDS = ["c0 DMA off", "c1 8pl lores FMODE0", "c2 8pl lores FMODE3", "c3 blitter nasty"]
 
 
-def asm(icache=True):
+FASTBASE = 0x200000           # Zorro II fast RAM after autoconfig
+FASTDATA = 0x302000           # "ff": the data pointer in fast RAM (8 KB for L9/L10, clear of the
+                              # code's lines in amiga_fastram's 16 KB direct-mapped cache)
+
+
+def asm(icache=True, where="chip"):
     # 68020+: instruction cache on (CACR E), as Kickstart leaves it on an A1200; the bench's boot
     # ROM path has no Kickstart.  68000 runs: build with icache=False (MOVEC is illegal there).
     ic = ("        moveq   #1,%%d0\n        movec   %%d0,%%cacr                 | 68020 I-cache on"
           if icache else "")
+    # fast RAM variants: configure the Zorro II board, copy the loops, point the table at the copies
+    fast = ("" if where == "chip" else r"""
+        move.b  #0x20,0xe80048              | autoconfig: the Zorro II board at $200000
+        lea     loop0(%%pc),%%a0
+        move.l  %%a0,%%d1                     | d1 = loop0 in chip RAM
+        move.l  %%d1,%%d2
+        and.l   #0xffff,%%d2
+        add.l   #0x%(fbase)x,%%d2           | d2 = its copy: same offset modulo 64 KB
+        move.l  %%d2,%%a1
+        move.w  #(loopend-loop0)/2-1,%%d0
+1:      move.w  (%%a0)+,(%%a1)+
+        dbra    %%d0,1b
+        lea     loops(%%pc),%%a0
+        moveq   #%(nl1)d,%%d0
+2:      move.l  (%%a0),%%d3
+        sub.l   %%d1,%%d3
+        add.l   %%d2,%%d3
+        move.l  %%d3,(%%a0)+
+        dbra    %%d0,2b
+""" % dict(fbase=FASTBASE, nl1=len(LOOPS) - 1))
+    dptr = FASTDATA if where == "ff" else 0x100000
     s = [r"""
         .text
         .equ    CUSTOM, 0xdff000
@@ -66,6 +100,7 @@ start:  move.w  #0x2700,%%sr
         move.w  #0x7fff,0x96(%%a6)
         move.l  #0,0x%(done)x
 %(icache)s
+%(fast)s
         move.w  #0,0x1fc(%%a6)              | FMODE 0
         move.w  #0x0c00,0x106(%%a6)
         move.w  #0x0011,0x10c(%%a6)
@@ -103,7 +138,7 @@ lp:     move.l  (%%a3)+,%%a5
         bsr     syncl30
         move.l  4(%%a6),%%d5
         bsr     startblit                   | c3 only: the blit starts with the loop
-        lea     0x100000,%%a0
+        lea     0x%(dptr)x,%%a0
         move.l  #0x00012345,%%d0
         moveq   #0,%%d1
         move.w  #7,%%d2
@@ -297,7 +332,7 @@ row:                                        | d0 -> 32 cells at a0 (8 px x 4 lin
         .balign 4
 loops:
 """ % dict(done=M.DONE_ADDR, res=RESULT, nloops=len(LOOPS), screen=SCREEN, copper=COPPER,
-           magic=M.DONE_MAGIC, icache=ic % {})]
+           magic=M.DONE_MAGIC, icache=ic % {}, fast=fast, dptr=dptr)]
     s.append("".join("        .long   loop%d\n" % i for i in range(len(LOOPS))))
     for i, (name, ins) in enumerate(LOOPS):
         s.append("| %s\n        .balign 16\nloop%d:" % (name, i))
@@ -306,6 +341,8 @@ loops:
         else:
             s.append("        move.w  #255,%%d7\n1:\n%s        dbra    %%d7,1b\n        rts\n"
                      % ("".join("        %s\n" % ins for _ in range(8))))
+    if where != "chip":
+        s.append("        .balign 4\nloopend:\n")
     return "\n".join(s)
 
 
@@ -315,6 +352,10 @@ def build(outdir):
     open(os.path.join(outdir, "cputime.bin"), "wb").write(payload)
     open(os.path.join(outdir, "cputime000.bin"), "wb").write(M.assemble(asm(False), M.ORG))
     open(os.path.join(outdir, "cputime.adf"), "wb").write(M.make_adf(payload))
+    for w in ("fc", "ff"):
+        pf = M.assemble(asm(True, w), M.ORG)
+        open(os.path.join(outdir, "cputime_%s.bin" % w), "wb").write(pf)
+        open(os.path.join(outdir, "cputime_%s.adf" % w), "wb").write(M.make_adf(pf))
     if not os.path.exists(os.path.join(outdir, "bootrom.bin")):
         open(os.path.join(outdir, "bootrom.bin"), "wb").write(M.make_bootrom())
     print("cputime %d bytes" % len(payload))

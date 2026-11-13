@@ -11,6 +11,12 @@ module tb_top (
   // model, instead of the ideal memory
   input  wire        use_cache,
   input  wire        stock020,        // stage 3: 68EC020 stock-speed timing (cpucfg b2) + instruction cache
+  // a1200-fastcpu: fast RAM (cpu_wrapper's fastramcfg; amiga_fastram RTL with an Avalon DDR3 model in
+  // ui_clk, so only with use_cache) and the "fast 68020" setting
+  input  wire [2:0]  cfg_fast,
+  input  wire        fastcpu,          // cpucfg b3: the stock-speed throttle off (main.vhd: menu line "Fast 68020")
+  input  wire        fr_quick,         // amiga_fastram quick_i: read hits in 2 clocks (main.vhd: with fastcpu)
+  input  wire [7:0]  flat_min, flat_span, flat_wr,   // fast RAM Avalon model: read latency min + random(span), write accept
   input  wire        kick512,         // 512 KB Kickstart (the cache's kick512_i)
   input  wire [6:0]  pf_en,           // stage 2b prefetch enables (bpl, spr, aud, dsk, cop, blt, cpu)
   output wire [671:0] o_pf_stats,     // the cache's prefetch counters (issued / useful / wasted per class)
@@ -187,19 +193,75 @@ module tb_top (
     if ($value$plusargs("dout2init=%h", v)) dout2_hold = v[15:0];
   end
   wire [1:0] cpustate;
+  wire        fr_sel, fr_ready, fr_lds_n, fr_uds_n;
+  wire [28:1] fr_addr;
+  wire [15:0] fr_wdata, fr_rdata;
   cpu_wrapper i_cpu (
     .reset(cpu_reset_n), .reset_out(cpu_reset_out_n), .clk(clk), .ph1(cpu_ph1), .ph2(cpu_ph2),
     // stage 3: MiSTer's cpucfg (b2 = 68EC020 stock timing), cachecfg b0 = its instruction cache
-    .cpucfg({2'b00, stock020 & (mm_cpucfg == 2'b11), mm_cpucfg}), .ntsc(1'b0),
-    .fastramcfg(3'b000), .cachecfg({2'b00, stock020}), .bootrom(1'b0),
+    .cpucfg({1'b0, fastcpu, stock020 & (mm_cpucfg == 2'b11), mm_cpucfg}), .ntsc(1'b0),
+    .fastramcfg(cfg_fast), .cachecfg({2'b00, stock020}), .bootrom(1'b0),
     .chip_addr(cpu_addr), .chip_dout(cpu_dout), .chip_din(cpu_din), .chip_as(cpu_as_n),
     .chip_uds(cpu_uds_n), .chip_lds(cpu_lds_n), .chip_rw(cpu_rw), .chip_dtack(cpu_dtack_n),
     .chip_ipl(cpu_ipl_n),
     .chip32_en(chip32_en), .chip_long(cpu_long), .chip_din2(cpu_din2), .chip_dout2(dout2_hold),
     .fastchip_dout(16'h0), .fastchip_sel(), .fastchip_lds(), .fastchip_uds(), .fastchip_rnw(),
     .fastchip_lw(), .fastchip_selack(1'b0), .fastchip_ready(1'b0),
-    .ramsel(), .ramaddr(), .ramdin(), .ramdout(16'h0), .ramready(1'b0), .ramlds(), .ramuds(),
+    .ramsel(fr_sel), .ramaddr(fr_addr), .ramdin(fr_wdata), .ramdout(fr_rdata), .ramready(fr_ready),
+    .ramlds(fr_lds_n), .ramuds(fr_uds_n),
     .ramshared(), .toccata_ena(), .toccata_base(), .cpustate(cpustate), .cacr(), .nmi_addr(nmi_addr));
+
+  // ---------------- a1200-fastcpu: fast RAM (amiga_fastram RTL, as mega65.vhd) ----------------
+  // mega65.vhd: main_fast_ddr = "0001" & addr(23:1) for Zorro II, '1' & addr(26:1) for Zorro III
+  wire [26:0] fr_ddr = fr_addr[28] ? {4'b0001, fr_addr[23:1]} : {1'b1, fr_addr[26:1]};
+  wire        fa_write, fa_read;
+  wire [31:0] fa_address;
+  wire [15:0] fa_writedata;
+  wire [1:0]  fa_be;
+  wire [7:0]  fa_burst;
+  reg  [15:0] fa_rdata = 0;
+  reg         fa_rvalid = 0, fa_acc = 0;
+  amiga_fastram i_fastram (
+    .clk_i(clk), .sel_i(fr_sel), .pulse_i(mm_cpucfg != 2'b00), .quick_i(fr_quick), .addr_i(fr_ddr), .we_i(cpustate == 2'b11),
+    .uds_n_i(fr_uds_n), .lds_n_i(fr_lds_n), .wdata_i(fr_wdata), .rdata_o(fr_rdata), .ready_o(fr_ready),
+    .rst_i(1'b0), .dbg_o(),
+    .hr_clk_i(ui_clk), .hr_rst_i(1'b0), .avm_write_o(fa_write), .avm_read_o(fa_read),
+    .avm_address_o(fa_address), .avm_writedata_o(fa_writedata), .avm_byteenable_o(fa_be),
+    .avm_burstcount_o(fa_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid),
+    .avm_waitrequest_i(~fa_acc));
+  // DDR3 behind avm_mig, 8 MB of fast RAM (word address bits 21:0): a command is accepted (waitrequest
+  // low for one clock) after flat_wr clocks for a write, at once for a read; read data comes
+  // flat_min + random(flat_span) clocks after the accept, the 8 beats of a burst back to back
+  reg [15:0] fmem [0:4194303] /*verilator public*/;
+  reg [2:0]  fs = 0;
+  reg [7:0]  fcnt = 0;
+  reg [2:0]  fbeat = 0;
+  reg [21:0] faddr = 0;
+  reg [31:0] frnd = 32'h9e3779b9;
+  always @(posedge ui_clk) begin
+    fa_acc <= 0; fa_rvalid <= 0;
+    frnd <= {frnd[30:0], frnd[31] ^ frnd[21] ^ frnd[1] ^ frnd[0]};
+    case (fs)
+      0: if ((fa_read | fa_write) && !fa_acc) begin fcnt <= fa_read ? 8'd0 : flat_wr; fs <= 1; end
+      1: if (fcnt != 0) fcnt <= fcnt - 1; else begin fa_acc <= 1; fs <= 2; end
+      2: begin   // the master sees waitrequest low at this edge
+           if (fa_read) begin
+             faddr <= fa_address[21:0]; fbeat <= 0; fs <= 3;
+             fcnt <= flat_min + (flat_span == 0 ? 8'd0 : frnd[7:0] % flat_span);
+           end else begin
+             if (fa_be[1]) fmem[fa_address[21:0]][15:8] <= fa_writedata[15:8];
+             if (fa_be[0]) fmem[fa_address[21:0]][7:0]  <= fa_writedata[7:0];
+             fs <= 0;
+           end
+         end
+      3: if (fcnt != 0) fcnt <= fcnt - 1; else fs <= 4;
+      4: begin
+           fa_rdata <= fmem[{faddr[21:3], fbeat}]; fa_rvalid <= 1; fbeat <= fbeat + 1;
+           if (fbeat == 7) fs <= 0;
+         end
+      default: fs <= 0;
+    endcase
+  end
 
   // ---------------- memory model ----------------
   wire [15:0] ram_wdata;
@@ -455,7 +517,7 @@ module tb_top (
   assign o_red_green = {red, green, blue};
   assign o_cpustate = cpustate;
   assign o_cpu_addr32 = i_cpu.cpu_addr;
-  assign o_cpu_ack = mm_cpucfg != 2'b00 ? (i_cpu.cpu_req & i_cpu.chipready) : (~cpu_as_n & ~cpu_dtack_n);
+  assign o_cpu_ack = mm_cpucfg != 2'b00 ? (i_cpu.cpu_req & (i_cpu.chipready | fr_ready)) : (~cpu_as_n & ~cpu_dtack_n);
   assign o_hsync_n = hsync_n;
   assign o_vsync_n = vsync_n;
 
