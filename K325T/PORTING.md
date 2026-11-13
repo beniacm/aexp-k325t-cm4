@@ -2332,3 +2332,18 @@ dea77080760aebdb501c95c9fc6101c1), both 9060b41, stay the board-verified bitstre
 before the constraint files and the gate, but their routed netlists contain none of the cells the
 constraints they did not match name (QNICE_SOC, EAE, sd_card, sd_emu, the prefetch counters; hdd_spi on
 the Luckfox), so they lost no constraint, and they are not rebuilt just for the gate.
+
+## Streaming write for the hard disk (branch a1200-idestream, 2026-11-13)
+
+Writes were CPU fill + server drain in series (ide.v has no fast write).  Patch 0136 adds, on ide.v's
+host (mgmt) side only: register 7 reads io_cnt, the words the CPU has written in the current data
+phase, and that read does not reset the host's buffer pointer; register 0 bit 2 = 1 announces it.
+hddsrv_core then drains each WRITE block sector by sector while the CPU fills the rest (REGRD 7,
+FETCH/GET of the complete sectors) and takes the block's 101 as before.  A server resuming a write
+after a restart, and any bitstream without the patch, use the old path; `hddsrv -W` (bench:
+HDD_NOSTREAM) switches it off.  Nothing the CPU sees changes: in the bench the A500 gate (6b9c877b /
+2649b948, E fff52892) and the stock A1200 timing probe (IDE off and on) are byte-identical with and
+without the patch.  Bench hdtest (64 KB): write 13 -> 10 ticks, 0 errors, also across a keyboard
+reset, a full reset and a server crash in the middle of a streamed block.  The board number is open
+(build_ides1_radxa, WNS +0.055 / WHS +0.002, 8,038,220 B).
+
