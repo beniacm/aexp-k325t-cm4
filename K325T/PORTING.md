@@ -2159,3 +2159,19 @@ every configuration: a flashed core could not come up as an A1200 at all.
   the cache for the A500 and 2 MB chip RAM with ECS stay available for tests.  `stallmon cache` with
   no argument prints the memory mode in effect (lat_meter $FB: stall registers r7..r0, prefetch /
   audio FIFO / override bits, profile bits, requested and latched mode).
+
+## Round 4 on the boards (2026-11-13, builds from 9ee92bc: Radxa WNS +0.015, Luckfox WNS +0.012)
+
+- A1200 settings file, JTAG load, no stallmon write: A1200 (cache, 2 MB chip, AGA) on 10 of 10 loads
+  (Radxa) and 20 of 20 (Luckfox), released 7.1-8.0 s after the load.
+- Menu change while running: A500 -> AGA and AGA -> OCS each give one cold boot into the right memory
+  mode.
+- Card served ~13 s late: "Waiting for the SD card ..." on the screen, then the card's profile and
+  Kickstart, released 18.7 s after the reset.
+- First use (no settings file, or one of the wrong size): factory defaults, released after 8 s, no
+  second Kickstart load.
+- A500 settings file: identity mode, determinism values 6b9c877b / 2649b948, E-clock count fff52892.
+- Luckfox: 15 of 15 full resets with 4 MB fast RAM; cputime2 44 of 44 rows equal to the bench.
+- NOT as described under P1: when the card is never served, the waiting message stays (seen for 75 s,
+  the 21-s bound does not end it) and the core is not held meanwhile (the framework releases it before
+  PREP_START; it runs with the default bits).  The same happens without these changes.  Open.
