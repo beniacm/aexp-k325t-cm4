@@ -39,7 +39,11 @@ generic (
    -- sets it for the radxacm3 variant only, elsewhere the hd_* pins stay inputs / high-impedance
    G_HDD        : boolean := false;
    -- a1200-lxshell: the M2M menu processor (QNICE + firmware) runs on the Linux module, not here
-   G_LXSHELL    : boolean := false
+   G_LXSHELL    : boolean := false;
+   -- bitstream size (flash slot 1): the cache's prefetchers (research; off at power-up) and the full
+   -- latency meter (development); the flash-size build sets both false
+   G_PREFETCH   : boolean := true;
+   G_LATMETER   : boolean := true
 );
 port (
    clk_in       : in    std_logic;                     -- 50 MHz, F22
@@ -373,6 +377,7 @@ begin
 
    -- line latency meter on the line port (stall monitor page 7, lat_meter.vhd)
    i_lat_meter : entity work.lat_meter
+      generic map (G_FULL => G_LATMETER)
       port map (
          clk => mig_ui_clk, rst => mem_not_ready, cfg_i => rk_vid_sel,
          page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats,

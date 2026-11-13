@@ -87,7 +87,7 @@ fw.insert(last + 1, '''      ext_hr_clk_i            => mig_ui_clk,
       host_m_full_i           => host_m_full,
       host_clr_i              => host_clr,
       host_flags_o            => host_flags''')
-core = remap(core, CORE, None)
+core = remap(core, CORE, '''         G_CACHE_PREFETCH => G_PREFETCH''')
 # core: the K325T stall machinery (stall_clk.vhd): configuration byte from the bridge, diagnostics
 last = max(k for k, l in enumerate(core) if '=>' in l)
 core[last] = core[last].rstrip() + ','

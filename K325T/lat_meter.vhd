@@ -29,6 +29,12 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity lat_meter is
+   generic (
+      -- false (a1200-lxshell, the flash-size build): only the read-back words the validation tools
+      -- use -- $FB (memory mode / topology, stallmon cache) and $E0-$E5 (the result mailbox, stallmon
+      -- mbox: gates, cputime2) -- no latency measurement, no $FF..$FC / $D0-$D6 words (they read 0)
+      G_FULL : boolean := true
+   );
    port (
       clk        : in  std_logic;               -- MIG ui_clk
       rst        : in  std_logic;
@@ -110,7 +116,7 @@ begin
          if busy = '0' then
             if gap /= 0 then
                gap <= gap - 1;
-            elsif lp_busy = '0' and r3(3) = '0' and (r3(0) = '1' or r3(1) = '1') then
+            elsif G_FULL and lp_busy = '0' and r3(3) = '0' and (r3(0) = '1' or r3(1) = '1') then
                -- next request: direction alternates when both are enabled
                if r3(0) = '1' and r3(1) = '1' then dir <= rnd(20);
                elsif r3(1) = '1' then dir <= '1'; else dir <= '0'; end if;
@@ -141,7 +147,9 @@ begin
          end if;
 
          d := 0; if hidx(6) = '1' then d := 1; end if;
-         if hidx(7 downto 3) = "11010" and hidx(2 downto 0) < 7 then
+         if not G_FULL and hidx /= x"FB" and hidx(7 downto 3) /= "11100" then
+            aux <= (others => '0');
+         elsif hidx(7 downto 3) = "11010" and hidx(2 downto 0) < 7 then
             -- the cache's prefetch counters of class i - $D0: issued, useful, wasted
             aux <= pf_i(96 * to_integer(hidx(2 downto 0)) + 95 downto 96 * to_integer(hidx(2 downto 0)));
          elsif hidx(7 downto 3) = "11100" and hidx(2 downto 0) < 6 then

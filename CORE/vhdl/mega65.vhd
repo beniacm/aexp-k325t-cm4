@@ -41,7 +41,9 @@ use work.video_modes_pkg.all;
 
 entity MEGA65_Core is
 generic (
-   G_BOARD : string                                         -- Which platform are we running on.
+   G_BOARD : string;                                        -- Which platform are we running on.
+   -- K325T: the cache's prefetchers built in (see C_CACHE_PREFETCH); the top's G_PREFETCH
+   G_CACHE_PREFETCH : boolean := true
 );
 port (
    --------------------------------------------------------------------------------------------------------
@@ -440,7 +442,7 @@ signal main_pf_en             : std_logic_vector(6 downto 0);
 -- ~0.6 MB of bitstream; without them the Radxa image fits flash slot 1.  false = built without them
 -- (pf_en tied to 0: the queue never fills and synthesis removes the prefetch path; the machine is the
 -- one that runs with the prefetchers off, the default); true = the research build with stallmon pf.
-constant C_CACHE_PREFETCH     : boolean := false;
+constant C_CACHE_PREFETCH     : boolean := G_CACHE_PREFETCH;
 -- the cache's tag sets (2**n, 13 = 8192 = 1.5 MB with 3 ways and 64-byte lines; fewer = smaller tag LUT
 -- RAM and a smaller cache, machine time unchanged)
 constant C_CACHE_SET_BITS     : natural := 13;
