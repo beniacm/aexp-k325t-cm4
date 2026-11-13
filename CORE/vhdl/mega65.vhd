@@ -320,7 +320,8 @@ signal main_fast_size         : std_logic_vector(1 downto 0);  -- fast RAM: 00 n
 -- start fix P2: the topology lines of the menu, held while QNICE restarts (see p_topo):
 -- 8 MEM_CHIP512, 7 MEM_CHIP1M, 6 CHIPSET_ECS, 5 CHIPSET_AGA, 4 FAST_2M, 3 FAST_4M, 2 FAST_8M,
 -- 1 FAST_Z3, 0 CPU_68020 (all 0 = the menu defaults' machine until the first release)
-signal main_topo              : std_logic_vector(8 downto 0) := (others => '0');
+signal main_topo              : std_logic_vector(9 downto 0) := (others => '0');
+signal main_ide               : std_logic;      -- a1200-ide: the menu's IDE line, held like the topology
 signal main_fast_z3           : std_logic;  -- K325T: Zorro III 128 MB (68020; size bits "10")
 signal main_cpu               : std_logic_vector(1 downto 0);  -- K325T: "00" 68000, "11" 68020
 
@@ -756,7 +757,8 @@ begin
    begin
       if rising_edge(main_clk) then
          if main_reset_m2m_i = '0' and main_reset_core_i = '0' then
-            main_topo <= main_osm_control_i(C_MENU_MEM_CHIP512) & main_osm_control_i(C_MENU_MEM_CHIP1M) &
+            main_topo <= main_osm_control_i(C_MENU_IDE) &
+                         main_osm_control_i(C_MENU_MEM_CHIP512) & main_osm_control_i(C_MENU_MEM_CHIP1M) &
                          main_osm_control_i(C_MENU_CHIPSET_ECS) & main_osm_control_i(C_MENU_CHIPSET_AGA) &
                          main_osm_control_i(C_MENU_FAST_2M) & main_osm_control_i(C_MENU_FAST_4M) &
                          main_osm_control_i(C_MENU_FAST_8M) & main_osm_control_i(C_MENU_FAST_Z3) &
@@ -764,6 +766,10 @@ begin
          end if;
       end if;
    end process p_topo;
+   -- a1200-ide: the IDE line is machine topology too (a drive appears or disappears): a change cold-
+   -- boots the Amiga like the other lines, and it is held while QNICE restarts, so neither Gayle's
+   -- decoding nor hdd_spi's link (the server would see it vanish) follow the menu's reset values
+   main_ide        <= main_topo(9);
    main_mem_chip1m <= main_topo(7);
    main_mem_slow   <= not main_topo(8) and not main_topo(7) and not main_mem_chip2m;
    -- stage 2: 2 MB chip RAM only with chip RAM in the cache (r7 b2 of the stall controller)
@@ -792,7 +798,7 @@ begin
          -- AGA needs the 2 MB chip RAM of the cache, which the cache takes only at a reset, so the
          -- effective bits change only after this cold boot (a menu change of the AGA radio alone
          -- would otherwise never trigger one)
-         topology_i        => main_cc_on_req & main_cc_2m_req & main_cpu(1) & main_fast_z3 & main_fast_size &
+         topology_i        => main_ide & main_cc_on_req & main_cc_2m_req & main_cpu(1) & main_fast_z3 & main_fast_size &
                               main_chip_ecs & (main_mem_chip1m or main_mem_chip2m) & main_mem_slow,
          cold_req_i        => main_reset_m2m_i,
          amiga_reset_o     => amiga_cold_reset,
@@ -906,7 +912,7 @@ begin
          fast_wdata_o         => main_fast_wdata,
          fast_rdata_i         => main_fast_rdata,
          fast_ready_i         => main_fast_ready,
-         ide_i                => main_osm_control_i(C_MENU_IDE),
+         ide_i                => main_ide,
          ide_req_o            => main_ide_req,
          ide_address_i        => main_ide_address,
          ide_write_i          => main_ide_write,
@@ -1609,7 +1615,7 @@ begin
       port map (
          fclk_i          => k325t_hd_clk_i,
          frst_i          => '0',                    -- power-up values; the SPI side follows CS and enable_i
-         enable_i        => main_osm_control_i(C_MENU_IDE),
+         enable_i        => main_ide,
          spi_sck_i       => k325t_hd_sck_i,
          spi_mosi_i      => k325t_hd_mosi_i,
          spi_cs_n_i      => k325t_hd_cs_n_i,
@@ -1625,6 +1631,6 @@ begin
          ide_read_o      => main_ide_read,
          ide_readdata_i  => main_ide_readdata
       ); -- i_hdd_spi
-   k325t_hd_en_o <= main_osm_control_i(C_MENU_IDE);
+   k325t_hd_en_o <= main_ide;
 
 end architecture synthesis;

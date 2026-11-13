@@ -5,7 +5,8 @@
  * IMAGE: a hard disk image (whole 512-byte sectors, e.g. an RDB HDF from tools/mk_hdf.py); for tests
  * keep it in RAM (/dev/shm).  Writes are plain pwrite()s into the file: no fsync, no journal, nothing
  * periodic; -r opens it read-only (the Amiga gets an error for every write).
- * -d / -s: the SPI device and clock (default /dev/spidev0.0, 20 MHz requested = 19.8 MHz real; the link
+ * -d / -s: the SPI device and clock (default /dev/spidev0.0, 33 MHz = 198 MHz / 6; hdd_spi v2 oversamples SCK
+ * in the 162.7 MHz bridge clock with an early MISO like rk_bridge: 0 errors at 33 MHz; with v1 the link
  * is clean up to 19.8 MHz and fails at 24.75 MHz (SCK is oversampled at 100 MHz); the RK3568 divides
  * its 198 MHz SPI clock by an even number, so the real rate is reported).  -g / -l: the attention
  * line (BCM7 = GPIO4_C5 = gpiochip4 line 21); -l -1 polls instead (every 2 ms).
@@ -246,7 +247,7 @@ int main(int argc, char **argv)
 {
     const char *img = 0, *dev = "/dev/spidev0.0", *chip = "/dev/gpiochip4";
     int line = 21, ro = 0, verbose = 0, link = 0, slow = 0, nobatch = 0, nsec = 1, i;
-    unsigned speed = 20000000;
+    unsigned speed = 33000000;
     struct ctx x = {.spi = -1, .img = -1, .evfd = -1, .statefd = -1};
     const char *statefile = "/dev/shm/hddsrv.state";
     struct hdd h;
