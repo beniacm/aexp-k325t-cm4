@@ -2251,7 +2251,7 @@ topology like the memory radios: held while QNICE restarts; switching it on or o
 
 The menu processor (QNICE + its firmware) moves to the Linux module; the FPGA keeps QNICE's register
 file and device bus, driven by the bridge.  Bridge commands, registers, throughput and the bench
-link: `ext/aexp9_lxshell/PROTOCOL.md`; the Linux side: `DESIGN.md` / `INVENTORY.md` there.
+link: `K325T/HOST_PROTOCOL.md`; the Linux side is the shell in m65d (Rockchip harness).
 
 - `G_LXSHELL` (top; build.sh `LXSHELL=1`): framework `G_QNICE_LOCAL = false` -> qnice_wrapper builds
   `K325T/qnice_host.vhd` in place of QNICE_SOC (no CPU, ROM, RAM, UART, SD controller, strings ROM),
@@ -2327,3 +2327,8 @@ the A1200 profile (one reload per press), Kickstart missing = core held with the
 the file is back; a topology change in the menu = one cold boot; the menu read back over the host
 bus equals the shell's model cell by cell; cputime2 44/44 rows; A500 gate (6b9c877b / 2649b948, E
 fff52892) passes; the MEGA65 and C64 cores in flash answer as before.  Machine time unchanged.
+build_lx1_radxa (md5 bd793b322e6b497a113af55bad6b8086) and build_lx1_luckfox (md5
+dea77080760aebdb501c95c9fc6101c1), both 9060b41, stay the board-verified bitstreams: they were built
+before the constraint files and the gate, but their routed netlists contain none of the cells the
+constraints they did not match name (QNICE_SOC, EAE, sd_card, sd_emu, the prefetch counters; hdd_spi on
+the Luckfox), so they lost no constraint, and they are not rebuilt just for the gate.
