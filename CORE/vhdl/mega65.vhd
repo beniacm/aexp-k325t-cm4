@@ -1530,12 +1530,17 @@ begin
    main_fast_ddr <= "0001" & main_fast_addr(23 downto 1) when main_fast_addr(28) = '1' else
                     '1' & main_fast_addr(26 downto 1);
 
+   -- a1200-fastclk fc5 (slot trim): the data array in block RAM (clock for clock as the LUT RAM, see
+   -- amiga_fastram), and quick_i off: F1/F2's quick read hits served the unthrottled stock CPU; the fast
+   -- setting now runs fc_cpu with its own instance (i_fc_fastram) and this one is off the DDR3 port then,
+   -- so quick_i (= the fast setting) was 0 whenever this instance answers.  Stock setting unchanged.
    i_amiga_fastram : entity work.amiga_fastram
+      generic map (G_DRAM_STYLE => "block")
       port map (
          clk_i               => main_clk,
          sel_i               => main_fast_sel,
          pulse_i             => main_fast_pulse,
-         quick_i             => main_fast_quick,
+         quick_i             => '0',             -- was main_fast_quick (fc5 slot trim)
          addr_i              => main_fast_ddr,
          we_i                => main_fast_we,
          uds_n_i             => main_fast_uds_n,

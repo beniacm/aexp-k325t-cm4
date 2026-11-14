@@ -123,8 +123,8 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_* || NAME =~ CORE/i_amiga_fastram/FSM_*hr_state* || NAME =~ CORE/i_amiga_fastram/avm_* || NAME =~ CORE/i_amiga_fastram/dram_*}]
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_ack_tgl*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_ack_d_reg*}]
-set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/dram_*}] \
-    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_rdata_reg*}]
+## (a1200-fastclk fc5: the stock instance's data array is block RAM, G_DRAM_STYLE "block": m_rdata is the block
+## RAM's output latch, the write-to-read crossing is inside the block RAM: no dram_* -> m_rdata_reg* path left)
 ## a1200-fastcpu F2 (amiga_fastram 617c77a): the write queue's read pointer (Gray) back to the core clock
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_ack_rpg*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/m_ack_rpg_d_reg*}]

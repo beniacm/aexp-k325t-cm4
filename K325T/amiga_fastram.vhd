@@ -54,7 +54,14 @@ entity amiga_fastram is
    generic (
       -- a1200-fastclk: the cache's size in 16-bit words = 2**G_IDX_BITS (13: 16 KB, the stock instance;
       -- a CPU with caches of its own needs only a few lines: it reads a line's 8 words in a row)
-      G_IDX_BITS         : integer := 13
+      G_IDX_BITS         : integer := 13;
+      -- a1200-fastclk fc5 (slot trim): the data array's style.  "distributed" = LUT RAM (as before; read
+      -- asynchronously into m_rdata); "block" = block RAM, simple dual port (written in hr_clk_i, read in
+      -- clk_i): m_rdata is the register the array is read into at every edge, so the block RAM's output
+      -- register takes its place clock for clock.  A same-address read and write never meet (a read hit
+      -- waits for a posted write to its word, fills are read only after their acknowledge), so the
+      -- block RAM's collision rules do not apply.  Saves ~4.1k LUTs for 4 RAMB36 at G_IDX_BITS = 13.
+      G_DRAM_STYLE       : string  := "distributed"
    );
    port (
       -- core clock domain (28 MHz, cpu_wrapper)
@@ -95,8 +102,8 @@ architecture synthesis of amiga_fastram is
    signal dram_u : t_lane := (others => (others => '0'));
    signal dram_l : t_lane := (others => (others => '0'));
    attribute ram_style : string;
-   attribute ram_style of dram_u : signal is "distributed";
-   attribute ram_style of dram_l : signal is "distributed";
+   attribute ram_style of dram_u : signal is G_DRAM_STYLE;
+   attribute ram_style of dram_l : signal is G_DRAM_STYLE;
 
    -- tags: valid & addr(26:14), written in clk_i
    type t_tags is array (0 to 2**(G_IDX_BITS - 3) - 1) of std_logic_vector(27 - G_IDX_BITS downto 0);
