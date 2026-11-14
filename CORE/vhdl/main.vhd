@@ -791,12 +791,12 @@ begin
       ); -- i_fc_cpu
 
    -- fc8: the census counters (debug builds) and the options they select at run time
-   g_fccen : if G_FCCEN generate
+   gen_fccen : if G_FCCEN generate
       i_fc_cen : entity work.fc_cen
          port map (clk => cpu_clk_i, pr_i => fc_cen_pr, guard_i => fc_guard, cfg_i => fccen_cfg_i,
                    word_o => fccen_word_o, opt_o => fc_opt);
    end generate;
-   g_nofccen : if not G_FCCEN generate
+   gen_nofccen : if not G_FCCEN generate
       fc_opt <= C_FC_OPT;
       fccen_word_o <= (others => '0');
    end generate;
