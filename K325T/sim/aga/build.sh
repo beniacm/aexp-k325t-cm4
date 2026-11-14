@@ -80,6 +80,8 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # a1200-fastcpu: the fast RAM port (amiga_fastram, 16 KB cache, Avalon master) -> Verilog
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/amiga_fastram.vhd" \
     -e amiga_fastram > amiga_fastram.v 2> ghdl_fastram.log) || { cat "$OUT/ghdl_fastram.log" >&2; exit 1; }
+# BRAMSIM=1: the stock instance's data array as the block RAM of G_DRAM_STYLE "block" (read-during-write -> wrong data)
+[ -n "${BRAMSIM:-}" ] && /usr/bin/python3 "$here/bramsim.py" "$OUT/amiga_fastram.v"
 # a1200-fastclk: the fast 68020's amiga_fastram with a 256-byte cache (G_IDX_BITS = 7) as module amiga_fastram_small
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -gg_idx_bits=7 --out=verilog "$root/K325T/amiga_fastram.vhd" \
     -e amiga_fastram 2> ghdl_fastram_s.log | sed 's/\bamiga_fastram\b/amiga_fastram_small/' > amiga_fastram_small.v) \
