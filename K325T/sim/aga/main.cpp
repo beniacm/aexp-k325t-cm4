@@ -373,6 +373,7 @@ int main(int argc, char** argv) {
     else if (a == "--fc-opt") fc_opt = strtoul(nx(), 0, 0);
     else if (a == "--fcc") g_fcc.open(nx());
     else if (a == "--fcc-pc") g_fcc.open_pc(nx());
+    else if (a == "--fcc-ev") g_fcc.open_ev(nx());
     else if (a == "--cpu") cpu = strtoul(nx(), 0, 0);
     else if (a == "--shot-frames") { std::string l = nx(); size_t p = 0;
       while (p < l.size()) { size_t q = l.find(',', p); if (q == std::string::npos) q = l.size();
@@ -836,6 +837,7 @@ int main(int argc, char** argv) {
     }
     fclose(f);
   }
+#ifndef FC_NO_CEN   // builds whose model has no fc_cen (tb_top before fe8bb76): relinks of build_fc8c
   if (cen_fn) {
     // fc8: the board tool's sequence on the bridge byte (1rrrvvvv; 16 stable clocks per byte), cpu_clk only: page 7,
     // index $08 -> $D8 (latches the snapshot), then $D8..$DF and $E8..$EF, each word after it settled
@@ -859,6 +861,7 @@ int main(int argc, char** argv) {
     for (int k = 0; k < 32; k++) fprintf(f, "%d %llu\n", k, (unsigned long long)sl[k]);
     fclose(f);
   }
+#endif
   if (dumpf_fn) {
     uint16_t* fm = (uint16_t*)&r->tb_top->fmem[0];
     FILE* f = fopen(dumpf_fn, "wb");
@@ -880,5 +883,6 @@ int main(int argc, char** argv) {
     hdd_th.join();
   }
   delete top;
+  g_fcc.close_ev();
   return 0;
 }

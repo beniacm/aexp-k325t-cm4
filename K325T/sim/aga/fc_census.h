@@ -19,11 +19,17 @@
 // spin (the demo's own polling / pacing): a data read of an address that was read again within the last SPIN_WIN
 // answered requests with no write in between marks itself and every request since that earlier read as a polling
 // loop; their clocks move from the work bucket to the spin bucket (the method of census.h at the kernel level).
+// --fcc-ev FILE (gzip): the D side's event log for the miss analysis: "R clk line" a cached (fast / ROM) data read
+// answered from another 16-byte line than the previous such read; "F t0 q f side src addr" a completed line fill (t0
+// = its first clock after the lookup, q = clocks waiting for the store queue (S_FILLQ), f = clocks of the fill
+// itself (S_FILL), side i/d, src fast/rom/chip, addr = the kernel's address of the miss); "N frame clk" at a frame end.
+// Per frame (CSV, last columns): completed fills per side and source, their S_FILLQ / S_FILL clocks.
 // --fcc-pc FILE: every PC_WIN frames, the hottest code (16-byte bins of exe_pc): clocks, of them waiting.
 #pragma once
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
@@ -41,7 +47,8 @@ struct FcCensus {
   static const int NC = 8, SPIN_WIN = 48, RING = 64, PC_WIN = 25;
   static constexpr const char* CN[NC] = {"chip", "custom", "cia", "rom", "fast", "gayle", "acfg", "other"};
   struct Ent { uint32_t frame, addr; uint8_t typ, spin; uint32_t c[NE]; };
-  FILE* f = nullptr; FILE* fp = nullptr;
+  FILE* f = nullptr; FILE* fp = nullptr; FILE* fev = nullptr;
+  uint64_t tclk = 0, f_t0 = 0, nf[2][3], fq[2], ff[2]; uint32_t f_q = 0, f_f = 0, f_a = 0, last_rln = ~0u; int prev_st = 0;
   uint64_t work[NE], spin[NE], req[NC][3], longs[NC][3], instr, sup, clocks, mstate[8], mclocks, irq, irqw;
   uint32_t acc[NE];
   Ent ring[RING]; uint64_t n = 0;
@@ -65,6 +72,7 @@ struct FcCensus {
   void clear() {
     memset(work, 0, sizeof work); memset(spin, 0, sizeof spin); memset(req, 0, sizeof req);
     memset(longs, 0, sizeof longs); instr = sup = clocks = irq = irqw = 0; memset(mstate, 0, sizeof mstate); mclocks = 0; memset(lk, 0, sizeof lk);
+    memset(nf, 0, sizeof nf); memset(fq, 0, sizeof fq); memset(ff, 0, sizeof ff);
     spin_addr.clear();
   }
   void open(const char* fn) {
@@ -77,9 +85,12 @@ struct FcCensus {
     static const char* M[5] = {"idle", "guard", "w1", "w2", "sync"};
     for (int m = 0; m < 5; m++) fprintf(f, ",mb_%s", M[m]);
     fprintf(f, ",lk_i_seq,lk_i_loop,lk_i_other,lk_d_seq,lk_d_loop,lk_d_other");
-    fprintf(f, ",spin_top_addr,spin_top_n\n");
+    fprintf(f, ",spin_top_addr,spin_top_n");
+    fprintf(f, ",nf_i_fast,nf_i_rom,nf_i_chip,nf_d_fast,nf_d_rom,nf_d_chip,fq_i,ff_i,fq_d,ff_d\n");
   }
   void open_pc(const char* fn) { fp = fopen(fn, "w"); }
+  void open_ev(const char* fn) { std::string c = std::string("gzip -1 > '") + fn + "'"; fev = popen(c.c_str(), "w"); }
+  void close_ev() { if (fev) { pclose(fev); fev = nullptr; } }
   void move(const Ent& e) {   // work -> spin
     for (int k = 0; k < NE; k++) { work[k] -= e.c[k]; spin[k] += e.c[k]; }
   }
@@ -102,8 +113,23 @@ struct FcCensus {
     int mst = (b >> 28) & 7; bool mbopen = (b >> 31) & 1;
     bool fe = bs == 0, rd = bs == 2, wr = bs == 3;
     (void)k_ena; (void)mbopen;
-    clocks++;
+    clocks++; tclk++;
     if (S) sup++;
+    // fills: S_RUN -> S_FILLQ (1) -> S_FILL (2) -> S_FILLD (3), one clock in S_FILLD
+    if (st == 1 && prev_st == 0) { f_t0 = tclk; f_q = 0; f_f = 0; f_a = a & 0xFFFFFF; }
+    if (st == 1) f_q++;
+    if (st == 2) f_f++;
+    if (st == 3 && prev_st != 3) {
+      int sd = !fill_i, k = cls_of(fa), src = !fill_mb ? 0 : k == 3 ? 1 : 2;
+      nf[sd][src]++; fq[sd] += f_q; ff[sd] += f_f;
+      if (fev) fprintf(fev, "F %llx %u %u %c %c %06x\n", (unsigned long long)f_t0, f_q, f_f, sd ? 'd' : 'i', "frc"[src], f_a);
+    }
+    prev_st = st;
+    if (fev && rq && ack && !rst && rd) {
+      int k = cls_of(a);
+      uint32_t ln = (a & 0xFFFFFF) >> 4;
+      if ((k == 4 || k == 3) && ln != last_rln) { fprintf(fev, "R %llx %05x\n", (unsigned long long)tclk, ln); last_rln = ln; }
+    }
     bool in_irq = (c & 7) != 0;   // SR interrupt mask above 0: an interrupt handler (or code that masks)
     if (dec && clw) instr++;
     int e;
@@ -205,7 +231,12 @@ struct FcCensus {
     for (int s2 = 0; s2 < 2; s2++) for (int k = 0; k < 3; k++) fprintf(f, ",%llu", (unsigned long long)lk[s2][k]);
     uint32_t ta = 0; uint64_t tn = 0;
     for (auto& kv : spin_addr) if (kv.second > tn) { tn = kv.second; ta = kv.first; }
-    fprintf(f, ",%06x,%llu\n", ta, (unsigned long long)tn); fflush(f);
+    fprintf(f, ",%06x,%llu", ta, (unsigned long long)tn);
+    for (int s2 = 0; s2 < 2; s2++) for (int k = 0; k < 3; k++) fprintf(f, ",%llu", (unsigned long long)nf[s2][k]);
+    fprintf(f, ",%llu,%llu,%llu,%llu\n", (unsigned long long)fq[0], (unsigned long long)ff[0], (unsigned long long)fq[1],
+            (unsigned long long)ff[1]);
+    fflush(f);
+    if (fev) fprintf(fev, "N %u %llx\n", frame, (unsigned long long)tclk);
     clear(); memset(acc, 0, sizeof acc);   // the clocks so far are this frame's (work); a later spin move must not take them
     if (fp && frame + 1 - pc_from >= (uint32_t)PC_WIN) {
       std::vector<std::pair<uint32_t, Pc>> v(pcs.begin(), pcs.end());
