@@ -1599,6 +1599,12 @@ begin
 
    -- which of the two drives the fast RAM master: follows the fast setting (main_fc_en, static while
    -- the machine runs), switched only while the master is quiet (no request, no beats outstanding)
+   -- fc6: hr_rst (every M2M reset) clears the count of outstanding read beats.  The reset aborts a read
+   -- burst in flight (avm_mig drains and discards its beats, the arbiters forget it): its beats never come,
+   -- and in fc5 the count stayed above 0 for good -- the select could never change again, so after a long
+   -- press during a fast-RAM fill the next setting change left the other instance unanswered (the stock
+   -- CPU stopped at its first fast-RAM access, $200000, until the next FPGA load; in the other direction
+   -- the fast CPU would).  Never below 0 (a stray beat after the reset).
    p_fc_sel : process (hr_clk_i)
    begin
       if rising_edge(hr_clk_i) then
@@ -1609,11 +1615,14 @@ begin
             else
                hr_fc_out <= hr_fc_out + unsigned(hr_fast_avm_burstcount);
             end if;
-         elsif hr_fast_avm_readdatavalid = '1' then
+         elsif hr_fast_avm_readdatavalid = '1' and hr_fc_out /= 0 then
             hr_fc_out <= hr_fc_out - 1;
          end if;
          if hr_fc_s(1) /= hr_fcsel and hr_fc_out = 0 and hr_fast_avm_read = '0' and hr_fast_avm_write = '0' then
             hr_fcsel <= hr_fc_s(1);
+         end if;
+         if hr_rst_i = '1' then
+            hr_fc_out <= (others => '0');
          end if;
       end if;
    end process p_fc_sel;

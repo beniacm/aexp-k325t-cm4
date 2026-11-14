@@ -17,6 +17,16 @@ module tb_top (
   input  wire        fastcpu,          // cpucfg b3: the stock-speed throttle off (main.vhd: menu line "Fast 68020")
   input  wire        fastclk,          // a1200-fastclk: the fast 68020 is fc_cpu on cpu_clk (main.vhd: cpu_fast)
   input  wire        cpu_clk,          // a1200-fastclk: its clock (51.59 MHz, not gated)
+  // a1200-fastclk fc6: the setting change (main.cpp --switch).  fastclk / fastcpu are the menu bits; main.vhd
+  // latches them while the CPU is in reset (cpu_fast).  m2m_rst = the M2M reset (machine clock): the stock
+  // fast-RAM instance's rst_i and, synchronised into ui_clk, the framework's hr_rst (both fast-RAM masters,
+  // the DDR3 model aborts a read burst: avm_mig drains and discards its beats); 0 = as before
+  input  wire        m2m_rst,
+  output wire [9:0]  o_hr_fc_out,      // mega65.vhd p_fc_sel: read beats outstanding on the fast-RAM master
+  output wire        o_hr_fcsel,       // ... which instance drives it (1 = the fast CPU's)
+  output wire        o_fc_qbusy,       // fc_cpu: stores queued or a mailbox access open (not qempty_o)
+  output wire        o_fc_mbopen,      // fc_cpu: a mailbox request not yet answered
+  output wire        o_cpu_fast,       // main.vhd cpu_fast (the latched setting)
   input  wire        fr_quick,         // amiga_fastram quick_i: read hits in 2 clocks (main.vhd: with fastcpu)
   input  wire [7:0]  flat_min, flat_span, flat_wr,   // fast RAM Avalon model: read latency min + random(span), write accept
   input  wire        kick512,         // 512 KB Kickstart (the cache's kick512_i)
@@ -211,6 +221,15 @@ module tb_top (
   reg  [31:0] fc_vbr_s = 0, fc_vbr_m = 0;
   reg  [3:0]  fc_cacr_s = 0, fc_cacr_m = 0;
   reg         fc_rso_s = 1, fc_rso_m = 1;
+  wire        fc_qempty;
+  // fc6: main.vhd cpucfg_proc -- the setting is latched while the CPU is in reset (and at the first clock, so
+  // that a static setting is in effect from the start, as before)
+  reg         cpu_fast = 0, fastcpu_l = 0, lat0 = 0;
+  always @(posedge clk) begin
+    lat0 <= 1;
+    if (!cpu_reset_n || !lat0) begin cpu_fast <= fastclk; fastcpu_l <= fastcpu; end
+  end
+  assign o_cpu_fast = cpu_fast;
   wire        fs_write, fs_read, ff_write, ff_read;
   wire [31:0] fs_address, ff_address;
   wire [15:0] fs_writedata, ff_writedata;
@@ -219,7 +238,7 @@ module tb_top (
   cpu_wrapper i_cpu (
     .reset(cpu_reset_n), .reset_out(cpu_reset_out_n), .clk(clk), .ph1(cpu_ph1), .ph2(cpu_ph2),
     // stage 3: MiSTer's cpucfg (b2 = 68EC020 stock timing), cachecfg b0 = its instruction cache
-    .cpucfg({1'b0, fastcpu, stock020 & (mm_cpucfg == 2'b11), mm_cpucfg}), .ntsc(1'b0),
+    .cpucfg({1'b0, fastcpu_l, stock020 & (mm_cpucfg == 2'b11), mm_cpucfg}), .ntsc(1'b0),
     .fastramcfg(cfg_fast), .cachecfg({2'b00, stock020}), .bootrom(1'b0),
     .chip_addr(cpu_addr), .chip_dout(cpu_dout), .chip_din(cpu_din), .chip_as(cpu_as_n),
     .chip_uds(cpu_uds_n), .chip_lds(cpu_lds_n), .chip_rw(cpu_rw), .chip_dtack(cpu_dtack_n),
@@ -231,7 +250,7 @@ module tb_top (
     .ramlds(fr_lds_n), .ramuds(fr_uds_n),
     .ramshared(), .toccata_ena(), .toccata_base(), .cpustate(cpustate), .cacr(), .nmi_addr(nmi_addr),
     // a1200-fastclk: the external CPU port (main.vhd)
-    .ext_en(fastclk), .ext_addr(fc_ext_addr), .ext_state(fc_ext_state), .ext_dout(fc_ext_dout),
+    .ext_en(cpu_fast), .ext_addr(fc_ext_addr), .ext_state(fc_ext_state), .ext_dout(fc_ext_dout),
     .ext_uds_n(fc_ext_uds_n), .ext_lds_n(fc_ext_lds_n), .ext_long(fc_ext_long), .ext_vbr(fc_vbr_m),
     .ext_cacr(fc_cacr_m), .ext_reset_out(fc_rso_m), .ext_ack(fc_ext_ack), .ext_din(fc_ext_din),
     .ext_ipl(fc_ipl), .ext_zcfg(fc_zcfg));
@@ -242,7 +261,7 @@ module tb_top (
     fc_rso_s <= fc_rso; fc_rso_m <= fc_rso_s;
   end
   fc_cpu i_fc_cpu (
-    .clk(cpu_clk), .rst_n_i(cpu_reset_n & fastclk),
+    .clk(cpu_clk), .rst_n_i(cpu_reset_n & cpu_fast),
     .cfg_z2_i(fc_zcfg[0]), .cfg_z3e0_i(fc_zcfg[1]), .cfg_z3e1_i(fc_zcfg[2]), .cfg_z3b0_i(fc_zcfg[7:3]),
     .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .cfg_a24_i(stock020 & (mm_cpucfg == 2'b11)), .ipl_i(fc_ipl),
     .mb_req_o(fc_mb_req), .mb_addr_o(fc_mb_addr), .mb_wr_o(fc_mb_wr), .mb_long_o(fc_mb_long), .mb_sync_o(fc_mb_sync),
@@ -250,7 +269,7 @@ module tb_top (
     .mb_ack_i(fc_mb_ack), .mb_rdata_i(fc_mb_rdata),
     .fr_sel_o(fc_fr_sel), .fr_addr_o(fc_fr_a), .fr_we_o(fc_fr_we), .fr_uds_n_o(fc_fr_u), .fr_lds_n_o(fc_fr_l),
     .fr_wdata_o(fc_fr_wd), .fr_rdata_i(fc_fr_rd), .fr_ready_i(fc_fr_ready),
-    .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o());
+    .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o(fc_qempty));
   fc_mbox i_fc_mbox (
     .clk_i(clk), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long), .mb_sync_i(fc_mb_sync),
     .mb_uds_n_i(fc_mb_uds_n), .mb_lds_n_i(fc_mb_lds_n), .mb_wdata_i(fc_mb_wdata), .mb_ack_o(fc_mb_ack),
@@ -269,48 +288,79 @@ module tb_top (
   wire [7:0]  fa_burst;
   reg  [15:0] fa_rdata = 0;
   reg         fa_rvalid = 0, fa_acc = 0;
+  // fc6: the framework's hr_rst (every M2M reset) = m2m_rst synchronised into ui_clk (framework.vhd ext_rst_sync)
+  reg  [2:0]  hr_rst_s = 0;
+  always @(posedge ui_clk) hr_rst_s <= {hr_rst_s[1:0], m2m_rst};
+  wire        hr_rst = hr_rst_s[2];
+  // mega65.vhd p_fc_sel: which instance drives the fast-RAM master follows the setting (cpu_fast), switched
+  // only while the master is quiet: no request and no read beats outstanding (hr_fc_out).  +fcsel_old = the
+  // select as in fc5 (hr_fc_out not cleared by hr_rst: the beats of a burst that the reset aborts never come)
+  reg  [1:0]  hr_fc_s = 0;
+  reg         hr_fcsel = 0;
+  reg  [9:0]  hr_fc_out = 0;
+  reg         fcsel_old = 0;
+  initial fcsel_old = $test$plusargs("fcsel_old");
+  wire        fa_wreq = ~(fa_acc & ~hr_rst);     // avm_mig: waitrequest high during avm_rst
+  always @(posedge ui_clk) begin
+    hr_fc_s <= {hr_fc_s[0], cpu_fast};
+    if (fa_read && !fa_wreq) begin
+      if (fa_rvalid) hr_fc_out <= hr_fc_out + fa_burst - 1;
+      else hr_fc_out <= hr_fc_out + fa_burst;
+    end else if (fa_rvalid && (fcsel_old || hr_fc_out != 0)) hr_fc_out <= hr_fc_out - 1;
+    if (hr_fc_s[1] != hr_fcsel && hr_fc_out == 0 && !fa_read && !fa_write) hr_fcsel <= hr_fc_s[1];
+    if (hr_rst && !fcsel_old) hr_fc_out <= 0;
+  end
+  assign o_hr_fc_out = hr_fc_out;
+  assign o_hr_fcsel = hr_fcsel;
+  assign o_fc_qbusy = ~fc_qempty;
+  assign o_fc_mbopen = fc_mb_req ^ fc_mb_ack;
   amiga_fastram i_fastram (
     .clk_i(clk), .sel_i(fr_sel), .pulse_i(mm_cpucfg != 2'b00), .quick_i(fr_quick), .addr_i(fr_ddr), .we_i(cpustate == 2'b11),
     .uds_n_i(fr_uds_n), .lds_n_i(fr_lds_n), .wdata_i(fr_wdata), .rdata_o(fr_rdata), .ready_o(fr_ready),
-    .rst_i(1'b0), .dbg_o(),
-    .hr_clk_i(ui_clk), .hr_rst_i(1'b0), .avm_write_o(fs_write), .avm_read_o(fs_read),
+    .rst_i(m2m_rst), .dbg_o(),
+    .hr_clk_i(ui_clk), .hr_rst_i(hr_rst), .avm_write_o(fs_write), .avm_read_o(fs_read),
     .avm_address_o(fs_address), .avm_writedata_o(fs_writedata), .avm_byteenable_o(fs_be),
-    .avm_burstcount_o(fs_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & ~fastclk),
-    .avm_waitrequest_i(~fa_acc | fastclk));
-  // a1200-fastclk: the fast 68020's own amiga_fastram (mega65.vhd i_fc_fastram); the bench's setting is
-  // static, so the Avalon select is a plain multiplexer here
+    .avm_burstcount_o(fs_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & ~hr_fcsel),
+    .avm_waitrequest_i(fa_wreq | hr_fcsel));
+  // a1200-fastclk: the fast 68020's own amiga_fastram (mega65.vhd i_fc_fastram); fc6: on the master as
+  // mega65.vhd's select says (static settings: the fast one from the start, the stock one never)
   amiga_fastram_small i_fc_fastram (   // a1200-fastclk: G_IDX_BITS = 7 (256-byte cache)
     .clk_i(cpu_clk), .sel_i(fc_fr_sel), .pulse_i(1'b1), .quick_i(1'b1), .wq_i(1'b1), .addr_i(fc_fr_ddr),
     .we_i(fc_fr_we), .uds_n_i(fc_fr_u), .lds_n_i(fc_fr_l), .wdata_i(fc_fr_wd), .rdata_o(fc_fr_rd),
     .ready_o(fc_fr_ready), .rst_i(1'b0), .dbg_o(),
-    .hr_clk_i(ui_clk), .hr_rst_i(1'b0), .avm_write_o(ff_write), .avm_read_o(ff_read),
+    .hr_clk_i(ui_clk), .hr_rst_i(hr_rst), .avm_write_o(ff_write), .avm_read_o(ff_read),
     .avm_address_o(ff_address), .avm_writedata_o(ff_writedata), .avm_byteenable_o(ff_be),
-    .avm_burstcount_o(ff_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & fastclk),
-    .avm_waitrequest_i(~fa_acc | ~fastclk));
-  assign fa_write = fastclk ? ff_write : fs_write;
-  assign fa_read = fastclk ? ff_read : fs_read;
-  assign fa_address = fastclk ? ff_address : fs_address;
-  assign fa_writedata = fastclk ? ff_writedata : fs_writedata;
-  assign fa_be = fastclk ? ff_be : fs_be;
-  assign fa_burst = fastclk ? ff_burst : fs_burst;
+    .avm_burstcount_o(ff_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & hr_fcsel),
+    .avm_waitrequest_i(fa_wreq | ~hr_fcsel));
+  assign fa_write = hr_fcsel ? ff_write : fs_write;
+  assign fa_read = hr_fcsel ? ff_read : fs_read;
+  assign fa_address = hr_fcsel ? ff_address : fs_address;
+  assign fa_writedata = hr_fcsel ? ff_writedata : fs_writedata;
+  assign fa_be = hr_fcsel ? ff_be : fs_be;
+  assign fa_burst = hr_fcsel ? ff_burst : fs_burst;
   // DDR3 behind avm_mig, 8 MB of fast RAM (word address bits 21:0): a command is accepted (waitrequest
   // low for one clock) after flat_wr clocks for a write, at once for a read; read data comes
-  // flat_min + random(flat_span) clocks after the accept, the 8 beats of a burst back to back
+  // flat_min + random(flat_span) clocks after the accept, the 8 beats of a burst back to back.
+  // fc6: hr_rst (avm_mig avm_rst): no command is accepted, a read burst in flight is drained and its
+  // remaining beats are discarded (avm_mig S_DRAIN)
   reg [15:0] fmem [0:4194303] /*verilator public*/;
   reg [2:0]  fs = 0;
   reg [7:0]  fcnt = 0;
   reg [2:0]  fbeat = 0;
   reg [21:0] faddr = 0;
   reg [31:0] frnd = 32'h9e3779b9;
+  reg        fdrop = 0;
   always @(posedge ui_clk) begin
     fa_acc <= 0; fa_rvalid <= 0;
     frnd <= {frnd[30:0], frnd[31] ^ frnd[21] ^ frnd[1] ^ frnd[0]};
     case (fs)
-      0: if ((fa_read | fa_write) && !fa_acc) begin fcnt <= fa_read ? 8'd0 : flat_wr; fs <= 1; end
-      1: if (fcnt != 0) fcnt <= fcnt - 1; else begin fa_acc <= 1; fs <= 2; end
-      2: begin   // the master sees waitrequest low at this edge
-           if (fa_read) begin
-             faddr <= fa_address[21:0]; fbeat <= 0; fs <= 3;
+      0: if ((fa_read | fa_write) && !fa_acc && !hr_rst) begin fcnt <= fa_read ? 8'd0 : flat_wr; fs <= 1; end
+      1: if (hr_rst) fs <= 0;
+         else if (fcnt != 0) fcnt <= fcnt - 1; else begin fa_acc <= 1; fs <= 2; end
+      2: begin   // the master sees waitrequest low at this edge (not during hr_rst: then nothing is accepted)
+           if (hr_rst) fs <= 0;
+           else if (fa_read) begin
+             faddr <= fa_address[21:0]; fbeat <= 0; fs <= 3; fdrop <= 0;
              fcnt <= flat_min + (flat_span == 0 ? 8'd0 : frnd[7:0] % flat_span);
            end else begin
              if (fa_be[1]) fmem[fa_address[21:0]][15:8] <= fa_writedata[15:8];
@@ -318,9 +368,10 @@ module tb_top (
              fs <= 0;
            end
          end
-      3: if (fcnt != 0) fcnt <= fcnt - 1; else fs <= 4;
+      3: begin if (hr_rst) fdrop <= 1; if (fcnt != 0) fcnt <= fcnt - 1; else fs <= 4; end
       4: begin
-           fa_rdata <= fmem[{faddr[21:3], fbeat}]; fa_rvalid <= 1; fbeat <= fbeat + 1;
+           fa_rdata <= fmem[{faddr[21:3], fbeat}]; fa_rvalid <= !(fdrop || hr_rst); fbeat <= fbeat + 1;
+           if (hr_rst) fdrop <= 1;
            if (fbeat == 7) fs <= 0;
          end
       default: fs <= 0;

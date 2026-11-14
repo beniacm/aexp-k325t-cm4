@@ -341,6 +341,12 @@ int main(int argc, char** argv) {
   unsigned cfg_fast = 0; int flat_min = 26, flat_span = 10, flat_wr = 2;   // a1200-fastcpu
   bool fastcpu = false, fr_quick = false, fastclk = false;
   FILE* fhash = nullptr; int save_every = 0;
+  // a1200-fastclk fc6: --switch F:M[:C],... = at frame F (once condition C holds) the setting becomes M (s = stock,
+  // f = fast 68020) and an M2M reset follows (rst_ext + m2m_rst, i.e. hr_rst too) for --switch-len ticks, as the
+  // menu's long press; C: now (default), fill (fast-RAM read beats outstanding on the master), store (fc_cpu
+  // stores queued / mailbox open), mbox (fc_cpu mailbox request open)
+  struct Sw { int frame; bool fast; int cond; bool done; };
+  std::vector<Sw> sws; int sw_len = 200; uint64_t sw_until = 0; int sw_armed = -1; uint64_t sw_wait = 0;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
     auto nx = [&]() { return argv[++i]; };
@@ -394,6 +400,18 @@ int main(int argc, char** argv) {
     // main.vhd sets both from the menu line); needs --cache (its fast RAM side runs in ui_clk)
     else if (a == "--fastclk") { fastclk = true; fastcpu = true; }
     else if (a == "--fr-quick") fr_quick = true;
+    else if (a == "--switch-len") sw_len = atoi(nx());
+    else if (a == "--switch") {
+      std::string l = nx(); size_t p = 0;
+      while (p < l.size()) {
+        size_t q = l.find(',', p); if (q == std::string::npos) q = l.size();
+        std::string e = l.substr(p, q - p); p = q + 1;
+        Sw w{}; size_t c1 = e.find(':'); w.frame = atoi(e.c_str()); w.fast = e[c1 + 1] == 'f';
+        size_t c2 = e.find(':', c1 + 1); std::string c = c2 == std::string::npos ? "now" : e.substr(c2 + 1);
+        w.cond = c == "fill" ? 1 : c == "store" ? 2 : c == "mbox" ? 3 : 0; w.done = false;
+        sws.push_back(w);
+      }
+    }
     else if (a == "--flat") { flat_min = atoi(nx()); flat_span = atoi(nx()); flat_wr = atoi(nx()); }
     else if (a == "--debug") { g_debug_ticks = atoi(nx()); g_debug_from = strtoull(nx(), 0, 0); }
   }
@@ -489,7 +507,9 @@ int main(int argc, char** argv) {
   const uint64_t CPU_H = 9692;
   uint64_t t_src = SRC_H, t_ui = UI_H, t_q = Q_H, t_cpu = CPU_H, src_edges = 0, stalled = 0, q_edges = 0;
   bool src_lvl = false, ui_lvl = false, q_lvl = false, cpu_lvl = false;
-  if (!fastclk) t_cpu = UINT64_MAX;   // the stock setting: fc_cpu is in reset, its clock is not simulated
+  if (!fastclk && sws.empty()) t_cpu = UINT64_MAX;   // the stock setting: fc_cpu is in reset, its clock is not simulated
+  top->m2m_rst = 0;
+  if (!sws.empty() && !use_cache) { fprintf(stderr, "--switch needs --cache\n"); return 1; }
   const bool host = hreq_fn != nullptr;
   if (host) {
     if (!use_cache) { fprintf(stderr, "--host-link needs --cache (the Kickstart port is the cache's)\n"); return 1; }
@@ -645,6 +665,25 @@ int main(int argc, char** argv) {
       held = now;
     }
     if (reset_cyc && cyc == reset_cyc + 200) { top->rst_ext = 0; reset_cyc = 0; }
+    // fc6 --switch: arm at the frame, fire once the condition holds (give up waiting after 2 M ticks: fire anyway)
+    if (sw_armed >= 0) {
+      Sw& w = sws[sw_armed];
+      bool ok = w.cond == 0 || (w.cond == 1 && top->o_hr_fc_out != 0) || (w.cond == 2 && top->o_fc_qbusy) ||
+                (w.cond == 3 && top->o_fc_mbopen);
+      if (ok || ++sw_wait > 2000000) {
+        fprintf(stderr, "switch -> %s at frame %u tick %llu (%s%s): before the reset fcsel %u fc_out %u qbusy %u mbopen %u cpu_fast %u\n",
+                w.fast ? "fast" : "stock", g_frame, (unsigned long long)g_tick,
+                w.cond == 1 ? "fill" : w.cond == 2 ? "store" : w.cond == 3 ? "mbox" : "now", ok ? "" : ", condition not met",
+                top->o_hr_fcsel, top->o_hr_fc_out, top->o_fc_qbusy, top->o_fc_mbopen, top->o_cpu_fast);
+        top->fastclk = w.fast; top->fastcpu = w.fast;
+        top->rst_ext = 1; top->m2m_rst = 1; sw_until = cyc + sw_len; sw_armed = -1;
+      }
+    }
+    if (sw_until && cyc == sw_until) {
+      top->rst_ext = 0; top->m2m_rst = 0; sw_until = 0;
+      fprintf(stderr, "switch: reset released at frame %u tick %llu: fcsel %u fc_out %u cpu_fast %u\n", g_frame,
+              (unsigned long long)g_tick, top->o_hr_fcsel, top->o_hr_fc_out, top->o_cpu_fast);
+    }
     int vpos = top->o_vpos;
     if (cput && (int)g_frame >= cput_from && (int)g_frame <= cput_to) {
       // one line per CPU request: start tick, ack tick, state, address, beam position at start
@@ -692,6 +731,11 @@ int main(int argc, char** argv) {
           fprintf(stderr, "trace starts at frame %u tick %llu\n", g_frame,
                   (unsigned long long)g_tick);
         }
+        for (size_t k = 0; k < sws.size(); k++)
+          if (!sws[k].done && (int)g_frame == sws[k].frame) { sws[k].done = true; sw_armed = (int)k; sw_wait = 0; }
+        if (!sws.empty() && g_frame % 10 == 0)
+          fprintf(stderr, "frame %u: fcsel %u fc_out %u cpu_fast %u qbusy %u\n", g_frame, top->o_hr_fcsel, top->o_hr_fc_out,
+                  top->o_cpu_fast, top->o_fc_qbusy);
         if ((int)g_frame == reset_at) {
           top->rst_ext = 1; reset_cyc = cyc;
           fprintf(stderr, "reset at frame %u (rst_ext 200 ticks; the cache and the DDR3 model keep their state)\n", g_frame);
