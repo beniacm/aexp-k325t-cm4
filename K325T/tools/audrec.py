@@ -7,7 +7,8 @@ On the module (next to m65d and stallmon.py; python3-spidev; writes nothing to t
     audrec.py force                force a trigger now (tests the read path; the ring freezes after 384 more events)
     audrec.py mode M               trigger mode bits: b0 mix (default on), b1 channel stuck (on), b2 channel
                                    constant (off: fires in every rest), b3 record IPL changes of every level
-    audrec.py dump FILE            read everything (status, snapshots, 1,024 entries) into FILE (text)
+    audrec.py dump FILE            read everything (status, snapshots, 1,024 entries) into FILE (text; "-" =
+                                   stdout, so that nothing is written on the module: ssh ... dump - > pc_file)
     audrec.py wait SECS [EVERY]    poll the status until the recorder has frozen (or SECS passed); prints the time
 Anywhere:
     audrec.py decode FILE [--all]  decode a dump (also the bench's --recdump files): status, the snapshot of
@@ -67,12 +68,18 @@ class Rec:
                 return w
         return w2
 
+    def forget(self):
+        # another writer (m65d writes registers 0..3) may have changed r3-r5: write them again next time
+        self.r = {3: None, 4: None, 5: None}
+        self.b.wr(6, 7)
+
     def cmd(self, r5, r3):
         self.word(8, r5, r3)
         self.word(12, r5, r3)
         self.word(8, r5, 0)
 
     def status(self):
+        self.forget()
         return self.word(12, 0, 0)
 
 
@@ -119,12 +126,15 @@ def module_main(argv):
         for a in range(1024):
             w = rec.word(8 + ((a >> 4) & 3), a & 15, a >> 6)
             if (w[2] >> 2) & 1023 != a:
-                w = rec.word(8 + ((a >> 4) & 3), a & 15, a >> 6)   # the echo did not match: read again
+                rec.forget()                                         # the echo did not match: all again
+                w = rec.word(8 + ((a >> 4) & 3), a & 15, a >> 6)
             out.append("E %d %08x %08x %08x" % (a, w[0], w[1], w[2]))
         rec.reg(4, 8); rec.reg(3, 0)
-        open(argv[1], "w").write("\n".join(out) + "\n")
+        f = sys.stdout if argv[1] == "-" else open(argv[1], "w")
+        f.write("\n".join(out) + "\n")
+        f.flush()
         bad = sum(1 for l in out if l[0] == "E" and (int(l.split()[4], 16) >> 2) & 1023 != int(l.split()[1]))
-        print("dump: %s (%d lines, %d entries with a wrong address echo)" % (argv[1], len(out), bad))
+        print("dump: %s (%d lines, %d entries with a wrong address echo)" % (argv[1], len(out), bad), file=sys.stderr)
     else:
         print(__doc__)
         return 2
@@ -225,8 +235,7 @@ def decode(fn, show_all):
         elif k == 7:
             txt = "%s %s %02x" % (CIAN.get(p >> 22, "rs%x" % (p >> 22)), "wr" if p >> 21 & 1 else "rd", p >> 13 & 0xFF)
         elif k == 8:
-            txt = "cause %x (b0 mix, b1 stuck, b2 constant, b3 forced) channels %x hold %.1f ms" % (
-                p >> 22, p >> 18 & 15, (p & 0x3FFFF) / CCK * 1e3)
+            txt = "cause %x (b0 mix, b1 stuck, b2 constant, b3 forced) channels %x" % (p >> 22, p >> 18 & 15)
         elif k == 11:
             txt = "mode %x" % (p >> 22)
         elif k == 13:
