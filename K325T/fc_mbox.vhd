@@ -20,6 +20,14 @@
 -- with fixed dbf loops that the fast CPU runs ~6x too fast (a retrigger was lost: silences in
 -- Domination).  Per channel; other bits and other writes are not affected.  DMACON writes are
 -- synchronous (fc_cpu), so the CPU simply waits; the cost is at most two lines per retrigger.
+--
+-- fc7: flush_i (machine clock) = the cold-boot window (main.vhd fc_flush: a cold reset -- a CPU-setting change,
+-- an M2M reset -- while the CPU is held; cpu_wrapper's chip-bus FSM is in reset then, no access is under way).
+-- While it is high no request is executed: an open one is abandoned (its acknowledge is given if it was still
+-- owed), a request that arrives is acknowledged without a bus access, the retrigger guards are cleared.  So no
+-- chip-bus access of the fast CPU survives a cold boot (before fc7 an open access waited for the chip bus and ran
+-- after the reset -- in the stock setting not at all until the next change to fast, then as the first access).
+-- fc_cpu is in reset throughout the window and takes such answers as orphans.  flush_i = '0': as before.
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -34,6 +42,7 @@ entity fc_mbox is
    );
    port (
       clk_i        : in  std_logic;                       -- main_clk (the machine clock)
+      flush_i      : in  std_logic := '0';                -- fc7: the cold-boot window (see above)
       -- from fc_cpu (cpu_clk): toggle + fields stable while the request is open
       mb_req_i     : in  std_logic;
       mb_addr_i    : in  std_logic_vector(31 downto 0);
@@ -164,6 +173,19 @@ begin
                   end if;
                end if;
          end case;
+         -- fc7: the cold-boot window: nothing is executed, every request is answered once
+         if flush_i = '1' then
+            state <= "01";
+            aud_off <= (others => 0);
+            if st /= S_IDLE then
+               if not (wr = '1' and sy = '0') then ack_t <= not ack_t; end if;   -- a posted write had its answer
+               st <= S_IDLE;                         -- (pend keeps a request that arrived meanwhile)
+            elsif (req_s(2) xor req_s(1)) = '1' or pend = '1' then
+               pend  <= '0';
+               ack_t <= not ack_t;
+               st    <= S_IDLE;                      -- (the capture above is undone)
+            end if;
+         end if;
       end if;
    end process;
 

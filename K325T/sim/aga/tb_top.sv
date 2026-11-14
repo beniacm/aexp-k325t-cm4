@@ -230,6 +230,23 @@ module tb_top (
     if (!cpu_reset_n || !lat0) begin cpu_fast <= fastclk; fastcpu_l <= fastcpu; end
   end
   assign o_cpu_fast = cpu_fast;
+  // fc7: main.vhd p_fc_cold -- the cold-boot window (from a cold reset until the CPU leaves the reset it causes,
+  // while the CPU is held); power-up counts as a cold boot.  On the board every M2M reset is a cold reset
+  // (amiga_cold_boot cold_req_i), so here m2m_rst is cold_i.  +noflush: the window never opens (the fc6 machine
+  // with fc7's select gate)
+  reg         fc_cold = 1, fc_cold_low = 0, fc_flush = 0, noflush = 0;
+  initial noflush = $test$plusargs("noflush");
+  always @(posedge clk) begin
+    if (m2m_rst) begin fc_cold <= 1; fc_cold_low <= 0; end
+    else if (fc_cold && !cpu_reset_n) fc_cold_low <= 1;
+    else if (fc_cold && fc_cold_low && cpu_reset_n) begin fc_cold <= 0; fc_cold_low <= 0; end
+    fc_flush <= fc_cold & ~cpu_reset_n & ~noflush;
+  end
+  reg fc_flush_d = 0;
+  always @(posedge clk) begin
+    fc_flush_d <= fc_flush;
+    if (fc_flush != fc_flush_d) $display("FLUSH window %s at %0t", fc_flush ? "opens" : "closes", $time);
+  end
   wire        fs_write, fs_read, ff_write, ff_read;
   wire [31:0] fs_address, ff_address;
   wire [15:0] fs_writedata, ff_writedata;
@@ -261,7 +278,7 @@ module tb_top (
     fc_rso_s <= fc_rso; fc_rso_m <= fc_rso_s;
   end
   fc_cpu i_fc_cpu (
-    .clk(cpu_clk), .rst_n_i(cpu_reset_n & cpu_fast),
+    .clk(cpu_clk), .rst_n_i(cpu_reset_n & cpu_fast), .flush_i(fc_flush),
     .cfg_z2_i(fc_zcfg[0]), .cfg_z3e0_i(fc_zcfg[1]), .cfg_z3e1_i(fc_zcfg[2]), .cfg_z3b0_i(fc_zcfg[7:3]),
     .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .cfg_a24_i(stock020 & (mm_cpucfg == 2'b11)), .ipl_i(fc_ipl),
     .mb_req_o(fc_mb_req), .mb_addr_o(fc_mb_addr), .mb_wr_o(fc_mb_wr), .mb_long_o(fc_mb_long), .mb_sync_o(fc_mb_sync),
@@ -271,7 +288,7 @@ module tb_top (
     .fr_wdata_o(fc_fr_wd), .fr_rdata_i(fc_fr_rd), .fr_ready_i(fc_fr_ready),
     .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o(fc_qempty));
   fc_mbox i_fc_mbox (
-    .clk_i(clk), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long), .mb_sync_i(fc_mb_sync),
+    .clk_i(clk), .flush_i(fc_flush), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long), .mb_sync_i(fc_mb_sync),
     .mb_uds_n_i(fc_mb_uds_n), .mb_lds_n_i(fc_mb_lds_n), .mb_wdata_i(fc_mb_wdata), .mb_ack_o(fc_mb_ack),
     .mb_rdata_o(fc_mb_rdata), .ext_addr_o(fc_ext_addr), .ext_state_o(fc_ext_state), .ext_dout_o(fc_ext_dout),
     .ext_uds_n_o(fc_ext_uds_n), .ext_lds_n_o(fc_ext_lds_n), .ext_long_o(fc_ext_long), .ext_ack_i(fc_ext_ack),
@@ -298,6 +315,8 @@ module tb_top (
   reg  [1:0]  hr_fc_s = 0;
   reg         hr_fcsel = 0;
   reg  [9:0]  hr_fc_out = 0;
+  reg  [4:0]  hr_fc_q = 0;
+  wire        fs_idle, ff_idle, fs_flbusy, ff_flbusy;
   reg         fcsel_old = 0;
   initial fcsel_old = $test$plusargs("fcsel_old");
   wire        fa_wreq = ~(fa_acc & ~hr_rst);     // avm_mig: waitrequest high during avm_rst
@@ -307,7 +326,11 @@ module tb_top (
       if (fa_rvalid) hr_fc_out <= hr_fc_out + fa_burst - 1;
       else hr_fc_out <= hr_fc_out + fa_burst;
     end else if (fa_rvalid && (fcsel_old || hr_fc_out != 0)) hr_fc_out <= hr_fc_out - 1;
-    if (hr_fc_s[1] != hr_fcsel && hr_fc_out == 0 && !fa_read && !fa_write) hr_fcsel <= hr_fc_s[1];
+    // fc7: only after 16 clocks in a row with the selected instance idle (no request, no queued write)
+    if (hr_fc_s[1] != hr_fcsel && hr_fc_out == 0 && !fa_read && !fa_write && (fcsel_old || (hr_fcsel ? ff_idle : fs_idle))) begin
+      if (fcsel_old || hr_fc_q == 15) begin hr_fcsel <= hr_fc_s[1]; hr_fc_q <= 0; end
+      else hr_fc_q <= hr_fc_q + 1;
+    end else hr_fc_q <= 0;
     if (hr_rst && !fcsel_old) hr_fc_out <= 0;
   end
   assign o_hr_fc_out = hr_fc_out;
@@ -317,21 +340,31 @@ module tb_top (
   amiga_fastram i_fastram (
     .clk_i(clk), .sel_i(fr_sel), .pulse_i(mm_cpucfg != 2'b00), .quick_i(fr_quick), .addr_i(fr_ddr), .we_i(cpustate == 2'b11),
     .uds_n_i(fr_uds_n), .lds_n_i(fr_lds_n), .wdata_i(fr_wdata), .rdata_o(fr_rdata), .ready_o(fr_ready),
-    .rst_i(m2m_rst), .dbg_o(),
+    .rst_i(m2m_rst), .flush_i(fc_flush), .flush_busy_o(fs_flbusy), .dbg_o(),
     .hr_clk_i(ui_clk), .hr_rst_i(hr_rst), .avm_write_o(fs_write), .avm_read_o(fs_read),
     .avm_address_o(fs_address), .avm_writedata_o(fs_writedata), .avm_byteenable_o(fs_be),
     .avm_burstcount_o(fs_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & ~hr_fcsel),
-    .avm_waitrequest_i(fa_wreq | hr_fcsel));
+    .avm_waitrequest_i(fa_wreq | hr_fcsel), .idle_o(fs_idle));
   // a1200-fastclk: the fast 68020's own amiga_fastram (mega65.vhd i_fc_fastram); fc6: on the master as
   // mega65.vhd's select says (static settings: the fast one from the start, the stock one never)
   amiga_fastram_small i_fc_fastram (   // a1200-fastclk: G_IDX_BITS = 7 (256-byte cache)
     .clk_i(cpu_clk), .sel_i(fc_fr_sel), .pulse_i(1'b1), .quick_i(1'b1), .wq_i(1'b1), .addr_i(fc_fr_ddr),
     .we_i(fc_fr_we), .uds_n_i(fc_fr_u), .lds_n_i(fc_fr_l), .wdata_i(fc_fr_wd), .rdata_o(fc_fr_rd),
-    .ready_o(fc_fr_ready), .rst_i(1'b0), .dbg_o(),
+    .ready_o(fc_fr_ready), .rst_i(1'b0), .flush_i(fc_flush), .flush_busy_o(ff_flbusy), .dbg_o(),
     .hr_clk_i(ui_clk), .hr_rst_i(hr_rst), .avm_write_o(ff_write), .avm_read_o(ff_read),
     .avm_address_o(ff_address), .avm_writedata_o(ff_writedata), .avm_byteenable_o(ff_be),
     .avm_burstcount_o(ff_burst), .avm_readdata_i(fa_rdata), .avm_readdatavalid_i(fa_rvalid & hr_fcsel),
-    .avm_waitrequest_i(fa_wreq | ~hr_fcsel));
+    .avm_waitrequest_i(fa_wreq | ~hr_fcsel), .idle_o(ff_idle));
+  // fc7: an access that waits for a flush sweep (would change the timing after a reset; expected never)
+  reg fw_s = 0, fw_f = 0;
+  always @(posedge clk) begin
+    if (fr_sel && fs_flbusy && !fw_s) $display("FLUSHWAIT stock instance: an access waits for the sweep at %0t", $time);
+    fw_s <= fr_sel && fs_flbusy;
+  end
+  always @(posedge cpu_clk) begin
+    if (fc_fr_sel && ff_flbusy && !fw_f) $display("FLUSHWAIT fast instance: an access waits for the sweep at %0t", $time);
+    fw_f <= fc_fr_sel && ff_flbusy;
+  end
   assign fa_write = hr_fcsel ? ff_write : fs_write;
   assign fa_read = hr_fcsel ? ff_read : fs_read;
   assign fa_address = hr_fcsel ? ff_address : fs_address;

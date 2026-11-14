@@ -45,6 +45,17 @@
 -- draining (a reset never drops an accepted write; hr_rst repeats the write in flight).  quick_i = '0':
 -- the queue is unused and the write path is the one-request toggle handshake as before (wq_i = '0'
 -- with quick_i = '1' is stage F1: the old write path with 2-clock read hits).
+-- K325T a1200-fastclk fc7: flush_i (any clock; synchronised here into both domains) = the cold-boot window of the
+-- Amiga (main.vhd fc_flush: a cold reset -- every CPU-setting change, every M2M reset -- while the CPU is held).
+-- The two instances share the DDR3 window and each serves one CPU setting; flush_i keeps them coherent across a
+-- change.  (1) Core side: once nothing is open (M_IDLE, no toggle request outstanding) every tag is cleared, one
+-- line per clock (2**(G_IDX_BITS-3) clocks), no access starts meanwhile; a line installed while flush_i is still
+-- high (an orphaned fill completing) starts another sweep.  (2) Memory side: while flush_i is high queued writes
+-- (the F2 queue) are dropped, one entry per clock, whole words, never sent; the toggle-handshake write (the stock
+-- path: one posted word) still completes, as before.  idle_o tells mega65.vhd's master select that nothing is
+-- pending here (no request, empty queue): the select changes only while the selected instance is idle, so no
+-- write can be left behind in a deselected instance.  Outside the window the logic is the one before, clock for
+-- clock (flush_i = '0': no change in behaviour).
 --------------------------------------------------------------------------------
 library ieee;
 use ieee.std_logic_1164.all;
@@ -78,6 +89,8 @@ entity amiga_fastram is
       rdata_o            : out std_logic_vector(15 downto 0);
       ready_o            : out std_logic;                      -- /DTACK (inverted), held until sel_i drops
       rst_i              : in  std_logic := '0';               -- M2M resets (clk_i): orphan the access
+      flush_i            : in  std_logic := '0';               -- fc7: the cold-boot window (see above), any clock
+      flush_busy_o       : out std_logic;                      -- fc7: the tag sweep is pending / running (clk_i)
       dbg_o              : out std_logic_vector(143 downto 0); -- stallmon fdbg (asynchronous)
 
       -- memory clock domain (MIG ui_clk), Avalon-MM master (16-bit words, word addresses)
@@ -91,7 +104,8 @@ entity amiga_fastram is
       avm_burstcount_o   : out std_logic_vector(7 downto 0);
       avm_readdata_i     : in  std_logic_vector(15 downto 0);
       avm_readdatavalid_i: in  std_logic;
-      avm_waitrequest_i  : in  std_logic
+      avm_waitrequest_i  : in  std_logic;
+      idle_o             : out std_logic                       -- fc7 (hr_clk_i): no request, no queued write
    );
 end entity amiga_fastram;
 
@@ -175,6 +189,16 @@ architecture synthesis of amiga_fastram is
       return std_logic_vector(b xor ('0' & b(3 downto 1)));
    end function b2g;
 
+   -- fc7: the flush (cold-boot window)
+   signal m_fl_s       : std_logic_vector(1 downto 0) := "00";
+   signal m_fl_d       : std_logic := '0';
+   signal m_flp        : std_logic := '0';                         -- a sweep is due
+   signal m_swing      : std_logic := '0';                         -- the sweep runs
+   signal m_sw         : unsigned(G_IDX_BITS - 4 downto 0) := (others => '0');
+   signal hr_fl_s      : std_logic_vector(1 downto 0) := "00";
+   attribute async_reg of m_fl_s  : signal is "true";
+   attribute async_reg of hr_fl_s : signal is "true";
+
    signal tag_q        : std_logic_vector(27 - G_IDX_BITS downto 0);
    signal hit          : std_logic;
    signal busy         : std_logic;
@@ -209,6 +233,9 @@ architecture synthesis of amiga_fastram is
 begin
    avm_read_o  <= avm_rd;
    avm_write_o <= avm_wr;
+   -- fc7: nothing pending on the memory side (no toggle request, the queue empty, no transaction)
+   idle_o <= '1' when hr_state = H_IDLE and hr_req_dd = hr_ack_tgl and hr_wps = hr_rp and avm_rd = '0' and avm_wr = '0'
+             else '0';
 
    ---------------------------------------------------------------------------
    -- core clock domain
@@ -240,6 +267,7 @@ begin
       q_match <= v;
    end process q_match_proc;
    ready_o <= m_ready;
+   flush_busy_o <= m_flp or m_swing;
 
    core_proc : process (clk_i)
    begin
@@ -254,6 +282,8 @@ begin
          end if;
          m_dbg_in <= sel_i & we_i & pulse_i & '1';
          m_ack_dd <= m_ack_d;
+         m_fl_s   <= m_fl_s(0) & flush_i;
+         m_fl_d   <= m_fl_s(1);
          -- the data array, read asynchronously (stable: written only for lines this side
          -- is not reading, or before the fill acknowledge arrives)
          -- a1200-fastcpu: in M_IDLE at the request's address (the quick read hit takes it at this edge;
@@ -267,7 +297,22 @@ begin
                -- start on a data strobe, not on the address strobe: in a 68000 write cycle
                -- /AS falls in S2 but the data bus is driven in S3 and /UDS,/LDS fall in S4
                -- (in a read cycle /AS and /DS fall together)
-               if quick_i = '1' and wq_i = '1' and pulse_i = '1' then
+               if m_swing = '1' then
+                  -- fc7: the flush sweep, one line per clock; no access starts meanwhile
+                  tags(to_integer(m_sw)) <= (others => '0');
+                  m_sw <= m_sw + 1;
+                  if m_sw = 2**(G_IDX_BITS - 3) - 1 then
+                     m_swing <= '0';
+                  end if;
+               elsif m_flp = '1' then
+                  -- fc7: a sweep is due; it starts once no toggle request is outstanding (a fill in flight
+                  -- installs its line first, a posted write completes)
+                  if busy = '0' then
+                     m_flp   <= '0';
+                     m_swing <= '1';
+                     m_sw    <= (others => '0');
+                  end if;
+               elsif quick_i = '1' and wq_i = '1' and pulse_i = '1' then
                   -- F2 (fast 68020): writes through the queue, read hits unless a queued write goes to
                   -- the same word, read misses once the queue is empty
                   if m_start = '1' and we_i = '1' and q_full = '0' then
@@ -334,6 +379,9 @@ begin
             when M_FILL =>
                if busy = '0' then                  -- the line is in the data array
                   tags(to_integer(unsigned(m_req_addr(G_IDX_BITS - 1 downto 3)))) <= '1' & m_req_addr(26 downto G_IDX_BITS);
+                  if m_fl_s(1) = '1' then         -- fc7: installed inside the flush window: sweep (again)
+                     m_flp <= '1';
+                  end if;
                   if m_orphan = '1' then          -- the line is complete; nobody waits for it
                      m_orphan <= '0';
                      m_state  <= M_IDLE;
@@ -354,6 +402,11 @@ begin
                   m_state <= M_IDLE;
                end if;
          end case;
+
+         -- fc7: the flush window opens: a sweep is due
+         if m_fl_s(1) = '1' and m_fl_d = '0' then
+            m_flp <= '1';
+         end if;
 
          -- an M2M reset: the access in flight is not answered after it (its memory side still
          -- completes); a read hit / an answer being presented is cancelled
@@ -406,6 +459,7 @@ begin
          hr_req_dd <= hr_req_d;
          hr_wpg_d  <= m_req_wpg;            -- F2: the queue's write pointer
          hr_wpg_dd <= hr_wpg_d;
+         hr_fl_s   <= hr_fl_s(0) & flush_i; -- fc7: the flush window
          word := resize(unsigned(m_req_addr), 32);
 
          case hr_state is
@@ -420,7 +474,12 @@ begin
             when H_IDLE =>
                avm_wr <= '0';
                avm_rd  <= '0';
-               if hr_wps /= hr_rp then           -- F2: a queued write (entries before hr_wps are stable)
+               if hr_wps /= hr_rp and hr_fl_s(1) = '1' then
+                  -- fc7: inside the flush window a queued write is dropped (one entry per clock: the Gray
+                  -- pointer back to the core side changes by one step)
+                  hr_rp      <= hr_rp + 1;
+                  hr_ack_rpg <= b2g(hr_rp + 1);
+               elsif hr_wps /= hr_rp then           -- F2: a queued write (entries before hr_wps are stable)
                   avm_wr           <= '1';
                   avm_address_o    <= std_logic_vector(resize(unsigned(m_req_qa(hr_qi)), 32));
                   avm_writedata_o  <= m_req_qd(hr_qi);

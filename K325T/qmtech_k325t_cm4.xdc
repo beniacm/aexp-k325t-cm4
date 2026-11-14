@@ -145,6 +145,11 @@ set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ 
 ## a1200-fastclk: the write queue's Gray write pointer (live in this instance: wq_i = 1) to the memory clock
 set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/m_wp_reg*}] \
     -to [get_cells -hierarchical -filter {NAME =~ CORE/i_fc_fastram/hr_wpg_d_reg*}]
+## a1200-fastclk fc7: the cold-boot window (main.vhd fc_flush, machine clock; a level held for microseconds at
+## least) into both fast-RAM instances' memory clock (2-flop synchronisers; the CPU clock side is bounded by
+## core_k325t.xdc's main_clk <-> CPU clock constraint)
+set_max_delay 10 -datapath_only -from [get_cells -hierarchical -filter {NAME =~ CORE/i_main/fc_flush_reg}] \
+    -to [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fastram/hr_fl_s_reg[0] || NAME =~ CORE/i_fc_fastram/hr_fl_s_reg[0]}]
 
 ## ---------------------------------------------------------------- configuration flash / multiboot
 ## QSPI flash (S25FL128L), written by the Rockchip through rk_bridge; CCLK via STARTUPE2.

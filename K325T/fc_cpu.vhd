@@ -21,6 +21,12 @@
 --    the IPL synchroniser here has sampled it (else a handler's acknowledge followed by RTE takes the
 --    same interrupt again: music ran ahead in Domination, fc2 on the board);
 -- TG68K has one bus request at a time, so one controller serves both caches.
+-- fc7: flush_i (any clock, synchronised here) = the cold-boot window (main.vhd fc_flush: a cold reset -- a CPU-
+-- setting change, an M2M reset -- while the CPU is held; the kernel is in reset throughout it).  While it is high
+-- the store queue is emptied without being written: entries whose drain has not begun are dropped, one per clock
+-- (a store being written completes, both words of a long); the I and D caches and line buffers are cleared by the
+-- CPU reset itself (as before), and an open mailbox request is answered by fc_mbox's flush (an orphan here).  A
+-- warm reset (keyboard reset, RESET instruction) does not open the window: its queue drains as before.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -33,6 +39,7 @@ entity fc_cpu is
    port (
       clk            : in  std_logic;
       rst_n_i        : in  std_logic;                       -- CPU reset, any clock (synchronised here)
+      flush_i        : in  std_logic := '0';                -- fc7: the cold-boot window, any clock (see above)
       -- configuration from the machine clock (quasi-static; synchronised here)
       cfg_z2_i       : in  std_logic;
       cfg_z3e0_i     : in  std_logic;
@@ -95,6 +102,9 @@ architecture rtl of fc_cpu is
    signal k_vbr      : std_logic_vector(31 downto 0);
 
    signal rst_s      : std_logic_vector(2 downto 0) := (others => '0');
+   signal fl_s       : std_logic_vector(1 downto 0) := (others => '0');   -- fc7: flush_i synchronised
+   attribute ASYNC_REG : string;
+   attribute ASYNC_REG of fl_s : signal is "TRUE";
    signal rst        : std_logic;                            -- synchronous, active high
    signal ipl_s1, ipl_s2, ipl_s3, ipl_k : std_logic_vector(2 downto 0) := (others => '1');
    signal cfg_s1, cfg_s2 : std_logic_vector(13 downto 0) := (others => '0');
@@ -224,6 +234,11 @@ begin
    end process;
    rst      <= not rst_s(2);
    k_nreset <= rst_s(2);
+   process (clk) begin
+      if rising_edge(clk) then
+         fl_s <= fl_s(0) & flush_i;
+      end if;
+   end process;
 
    process (clk) begin
       if rising_edge(clk) then
@@ -620,7 +635,9 @@ begin
          dr_mb_go <= '0';
          case dr is
             when D_IDLE =>
-               if q_n /= 0 and q_pop = '0' and st /= S_FILL and st /= S_MB and mb_open = '0' then
+               if q_n /= 0 and q_pop = '0' and fl_s(1) = '1' then
+                  q_pop <= '1';                              -- fc7: the flush window: dropped, not written
+               elsif q_n /= 0 and q_pop = '0' and st /= S_FILL and st /= S_MB and mb_open = '0' then
                   if h_c(3) = '1' then
                      dr <= D_FR1;
                      dr_fr_go <= '1';
@@ -655,7 +672,8 @@ begin
       if rising_edge(clk) then
          h_a := q_a(to_integer(q_rp)); h_d := q_d(to_integer(q_rp)); h_c := q_c(to_integer(q_rp));
          if fr_ready_i = '1' then fr_sel <= '0'; end if;
-         if dr = D_IDLE and q_n /= 0 and q_pop = '0' and h_c(3) = '1' and st /= S_FILL and st /= S_MB and mb_open = '0' then
+         if dr = D_IDLE and q_n /= 0 and q_pop = '0' and h_c(3) = '1' and st /= S_FILL and st /= S_MB and mb_open = '0' and
+            fl_s(1) = '0' then
             -- first (or only) word of a queued fast-RAM store
             fr_sel <= '1'; fr_we <= '1'; fr_addr <= h_a;
             fr_uds_n <= h_c(1) and not h_c(2); fr_lds_n <= h_c(0) and not h_c(2);

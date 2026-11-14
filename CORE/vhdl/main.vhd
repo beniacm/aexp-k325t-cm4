@@ -156,6 +156,10 @@ entity main is
       -- amiga_fastram instance of its own in mega65.vhd); fc_en_o = that CPU runs (clk_main_i)
       cpu_clk_i               : in  std_logic := '0';
       fc_en_o                 : out std_logic;
+      -- K325T a1200-fastclk fc7: cold_i = mega65.vhd's amiga_cold_reset (a cold boot: every M2M reset, every change
+      -- of the machine topology, the CPU setting included); fc_flush_o = the cold-boot window (see fc_flush below)
+      cold_i                  : in  std_logic := '0';
+      fc_flush_o              : out std_logic;
       fcr_sel_o               : out std_logic;
       fcr_addr_o              : out std_logic_vector(26 downto 0);   -- DDR3 word address
       fcr_we_o                : out std_logic;
@@ -442,6 +446,10 @@ architecture synthesis of main is
    signal cpu_rw           : std_logic;
    signal cpu_dtack_n      : std_logic;
    signal cpu_reset_n      : std_logic;                       -- minimig -> CPU reset
+   -- fc7: the cold-boot window (power-up counts as a cold boot)
+   signal fc_cold          : std_logic := '1';
+   signal fc_cold_low      : std_logic := '0';
+   signal fc_flush         : std_logic := '0';
    signal cpu_reset_out_n  : std_logic;                       -- fx68k RESET instruction feedback
    signal cpu_nmi_addr     : std_logic_vector(31 downto 0);
    -- K325T: CPU selection, taken over only while minimig holds the CPU in reset
@@ -703,10 +711,34 @@ begin
    ---------------------------------------------------------------------------
    fc_rst_n <= cpu_reset_n and cpu_fast;
 
+   -- fc7: the cold-boot window = from a cold reset (cold_i) until the CPU leaves the reset it causes, while the
+   -- CPU is held (cpu_reset_n = 0) -- the time in which cpucfg_proc latches the CPU setting.  In it both fast-RAM
+   -- instances clear their caches and drop their queued writes, fc_cpu drops its store queue and fc_mbox answers
+   -- requests without executing them (mega65.vhd, fc_cpu.vhd, fc_mbox.vhd, amiga_fastram.vhd): no cached line and
+   -- no queued store of one CPU setting survives into the other.  A warm reset (keyboard, RESET instruction, the
+   -- short press) is not a cold one: stores drain as before.  A register (constrained crossings).
+   p_fc_cold : process (clk_main_i)
+   begin
+      if rising_edge(clk_main_i) then
+         if cold_i = '1' then
+            fc_cold     <= '1';
+            fc_cold_low <= '0';
+         elsif fc_cold = '1' and cpu_reset_n = '0' then
+            fc_cold_low <= '1';
+         elsif fc_cold = '1' and fc_cold_low = '1' and cpu_reset_n = '1' then
+            fc_cold     <= '0';
+            fc_cold_low <= '0';
+         end if;
+         fc_flush <= fc_cold and not cpu_reset_n;
+      end if;
+   end process p_fc_cold;
+   fc_flush_o <= fc_flush;
+
    i_fc_cpu : entity work.fc_cpu
       port map (
          clk            => cpu_clk_i,
          rst_n_i        => fc_rst_n,
+         flush_i        => fc_flush,
          cfg_z2_i       => fc_zcfg(0),
          cfg_z3e0_i     => fc_zcfg(1),
          cfg_z3e1_i     => fc_zcfg(2),
@@ -747,6 +779,7 @@ begin
    i_fc_mbox : entity work.fc_mbox
       port map (
          clk_i       => clk_main_i,
+         flush_i     => fc_flush,
          mb_req_i    => fc_mb_req,
          mb_addr_i   => fc_mb_addr,
          mb_wr_i     => fc_mb_wr,

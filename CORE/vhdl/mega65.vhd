@@ -416,6 +416,9 @@ signal main_src_clk           : std_logic;
 -- K325T a1200-fastclk: the fast 68020's clock, its fast RAM port and the Avalon select
 signal main_cpu_clk           : std_logic;
 signal main_fc_en             : std_logic;
+signal main_fc_flush          : std_logic;      -- fc7: the cold-boot window (main.vhd fc_flush)
+signal hr_fs_idle, hr_ff_idle : std_logic;      -- fc7: amiga_fastram idle_o of the two instances
+signal hr_fc_q                : unsigned(4 downto 0) := (others => '0');
 signal fc_fr_sel, fc_fr_we, fc_fr_uds_n, fc_fr_lds_n, fc_fr_ready : std_logic;
 signal fc_fr_addr             : std_logic_vector(26 downto 0);
 signal fc_fr_wdata, fc_fr_rdata : std_logic_vector(15 downto 0);
@@ -959,6 +962,8 @@ begin
          -- a1200-fastclk: the fast 68020 and its own fast RAM port
          cpu_clk_i            => main_cpu_clk,
          fc_en_o              => main_fc_en,
+         cold_i               => amiga_cold_reset,
+         fc_flush_o           => main_fc_flush,
          fcr_sel_o            => fc_fr_sel,
          fcr_addr_o           => fc_fr_addr,
          fcr_we_o             => fc_fr_we,
@@ -1551,6 +1556,8 @@ begin
          rdata_o             => main_fast_rdata,
          ready_o             => main_fast_ready,
          rst_i               => main_reset_m2m_i or main_reset_core_i,
+         flush_i             => main_fc_flush,
+         flush_busy_o        => open,
          dbg_o               => main_fast_dbg,
          hr_clk_i            => hr_clk_i,
          hr_rst_i            => hr_rst_i,
@@ -1562,7 +1569,8 @@ begin
          avm_burstcount_o    => hr_fs_burstcount,
          avm_readdata_i      => hr_fast_avm_readdata,
          avm_readdatavalid_i => hr_fs_readdatavalid,
-         avm_waitrequest_i   => hr_fs_waitrequest
+         avm_waitrequest_i   => hr_fs_waitrequest,
+         idle_o              => hr_fs_idle
       ); -- i_amiga_fastram
 
    -- K325T a1200-fastclk: the fast 68020's own amiga_fastram (core side in its clock; read hits in 2
@@ -1583,6 +1591,8 @@ begin
          rdata_o             => fc_fr_rdata,
          ready_o             => fc_fr_ready,
          rst_i               => '0',               -- accepted accesses always complete (fc_cpu)
+         flush_i             => main_fc_flush,
+         flush_busy_o        => open,
          dbg_o               => open,
          hr_clk_i            => hr_clk_i,
          hr_rst_i            => hr_rst_i,
@@ -1594,7 +1604,8 @@ begin
          avm_burstcount_o    => hr_ff_burstcount,
          avm_readdata_i      => hr_fast_avm_readdata,
          avm_readdatavalid_i => hr_ff_readdatavalid,
-         avm_waitrequest_i   => hr_ff_waitrequest
+         avm_waitrequest_i   => hr_ff_waitrequest,
+         idle_o              => hr_ff_idle
       ); -- i_fc_fastram
 
    -- which of the two drives the fast RAM master: follows the fast setting (main_fc_en, static while
@@ -1605,6 +1616,13 @@ begin
    -- press during a fast-RAM fill the next setting change left the other instance unanswered (the stock
    -- CPU stopped at its first fast-RAM access, $200000, until the next FPGA load; in the other direction
    -- the fast CPU would).  Never below 0 (a stray beat after the reset).
+   -- fc7: and only once the selected instance has been idle (idle_o: no request, no queued write) for 16 clocks
+   -- in a row with the new setting already visible here: before, the select could change in the gap between
+   -- two queued writes (or during an instance's H_QUIET after hr_rst with a write pending), and the rest was
+   -- written by the deselected instance when it was selected again -- after the other CPU's boot.  (The 16
+   -- clocks cover a request that crossed toward the instance just before the CPU reset.)  The cold-boot window
+   -- (main.vhd fc_flush) empties the fast instance's queue meanwhile; the stock instance's one posted word
+   -- completes.  Static settings: the select never changes, as before.
    p_fc_sel : process (hr_clk_i)
    begin
       if rising_edge(hr_clk_i) then
@@ -1618,8 +1636,16 @@ begin
          elsif hr_fast_avm_readdatavalid = '1' and hr_fc_out /= 0 then
             hr_fc_out <= hr_fc_out - 1;
          end if;
-         if hr_fc_s(1) /= hr_fcsel and hr_fc_out = 0 and hr_fast_avm_read = '0' and hr_fast_avm_write = '0' then
-            hr_fcsel <= hr_fc_s(1);
+         if hr_fc_s(1) /= hr_fcsel and hr_fc_out = 0 and hr_fast_avm_read = '0' and hr_fast_avm_write = '0' and
+            ((hr_fcsel = '1' and hr_ff_idle = '1') or (hr_fcsel = '0' and hr_fs_idle = '1')) then
+            if hr_fc_q = 15 then
+               hr_fcsel <= hr_fc_s(1);
+               hr_fc_q  <= (others => '0');
+            else
+               hr_fc_q  <= hr_fc_q + 1;
+            end if;
+         else
+            hr_fc_q <= (others => '0');
          end if;
          if hr_rst_i = '1' then
             hr_fc_out <= (others => '0');
