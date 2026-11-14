@@ -1,0 +1,108 @@
+K325T: TG68K -- an exception after a non-trapping CHK/CHK2/CMP2 was taken as a CHK trap (WinUAE cputester)
+exec(trap_chk) is the CHK-class flag of the instruction still in execute.  It outlives a CHK/CHK2/CMP2 that does
+not trap into the decode of the next instruction, so an exception that instruction raises at decode (ILLEGAL,
+line A/F, privilege violation) used the CHK trap's paths: the format-$2 entry (trap00, "0010" & vector) instead
+of a format-$0 frame, and (with the format fixed alone) the vector offset $18 in the frame.  Found with WinUAE's
+cputester on the board (stock 68EC020, 2026-11-13): every non-trapping CHK.W/L, CHK2.B/W/L, CMP2.B/W/L test
+failed with "Exception 4 stack frame mismatch: expected ..00.10, got ..20.10" (the tester ends each test with
+ILLEGAL).  New signal chk_own = exec(trap_chk) AND set(trap_chk) (the opcode raising the trap is the CHK/CHK2
+itself), used at all five places that read exec(trap_chk): the format-$2 choice, vector $18, writePCnext (2x)
+and PC_datab.  A CHK/CHK2 trap keeps its format-$2 frame; TRAPV/TRAPcc, divide by zero, MMU configuration and
+trace (the 68020's other format-$2 exceptions) are unchanged.
+--- a/rtl/tg68k/TG68KdotC_Kernel.vhd
++++ b/rtl/tg68k/TG68KdotC_Kernel.vhd
+@@ -417,6 +417,9 @@
+ 	signal set					: bit_vector(lastOpcBit downto 0);
+ 	signal set_exec			: bit_vector(lastOpcBit downto 0);
+ 	signal exec					: bit_vector(lastOpcBit downto 0);
++	-- K325T (2026-11-13): the CHK-class flag only while the CHK/CHK2 itself is the opcode: exec(trap_chk)
++	-- outlives a non-trapping CHK/CHK2/CMP2 into the next instruction's decode-time trap
++	signal chk_own				: bit;
+ 
+ 	signal micro_state		: micro_states;
+ 	signal clkena_i			: std_logic;
+@@ -590,6 +593,7 @@
+ 	din_sub <= pf_defer OR pf_bad OR sk_drop OR rp_skip;
+ 	din_alt <= X"4E71" WHEN pf_defer='1' OR pf_bad='1' OR sk_drop='1' ELSE rp_word;
+ 	data_in_i <= din_alt WHEN din_sub='1' ELSE data_in;
++	chk_own <= exec(trap_chk) AND set(trap_chk);   -- K325T (2026-11-13), see the declaration
+ 	dwt_dr <= '1' WHEN writePC='0' AND exec(writePC_add)='0' AND micro_state/=trap00 AND micro_state/=trap0 AND
+ 	                   exec(hold_dwr)='0' AND exec(exg)='0' AND NOT (exec(get_ea_now)='1' AND ea_only='1') AND
+ 	                   execOPC='0' AND exec_DIRECT='1' AND state="10" AND micro_state/=trapB AND
+@@ -1047,7 +1051,7 @@
+ 				elsif micro_state=trap00 THEN
+ 					data_write_tmp <= exe_pc; --TH
+ 					useStackframe2<='1';
+-					writePCnext <= trap_trap OR trap_trapv OR exec(trap_chk) OR Z_error OR trap_mmucfg;
++					writePCnext <= trap_trap OR trap_trapv OR chk_own OR Z_error OR trap_mmucfg;   -- K325T: was exec(trap_chk)
+ 				elsif micro_state = trap0 then
+ 		  -- this is only active for 010+ since in 000 writePC is
+ 		  -- true in state trap0
+@@ -1061,7 +1065,7 @@
+ 						data_write_tmp(15 downto 0) <= "0001" & trap_vector(11 downto 0);
+ 					else
+ 						data_write_tmp(15 downto 0) <= "0000" & trap_vector(11 downto 0);
+-						writePCnext <= trap_trap OR trap_trapv OR exec(trap_chk) OR Z_error OR trap_mmucfg;
++						writePCnext <= trap_trap OR trap_trapv OR chk_own OR Z_error OR trap_mmucfg;   -- K325T: was exec(trap_chk)
+ 					end if;
+ ------------------------------------
+ --				ELSIF micro_state=trap0 THEN	
+@@ -1162,7 +1166,7 @@
+ -- MEM_IO 
+ -----------------------------------------------------------------------------
+ PROCESS (clk, setdisp, memaddr_a, briefdata, memaddr_delta, setdispbyte, datatype, interrupt, rIPL_nr, IPL_vec,
+-         memaddr_reg, memaddr_delta_rega, memaddr_delta_regb, reg_QA, use_base, VBR, last_data_read, trap_vector, exec, set, cpu, use_VBR_Stackframe, rte_peek)
++         memaddr_reg, memaddr_delta_rega, memaddr_delta_regb, reg_QA, use_base, VBR, last_data_read, trap_vector, exec, set, cpu, use_VBR_Stackframe, rte_peek, chk_own)
+ 	BEGIN
+ 		
+ 		IF rising_edge(clk) THEN
+@@ -1180,7 +1184,7 @@
+ 				IF set_Z_error='1' THEN
+ 					trap_vector(9 downto 0) <= "00" & X"14";
+ 				END IF;	
+-				IF exec(trap_chk)='1' THEN
++				IF chk_own='1' THEN   -- K325T: was exec(trap_chk)='1'
+ 					trap_vector(9 downto 0) <= "00" & X"18";
+ 				END IF;	
+ 				IF trap_trapv='1' THEN
+@@ -1321,7 +1325,7 @@
+ -----------------------------------------------------------------------------
+ -- PC Calc + fetch opcode
+ -----------------------------------------------------------------------------
+-PROCESS (clk, IPL, setstate, addrvalue, state, exec_write_back, set_direct_data, next_micro_state, stop, make_trace, make_berr, IPL_nr, FlagsSR, set_rot_cnt, opcode, writePCbig, set_exec, exec,
++PROCESS (clk, IPL, setstate, addrvalue, state, exec_write_back, set_direct_data, next_micro_state, stop, make_trace, make_berr, IPL_nr, FlagsSR, set_rot_cnt, opcode, writePCbig, set_exec, exec, chk_own,
+         PC_dataa, PC_datab, setnextpass, last_data_read, TG68_PC_brw, TG68_PC_word, Z_error, trap_trap, trap_trapv, interrupt, tmp_TG68_PC, TG68_PC, use_VBR_Stackframe, writePCnext, ae_pend, rp_arm)
+ 	BEGIN
+ 	
+@@ -1345,7 +1349,7 @@
+ 			ELSE	
+ 				PC_datab(2) <= '1';
+ 			END IF;
+-			IF (use_VBR_Stackframe='0' AND (trap_trap='1' OR trap_trapv='1' OR exec(trap_chk)='1' OR Z_error='1')) OR writePCnext='1' THEN
++			IF (use_VBR_Stackframe='0' AND (trap_trap='1' OR trap_trapv='1' OR chk_own='1' OR Z_error='1')) OR writePCnext='1' THEN   -- K325T: was exec(trap_chk)
+ 				PC_datab(1) <= '1';
+ 			END IF;
+ 		ELSIF state="00" THEN
+@@ -1876,7 +1880,7 @@
+ 		 SVmode, preSVmode, stop, long_done, ea_only, setstate, addrvalue, execOPC, exec_write_back, exe_datatype,
+ 		 datatype, interrupt, c_out, trapmake, rot_cnt, brief, addr, trap_trapv, last_data_in, use_VBR_Stackframe,
+ 		 long_start, set_datatype, sndOPC, set_exec, exec, ea_build_now, reg_QA, reg_QB, make_berr, trap_berr,
+-		 CPU030, EC030, pmmu_ext, pmmu_ok, pmmu_ea, pmmu_bad, pmmu_cfg, preMmode, trap_ae, ae_cnt, rte_cnt, undo_v)
++		 CPU030, EC030, pmmu_ext, pmmu_ok, pmmu_ea, pmmu_bad, pmmu_cfg, preMmode, trap_ae, ae_cnt, rte_cnt, undo_v, chk_own)
+ 	BEGIN
+ 		TG68_PC_brw <= '0';	
+ 		setstate <= "00";
+@@ -1984,7 +1988,12 @@
+ 			setstate <= "01";
+ 		END IF;
+ 		IF trapmake='1' AND trapd='0' THEN
+-			IF cpu(1)='1' AND (trap_trapv='1' OR set_Z_error='1' OR exec(trap_chk)='1' OR trap_mmucfg='1') THEN
++			-- K325T (2026-11-13): format $2 only for a CHK/CHK2 trap itself.  exec(trap_chk) is still set
++			-- from a CHK/CHK2/CMP2 in execute when the next instruction traps at decode (ILLEGAL, line A/F,
++			-- privilege): that trap got a format-$2 frame instead of $0 (WinUAE cputester, CHK/CHK2/CMP2).
++			-- chk_own = exec(trap_chk) AND set(trap_chk): the opcode raising the trap is the CHK/CHK2.  Was:
++			-- IF cpu(1)='1' AND (trap_trapv='1' OR set_Z_error='1' OR exec(trap_chk)='1' OR trap_mmucfg='1') THEN
++			IF cpu(1)='1' AND (trap_trapv='1' OR set_Z_error='1' OR chk_own='1' OR trap_mmucfg='1') THEN
+ 				next_micro_state <= trap00;
+ 			else
+ 				next_micro_state <= trap0;

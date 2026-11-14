@@ -1,0 +1,25 @@
+K325T: TG68K -- DIVU.W overflow on the 68020 left C (and Z) unchanged (WinUAE cputester)
+On a DIVU.W overflow the 68020 branch kept the old C and Z and set N = old N OR dividend bit 31.  Motorola
+documents C as always cleared by DIVU (V set on overflow; N and Z undefined on overflow).  Found with WinUAE's
+cputester on the board (stock 68EC020, 2026-11-13): "divu.w d0,d2" with D2=$FFF77FFF, D0=$14CE and C=1 before:
+"SR: expected 001f -> 001a but got 001f".  Now C = 0 (documented) and, for the undefined N/Z, the values of
+WinUAE's 68020 model, which follows real hardware (newcpu_common.cpp setdivuflags: Z = 0, N = dividend < 0).
+V and X unchanged; DIVS.W, DIVU.L/DIVS.L and the 68000/68010 branches untouched.
+--- a/rtl/tg68k/TG68K_ALU.vhd
++++ b/rtl/tg68k/TG68K_ALU.vhd
+@@ -1186,9 +1186,12 @@
+ 							Flags(3 downto 0) <= "1010";
+ 							IF CPU(1)='1' THEN
+ 								IF exe_opcode(15)='1' AND exe_opcode(8)='0' THEN
+-									Flags(3) <= Flags(3) OR div_a31;
+-									Flags(2) <= Flags(2);
+-									Flags(0) <= Flags(0);
++									-- K325T (2026-11-13): DIVU.W overflow on the 68020: C is cleared (Motorola: "always cleared"),
++									-- N/Z (Motorola: undefined) as WinUAE's hardware-matched 68020 model: Z = 0, N = dividend bit 31.
++									-- Was: Flags(3) <= Flags(3) OR div_a31; Flags(2) <= Flags(2); Flags(0) <= Flags(0);
++									Flags(3) <= div_a31;
++									Flags(2) <= '0';
++									Flags(0) <= '0';
+ 								ELSIF exe_opcode(15)='1' THEN
+ 									Flags(3) <= div_aq8(7) AND NOT div_absovl;
+ 									IF div_aq8="00000000" AND div_absovl='0' THEN
