@@ -203,7 +203,14 @@ def decode(fn, show_all):
             hi += 1 << 30
         prev = ts
         out.append([ts + hi, k, p, st])
-    if out:
+    trig = [o for o in out if o[1] == 8]
+    if out and fired and trig:
+        # place the ring by its trigger entry (same time stamp as t_trig, mod 2^30): right across a wrap of the
+        # 32-bit status time (1,210.9 s) or of the 30-bit entry time (302.7 s)
+        shift = t_trig - trig[0][0]
+        for o in out:
+            o[0] += shift
+    elif out:
         last = out[-1][0] & ((1 << 30) - 1)
         cand = (w1 & ~((1 << 30) - 1)) + last
         if cand > w1:
