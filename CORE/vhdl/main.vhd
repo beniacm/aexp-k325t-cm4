@@ -797,7 +797,10 @@ begin
                    word_o => fccen_word_o, opt_o => fc_opt);
    end generate;
    gen_nofccen : if not G_FCCEN generate
-      fc_opt <= C_FC_OPT;
+      -- the options as a run-time register with C_FC_OPT at power-up (fc_opt.vhd: fc8a's constant failed on the board)
+      i_fc_opt : entity work.fc_opt
+         generic map (G_OPT0 => C_FC_OPT)
+         port map (clk => cpu_clk_i, cfg_i => fccen_cfg_i, opt_o => fc_opt);
       fccen_word_o <= (others => '0');
    end generate;
 

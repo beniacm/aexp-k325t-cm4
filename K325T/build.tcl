@@ -19,12 +19,13 @@ add_files -fileset constrs_1 -norecurse [list $xdc $here/core_k325t.xdc]
 #   qnice_local.xdc  the menu processor on the FPGA (not with LXSHELL=1)
 #   hdd.xdc          the hard disk link (G_HDD, the Radxa variant)
 #   prefetch.xdc     the cache prefetchers (PREFETCH=1)
+#   fccen.xdc / fcopt.xdc  a1200-fc8: the census counters (FCCEN=1) / else the fast CPU's option register
 set part_xdc {}
 if {!([info exists env(LXSHELL)] && $env(LXSHELL) eq "1")} { lappend part_xdc $here/qnice_local.xdc }
 if {$suffix eq "_radxacm3"} { lappend part_xdc $here/hdd.xdc }
 if {[info exists env(PREFETCH)] && $env(PREFETCH) eq "1"} { lappend part_xdc $here/prefetch.xdc }
 # a1200-fc8: FCCEN=1 = the debug build with the fast CPU's census counters (fc_cen.vhd)
-if {[info exists env(FCCEN)] && $env(FCCEN) eq "1"} { lappend part_xdc $here/fccen.xdc }
+if {[info exists env(FCCEN)] && $env(FCCEN) eq "1"} { lappend part_xdc $here/fccen.xdc } else { lappend part_xdc $here/fcopt.xdc }
 if {[llength $part_xdc]} { add_files -fileset constrs_1 -norecurse $part_xdc }
 puts "PART CONSTRAINTS: $part_xdc"
 # DDR3: MIG 7-series, the board's proven MT41K128M16 setup (DDR3-800, 4:1, 200 MHz system
