@@ -244,7 +244,7 @@ module tb_top (
   fc_cpu i_fc_cpu (
     .clk(cpu_clk), .rst_n_i(cpu_reset_n & fastclk),
     .cfg_z2_i(fc_zcfg[0]), .cfg_z3e0_i(fc_zcfg[1]), .cfg_z3e1_i(fc_zcfg[2]), .cfg_z3b0_i(fc_zcfg[7:3]),
-    .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .ipl_i(fc_ipl),
+    .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .cfg_a24_i(stock020 & (mm_cpucfg == 2'b11)), .ipl_i(fc_ipl),
     .mb_req_o(fc_mb_req), .mb_addr_o(fc_mb_addr), .mb_wr_o(fc_mb_wr), .mb_long_o(fc_mb_long), .mb_sync_o(fc_mb_sync),
     .mb_uds_n_o(fc_mb_uds_n), .mb_lds_n_o(fc_mb_lds_n), .mb_wdata_o(fc_mb_wdata),
     .mb_ack_i(fc_mb_ack), .mb_rdata_i(fc_mb_rdata),

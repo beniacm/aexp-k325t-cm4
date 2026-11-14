@@ -40,6 +40,7 @@ entity fc_cpu is
       cfg_z3b0_i     : in  std_logic_vector(4 downto 0);
       cfg_z3b1_i     : in  std_logic_vector(3 downto 0);
       cfg_chipcode_i : in  std_logic;                       -- 1 = cache instructions from chip RAM
+      cfg_a24_i      : in  std_logic := '0';                -- 1 = 24-bit address bus (68EC020: cpu_wrapper's ec020)
       ipl_i          : in  std_logic_vector(2 downto 0);    -- machine clock, active low as TG68K's IPL
       -- mailbox to the machine clock
       mb_req_o       : out std_logic;                       -- toggles once per request
@@ -79,7 +80,8 @@ architecture rtl of fc_cpu is
    signal k_dinhi    : std_logic_vector(15 downto 0);
    signal k_lack     : std_logic;
    signal hold_din, hold_dinhi : std_logic_vector(15 downto 0) := (others => '0');
-   signal k_addr     : std_logic_vector(31 downto 0);
+   signal k_araw     : std_logic_vector(31 downto 0);         -- the kernel's address
+   signal k_addr     : std_logic_vector(31 downto 0);         -- on the bus (24 bits with cfg_a24_i)
    signal k_dw       : std_logic_vector(15 downto 0);
    signal k_dwlo     : std_logic_vector(15 downto 0);
    signal k_nwr      : std_logic;
@@ -95,11 +97,12 @@ architecture rtl of fc_cpu is
    signal rst_s      : std_logic_vector(2 downto 0) := (others => '0');
    signal rst        : std_logic;                            -- synchronous, active high
    signal ipl_s1, ipl_s2, ipl_s3, ipl_k : std_logic_vector(2 downto 0) := (others => '1');
-   signal cfg_s1, cfg_s2 : std_logic_vector(12 downto 0) := (others => '0');
-   signal z2, z3e0, z3e1, chipcode : std_logic;
+   signal cfg_s1, cfg_s2 : std_logic_vector(13 downto 0) := (others => '0');
+   signal z2, z3e0, z3e1, chipcode, a24 : std_logic;
    signal z3b0       : std_logic_vector(4 downto 0);
    signal z3b1       : std_logic_vector(3 downto 0);
    signal nmi_a      : std_logic_vector(31 downto 2) := (others => '1');
+   signal nmi_m      : std_logic_vector(31 downto 2);
    signal cacr_e     : std_logic := '0';
 
    -- request decode
@@ -141,6 +144,7 @@ architecture rtl of fc_cpu is
    signal d_wd   : std_logic_vector(127 downto 0);
    signal coll_i, coll_d : std_logic := '0';
    signal pend_q : std_logic := '0';
+   signal orph   : std_logic := '0';                         -- the open fill / mailbox read began before a CPU reset
 
    -- line buffers
    signal ilb_v, dlb_v : std_logic := '0';
@@ -225,7 +229,7 @@ begin
       if rising_edge(clk) then
          ipl_s1 <= ipl_i; ipl_s2 <= ipl_s1; ipl_s3 <= ipl_s2;
          if ipl_s2 = ipl_s3 then ipl_k <= ipl_s3; end if;      -- the 3 bits may change one by one
-         cfg_s1 <= cfg_chipcode_i & cfg_z3b1_i & cfg_z3b0_i & cfg_z3e1_i & cfg_z3e0_i & cfg_z2_i;
+         cfg_s1 <= cfg_a24_i & cfg_chipcode_i & cfg_z3b1_i & cfg_z3b0_i & cfg_z3e1_i & cfg_z3e0_i & cfg_z2_i;
          cfg_s2 <= cfg_s1;
          nmi_a  <= std_logic_vector(unsigned(k_vbr(31 downto 2)) + 31);   -- vbr + $7C
          if rst = '1' then
@@ -236,7 +240,7 @@ begin
       end if;
    end process;
    z2 <= cfg_s2(0); z3e0 <= cfg_s2(1); z3e1 <= cfg_s2(2);
-   z3b0 <= cfg_s2(7 downto 3); z3b1 <= cfg_s2(11 downto 8); chipcode <= cfg_s2(12);
+   z3b0 <= cfg_s2(7 downto 3); z3b1 <= cfg_s2(11 downto 8); chipcode <= cfg_s2(12); a24 <= cfg_s2(13);
 
    ---------------------------------------------------------------------------------------------------
    -- the kernel
@@ -247,7 +251,7 @@ begin
    port map(
       clk => clk, nReset => k_nreset, clkena_in => k_ena, data_in => k_din, IPL => ipl_k,
       IPL_autovector => '1', CPU => "11", CPU030 => k_cpu030, EC030 => '0',
-      addr_out => k_addr, data_write => k_dw, nWr => k_nwr, nUDS => k_uds_n, nLDS => k_lds_n,
+      addr_out => k_araw, data_write => k_dw, nWr => k_nwr, nUDS => k_uds_n, nLDS => k_lds_n,
       busstate => k_bs, longword => open, s21_en => '1', long_cand => k_lcand, long_ack => k_lack,
       data_in_hi => k_dinhi, data_write_lo => k_dwlo, nResetOut => resetout_n_o, FC => open,
       skipFetch => k_skip, regin_out => open, CACR_out => cacr_o, D_CACHE_out => open, VBR_out => k_vbr,
@@ -255,6 +259,12 @@ begin
       opc_cacr => k_cacrx, opc_cacr_wr => k_cacrwr, opc_caar => open, mmu_busy => open);
    vbr_o <= k_vbr;
    k_cpu030 <= '1' when G_CPU030 /= 0 else '0';
+   -- the 68EC020's address bus has 24 lines: an address with a non-zero high byte IS the 24-bit address (fast
+   -- RAM, ROM, chip ...).  Without this such an access went to the mailbox, past the D-cache, and cpu_wrapper's
+   -- 24-bit mask sent it to the stock fast-RAM instance, which is off the DDR3 port in this setting: the machine
+   -- hung (fc5: the CPU instruction test, ADDQ.B #1,(d8,A6,D6.L*4) to $0141FFBA, on the board).
+   k_addr <= x"00" & k_araw(23 downto 0) when a24 = '1' else k_araw;
+   nmi_m  <= x"00" & nmi_a(23 downto 2) when a24 = '1' else nmi_a;
 
    ---------------------------------------------------------------------------------------------------
    -- request decode (combinational from the kernel's bus address)
@@ -267,7 +277,7 @@ begin
                        (k_addr(31 downto 27) = z3b0 and z3e0 = '1') or (k_addr(31 downto 28) = z3b1 and z3e1 = '1') else '0';
    is_rom  <= '1' when k_addr(31 downto 24) = x"00" and (k_addr(23 downto 19) = "11111" or k_addr(23 downto 19) = "11100") else '0';
    is_chip <= '1' when k_addr(31 downto 21) = "00000000000" else '0';
-   is_nmi  <= '1' when k_addr(31 downto 2) = nmi_a else '0';
+   is_nmi  <= '1' when k_addr(31 downto 2) = nmi_m else '0';
    is_sync <= '1' when k_addr(31 downto 24) = x"00" and
                        ((k_addr(23 downto 4) = x"DFF09" and wr = '1') or
                         (k_addr(23 downto 16) = x"BF" and k_addr(11 downto 8) = "1101")) else '0';
@@ -288,7 +298,7 @@ begin
 
    -- acknowledge and data (combinational: the clock enable of the whole kernel)
    process (st, req, use_i, use_d, rd, wr, fe, k_skip, ilb_hit, dlb_hit, i_hit, d_hit, q_full, k_lcand,
-            is_fast, is_chip, is_rom, ilb_d, dlb_d, i_dq, d_dq, k_addr, fill_b, mb_q, mb_long_r, hold_din, hold_dinhi)
+            is_fast, is_chip, is_rom, ilb_d, dlb_d, i_dq, d_dq, k_addr, fill_b, mb_q, mb_long_r, hold_din, hold_dinhi, orph)
       variable line : std_logic_vector(127 downto 0);
       variable a3   : std_logic_vector(3 downto 1);
    begin
@@ -327,12 +337,12 @@ begin
                   k_lack <= k_lcand and (is_fast or is_chip);   -- custom chips / CIAs: word by word
                end if;
             end if;
-         when S_FILLD =>
-            ack <= '1';
-            k_lack <= k_lcand and not fe;
+         when S_FILLD =>                                   -- (an orphan answers nobody: the kernel's
+            ack <= not orph;                                -- request is a new one, after the reset)
+            k_lack <= k_lcand and not fe and not orph;
          when S_MBD =>
-            ack <= '1';
-            k_lack <= mb_long_r;
+            ack <= not orph;
+            k_lack <= mb_long_r and not orph;
             k_dinhi <= mb_q(31 downto 16);
             k_din   <= mb_q(15 downto 0);
          when others => null;
@@ -348,12 +358,12 @@ begin
    end process;
 
    -- array write ports (combinational: valid bit, tag and data change at the same edge)
-   i_we   <= '1' when st = S_FILLD and fill_i = '1' else '0';
+   i_we   <= '1' when st = S_FILLD and fill_i = '1' and orph = '0' else '0';
    i_widx <= unsigned(fill_a(13 downto 4));
    i_wtag <= fill_a(31 downto 14);
-   d_tagwe <= '1' when st = S_FILLD and fill_i = '0' else '0';
+   d_tagwe <= '1' when st = S_FILLD and fill_i = '0' and orph = '0' else '0';
    d_wtag <= fill_a(31 downto 13);
-   d_bwe  <= (others => '1') when st = S_FILLD and fill_i = '0' else
+   d_bwe  <= (others => '1') when st = S_FILLD and fill_i = '0' and orph = '0' else
              st_be when st_v = '1' and st_d = '1' and d_vq = '1' and d_tq = st_a(31 downto 13) else (others => '0');
    d_wd   <= fill_b when st = S_FILLD else st_wd;
    d_widx <= unsigned(fill_a(12 downto 4)) when st = S_FILLD else unsigned(st_a(12 downto 4));
@@ -510,8 +520,11 @@ begin
 
             when S_FILLD =>
                st <= S_RUN;
+               orph <= '0';
                coll_i <= '1'; coll_d <= '1';                 -- the arrays are written at this edge
-               if fill_i = '1' then
+               if orph = '1' then
+                  null;                                      -- read before the reset: not installed
+               elsif fill_i = '1' then
                   i_val(to_integer(unsigned(fill_a(13 downto 4)))) <= '1';
                   ilb_v <= '1'; ilb_t <= fill_a; ilb_d <= fill_b;
                else
@@ -543,6 +556,7 @@ begin
 
             when S_MBD =>
                st <= S_RUN;
+               orph <= '0';
          end case;
 
          if i_clr = '1' then i_val(i_clr_idx) <= '0'; coll_i <= '1'; end if;
@@ -550,13 +564,24 @@ begin
          if rst = '1' or (k_cacrwr = '1' and (k_cacrx(3) = '1' or k_cacrx(2) = '1')) then
             i_val <= (others => '0');
             ilb_v <= '0';
+            coll_i <= '1';                                   -- i_vq of the next clock was read before the clear
          end if;
          if rst = '1' then
             d_val <= (others => '0');
             dlb_v <= '0';
             pend_q <= '0';
-            -- an open fill or mailbox read completes (its port answers later); its result is not used
-            if st /= S_FILL and st /= S_MB and st /= S_IPLW then st <= S_RUN; end if;
+            coll_d <= '1';
+            -- an open fill or mailbox read completes (its port answers later, the mailbox possibly only after
+            -- the machine reset, when the kernel runs again): it is an orphan, its answer is given to nobody
+            -- (else the kernel's first read after the reset, the reset SSP, took the old read's data) and a
+            -- fill is not installed (fc5: the CPU did not come back from a reset during fast-RAM store traffic)
+            if st = S_FILL or st = S_MB or st = S_IPLW then
+               orph <= '1';
+            elsif st = S_FILLD or st = S_MBD then
+               st <= S_RUN; orph <= '0';
+            else
+               st <= S_RUN;
+            end if;
          end if;
       end if;
    end process;

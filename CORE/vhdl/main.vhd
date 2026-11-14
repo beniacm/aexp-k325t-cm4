@@ -713,6 +713,7 @@ begin
          cfg_z3b0_i     => fc_zcfg(7 downto 3),
          cfg_z3b1_i     => fc_zcfg(11 downto 8),
          cfg_chipcode_i => '1',
+         cfg_a24_i      => cpu_ec020,           -- fc5: the 68EC020's 24-bit address bus (AGA + 68020)
          ipl_i          => fc_ipl,
          mb_req_o       => fc_mb_req,
          mb_addr_o      => fc_mb_addr,
