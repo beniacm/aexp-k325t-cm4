@@ -419,7 +419,7 @@ architecture synthesis of main is
    signal fc_fr_addr       : std_logic_vector(31 downto 0);
    -- fc8: fc_cpu's speed options (b0 next I line, b1 three more I line buffers, b2 next D line, b3 three more D line
    -- buffers, b4 long fast-RAM stores in one access; x"00" = fc7's behaviour clock for clock)
-   constant C_FC_OPT       : std_logic_vector(7 downto 0) := x"00";
+   constant C_FC_OPT       : std_logic_vector(7 downto 0) := x"03";
    signal fc_ext_addr      : std_logic_vector(31 downto 0);
    signal fc_ext_state     : std_logic_vector(1 downto 0);
    signal fc_ext_dout, fc_ext_din : std_logic_vector(15 downto 0);
