@@ -56,7 +56,7 @@ open(sys.argv[2], 'w').write(s[:i] + m + s[j:])
 PY
 # a1200-fastclk: the fast 68020 (fc_cpu: its own TG68K without MMU030, caches, store queue, mailbox
 # CPU side) and the mailbox's machine side (fc_mbox) -> Verilog; fc_cpu's sub-modules get an fc_ prefix
-(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -fsynopsys --out=verilog \
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -fsynopsys --out=verilog ${CEN:+-gg_census=true} \
     "$TG/TG68K_Pack.vhd" "$TG/TG68K_ALU.vhd" "$root/K325T/cpu020/TG68K_MMU030.vhd" "$TG/TG68KdotC_Kernel.vhd" \
     "$root/K325T/fc_cpu.vhd" -e fc_cpu > fc_cpu_raw.v 2> ghdl_fc.log) || { cat "$OUT/ghdl_fc.log" >&2; exit 1; }
 /usr/bin/python3 - "$OUT/fc_cpu_raw.v" "$OUT/fc_cpu.v" <<'PY'
@@ -69,6 +69,9 @@ open(sys.argv[2], 'w').write(s)
 PY
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/fc_mbox.vhd" -e fc_mbox \
     > fc_mbox.v 2> ghdl_fcmb.log) || { cat "$OUT/ghdl_fcmb.log" >&2; exit 1; }
+# a1200-fc8: the census counters (K325T/fc_cen.vhd); CEN=1 builds fc_cpu with its probe (G_CENSUS), else the probe is 0
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/fc_cen.vhd" -e fc_cen \
+    > fc_cen.v 2> ghdl_fccen.log) || { cat "$OUT/ghdl_fccen.log" >&2; exit 1; }
 # stage 3: the stage-2 chip_cache (with the AGA 64-bit read) -> Verilog, for --cache
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/M2M/vhdl/tdp_ram.vhd" \
     "$root/K325T/chip_cache.vhd" -e chip_cache > chip_cache.v 2> ghdl_cache.log) || { cat "$OUT/ghdl_cache.log" >&2; exit 1; }
@@ -106,7 +109,7 @@ fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/amiga_fastram_small.v $OUT/fc_cpu.v $OUT/fc_mbox.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/amiga_fastram_small.v $OUT/fc_cpu.v $OUT/fc_mbox.v $OUT/fc_cen.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 ${VFLAGS:-} --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \

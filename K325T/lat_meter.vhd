@@ -22,6 +22,7 @@
 --          i = $FB: the core's memory mode and stall register read-back dbg2_i(287..192) (stage 3);
 --          i = $E0-$E5: the core's result mailbox (Amiga $C0-$FF), longwords 3(i-$E0) .. +2;
 --          i = $D0-$D6: the cache's prefetch counters of class i-$D0 (issued, useful, wasted)
+--          i = $D8-$DF, $E8-$EF with G_CEN (a1200-fc8): the fast CPU's census counters (fc_cen.vhd)
 -- (the stall injector's registers 3..5 are reused: keep the injector off while measuring)
 --------------------------------------------------------------------------------
 library ieee;
@@ -33,7 +34,9 @@ entity lat_meter is
       -- false (a1200-lxshell, the flash-size build): only the read-back words the validation tools
       -- use -- $FB (memory mode / topology, stallmon cache) and $E0-$E5 (the result mailbox, stallmon
       -- mbox: gates, cputime2) -- no latency measurement, no $FF..$FC / $D0-$D6 words (they read 0)
-      G_FULL : boolean := true
+      G_FULL : boolean := true;
+      -- a1200-fc8: the fast CPU's census counters (fc_cen.vhd, debug builds) answer indices $D8-$DF and $E8-$EF
+      G_CEN  : boolean := false
    );
    port (
       clk        : in  std_logic;               -- MIG ui_clk
@@ -45,6 +48,7 @@ entity lat_meter is
       dbg2_i     : in  std_logic_vector(287 downto 0) := (others => '0');   -- index $FD..$FB (async)
       mbox_i     : in  std_logic_vector(511 downto 0) := (others => '0');   -- index $E0-$E5 (async)
       pf_i       : in  std_logic_vector(671 downto 0) := (others => '0');   -- index $D0-$D6 (async)
+      cen_i      : in  std_logic_vector(95 downto 0) := (others => '0');    -- index $D8-$DF, $E8-$EF with G_CEN (async)
       lp_req     : out std_logic;
       lp_we      : out std_logic;
       lp_addr    : out std_logic_vector(27 downto 0);
@@ -147,7 +151,9 @@ begin
          end if;
 
          d := 0; if hidx(6) = '1' then d := 1; end if;
-         if not G_FULL and hidx /= x"FB" and hidx(7 downto 3) /= "11100" then
+         if G_CEN and (hidx(7 downto 3) = "11011" or hidx(7 downto 3) = "11101") then
+            aux <= cen_i;                     -- a1200-fc8: the census word selected in fc_cen (its own decode of r4 & r5)
+         elsif not G_FULL and hidx /= x"FB" and hidx(7 downto 3) /= "11100" then
             aux <= (others => '0');
          elsif hidx(7 downto 3) = "11010" and hidx(2 downto 0) < 7 then
             -- the cache's prefetch counters of class i - $D0: issued, useful, wasted

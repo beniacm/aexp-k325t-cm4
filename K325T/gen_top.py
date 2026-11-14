@@ -87,7 +87,8 @@ fw.insert(last + 1, '''      ext_hr_clk_i            => mig_ui_clk,
       host_m_full_i           => host_m_full,
       host_clr_i              => host_clr,
       host_flags_o            => host_flags''')
-core = remap(core, CORE, '''         G_CACHE_PREFETCH => G_PREFETCH''')
+core = remap(core, CORE, '''         G_CACHE_PREFETCH => G_PREFETCH,
+         G_FCCEN          => G_FCCEN''')
 # core: the K325T stall machinery (stall_clk.vhd): configuration byte from the bridge, diagnostics
 last = max(k for k, l in enumerate(core) if '=>' in l)
 core[last] = core[last].rstrip() + ','
@@ -106,6 +107,7 @@ core.insert(last + 1, '''         k325t_stall_cfg_i       => rk_vid_sel,
          k325t_mbox_o            => amiga_mbox,
          k325t_pf_stats_o        => amiga_pf_stats,
          k325t_fast_dbg_o        => amiga_fast_dbg,
+         k325t_fccen_o           => amiga_fccen,
          k325t_audio_clk_o       => amiga_audio_clk,
          k325t_hd_clk_i          => clk162,
          k325t_hd_sck_i          => hd_sck_c,

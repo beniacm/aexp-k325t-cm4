@@ -34,7 +34,8 @@ use ieee.numeric_std.all;
 entity fc_cpu is
    generic (
       G_CPU030  : integer   := 0;                          -- TG68K's CPU030 input: 0 = 68020, 1 = 68030
-      G_MMU030  : integer   := 0                           -- 1 = TG68K_MMU030 present (needed for a 68030 with MMU)
+      G_MMU030  : integer   := 0;                          -- 1 = TG68K_MMU030 present (needed for a 68030 with MMU)
+      G_CENSUS  : boolean   := false                       -- fc8: cen_o carries the census probe (fc_cen.vhd); false = 0
    );
    port (
       clk            : in  std_logic;
@@ -80,7 +81,8 @@ entity fc_cpu is
       vbr_o          : out std_logic_vector(31 downto 0);
       cacr_o         : out std_logic_vector(3 downto 0);
       resetout_n_o   : out std_logic;                       -- RESET instruction (low while active)
-      qempty_o       : out std_logic                        -- store queue empty and nothing open
+      qempty_o       : out std_logic;                       -- store queue empty and nothing open
+      cen_o          : out std_logic_vector(127 downto 0)   -- fc8 G_CENSUS: the census probe (fc_cen.vhd's pr_i)
    );
 end entity fc_cpu;
 
@@ -107,6 +109,8 @@ architecture rtl of fc_cpu is
    signal k_cacrx    : std_logic_vector(13 downto 0);
    signal k_cacrwr   : std_logic;
    signal k_vbr      : std_logic_vector(31 downto 0);
+   signal k_cstop, k_cclw, k_opcs : std_logic;                 -- fc8 census: STOP, clkena_lw, decodeOPC
+   signal k_cimask   : std_logic_vector(2 downto 0);
 
    signal rst_s      : std_logic_vector(2 downto 0) := (others => '0');
    signal fl_s       : std_logic_vector(1 downto 0) := (others => '0');   -- fc7: flush_i synchronised
@@ -318,8 +322,9 @@ begin
       busstate => k_bs, longword => open, s21_en => '1', long_cand => k_lcand, long_ack => k_lack,
       data_in_hi => k_dinhi, data_write_lo => k_dwlo, nResetOut => resetout_n_o, FC => open,
       skipFetch => k_skip, regin_out => open, CACR_out => cacr_o, D_CACHE_out => open, VBR_out => k_vbr,
-      opc_start => open, opc_out => open, opc_cond => open, opc_snd => open, opc_dbx => open,
-      opc_cacr => k_cacrx, opc_cacr_wr => k_cacrwr, opc_caar => open, mmu_busy => open);
+      opc_start => k_opcs, opc_out => open, opc_cond => open, opc_snd => open, opc_dbx => open,
+      opc_cacr => k_cacrx, opc_cacr_wr => k_cacrwr, opc_caar => open, mmu_busy => open,
+      cen_stop => k_cstop, cen_clkena_lw => k_cclw, cen_imask => k_cimask);
    vbr_o <= k_vbr;
    k_cpu030 <= '1' when G_CPU030 /= 0 else '0';
    -- the 68EC020's address bus has 24 lines: an address with a non-zero high byte IS the 24-bit address (fast
@@ -887,4 +892,34 @@ begin
    mb_ev <= ack_s(2) xor ack_s(1);
    mb_req_o <= mb_t; mb_addr_o <= mb_a; mb_wr_o <= mb_w; mb_long_o <= mb_l;
    mb_uds_n_o <= mb_u; mb_lds_n_o <= mb_lo; mb_wdata_o <= mb_wd; mb_sync_o <= mb_s;
+
+   -- fc8: the census probe (fc_cen.vhd decodes it; the same signals as the bench census's o_fcc_* probes)
+   g_cen : if G_CENSUS generate
+      process (all)
+         variable v : std_logic_vector(127 downto 0);
+         variable stv : std_logic_vector(2 downto 0);
+         variable drv : std_logic_vector(1 downto 0);
+      begin
+         v := (others => '0');
+         case st is
+            when S_RUN => stv := "000"; when S_FILLQ => stv := "001"; when S_FILL => stv := "010";
+            when S_FILLD => stv := "011"; when S_MBQ => stv := "100"; when S_MB => stv := "101";
+            when S_IPLW => stv := "110"; when S_MBD => stv := "111";
+         end case;
+         case dr is
+            when D_IDLE => drv := "00"; when D_FR1 => drv := "01"; when D_FR2 => drv := "10"; when D_MB => drv := "11";
+         end case;
+         v(0) := req; v(1) := ack; v(3 downto 2) := k_bs; v(6 downto 4) := stv; v(7) := use_i; v(8) := use_d;
+         v(9) := ilb_hit or dlb_hit or nb_hit or ilb2_hit; v(10) := fill_i; v(11) := fill_mb; v(12) := q_full;
+         v(14 downto 13) := drv; v(15) := sync_r; v(16) := rst; v(17) := k_cstop; v(18) := k_opcs; v(19) := k_cclw;
+         v(20) := mb_t xor ack_s(0);
+         if k_cimask /= "000" then v(21) := '1'; end if;
+         v(55 downto 32) := k_addr(23 downto 0); v(79 downto 56) := mb_a(23 downto 0);
+         v(103 downto 80) := fill_a(23 downto 4) & "0000";
+         cen_o <= v;
+      end process;
+   end generate;
+   g_nocen : if not G_CENSUS generate
+      cen_o <= (others => '0');
+   end generate;
 end architecture rtl;

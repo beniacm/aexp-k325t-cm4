@@ -62,7 +62,8 @@ entity fc_mbox is
       ext_lds_n_o  : out std_logic;
       ext_long_o   : out std_logic;
       ext_ack_i    : in  std_logic;
-      ext_din_i    : in  std_logic_vector(15 downto 0)
+      ext_din_i    : in  std_logic_vector(15 downto 0);
+      guard_o      : out std_logic                        -- fc8: the retrigger guard holds a DMACON write (census)
    );
 end entity fc_mbox;
 
@@ -197,4 +198,5 @@ begin
    ext_long_o  <= lg;
    mb_ack_o    <= ack_t;
    mb_rdata_o  <= rdata;
+   guard_o     <= '1' when st = S_GUARD else '0';
 end architecture rtl;

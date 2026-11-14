@@ -1,0 +1,32 @@
+K325T: TG68K -- observation outputs for the fast CPU's census counters (a1200-fc8, debug)
+Three outputs: cen_stop (the STOP state), cen_clkena_lw (the clock enable decodeOPC is taken with), cen_imask (SR
+interrupt mask).  Driven by existing signals only; every instance that does not connect them (cpu_wrapper's stock
+TG68K) synthesises exactly as before.  Used by fc_cpu with G_CENSUS (K325T/fc_cen.vhd).
+
+--- a/rtl/tg68k/TG68KdotC_Kernel.vhd
++++ b/rtl/tg68k/TG68KdotC_Kernel.vhd
+@@ -156,7 +156,12 @@
+ 		opc_cacr				: out std_logic_vector(13 downto 0);
+ 		opc_cacr_wr			: out std_logic;
+ 		opc_caar				: out std_logic_vector(5 downto 0);
+-		mmu_busy				: out std_logic
++		mmu_busy				: out std_logic;
++-- K325T a1200-fc8 (2026-11-14): observation outputs for the fast CPU's census counters (fc_cpu G_CENSUS); left open
++-- by every other instance (nothing else changes)
++		cen_stop				: out std_logic;						-- the STOP state
++		cen_clkena_lw			: out std_logic;						-- the clock enable decodeOPC is taken with
++		cen_imask				: out std_logic_vector(2 downto 0)		-- SR interrupt mask
+ 		);
+ end TG68KdotC_Kernel;
+ 
+@@ -4942,6 +4947,10 @@
+   D_CACHE_out <= CACR_DC or not CACR_DC_owned;
+   VBR_out <= VBR;
+   opc_start <= '1' when decodeOPC = '1' else '0';
++  -- K325T a1200-fc8: census observation outputs (see the port list)
++  cen_stop <= '1' when stop = '1' else '0';
++  cen_clkena_lw <= clkena_lw;
++  cen_imask <= FlagsSR(2 downto 0);
+   opc_out   <= opcode;
+   opc_cond  <= exe_condition;
+   opc_snd   <= sndOPC;

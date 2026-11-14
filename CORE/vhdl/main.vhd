@@ -24,7 +24,10 @@ use work.video_modes_pkg.all;
 entity main is
    generic (
       G_VDNUM                 : natural;                    -- amount of virtual drives
-      G_ADF_BASE_ADDRESS      : std_logic_vector(21 downto 0)  -- ADF image HyperRAM word base
+      G_ADF_BASE_ADDRESS      : std_logic_vector(21 downto 0);  -- ADF image HyperRAM word base
+      -- K325T a1200-fc8: the fast CPU's census counters (K325T/fc_cen.vhd, debug builds FCCEN=1): fc_cpu's options
+      -- then come from fc_cen (run-time presets over the stall controller's page 7), not from C_FC_OPT
+      G_FCCEN                 : boolean := false
    );
    port (
       clk_main_i              : in  std_logic;
@@ -170,6 +173,9 @@ entity main is
       fcr_wdata2_o            : out std_logic_vector(15 downto 0);   -- = the high word, this = the low word)
       fcr_rdata_i             : in  std_logic_vector(15 downto 0) := x"0000";
       fcr_ready_i             : in  std_logic := '0';
+      -- K325T a1200-fc8 (G_FCCEN): the bridge's VIDEO byte in (page 7 decode), the census word out (quasi-static)
+      fccen_cfg_i             : in  std_logic_vector(7 downto 0) := x"00";
+      fccen_word_o            : out std_logic_vector(95 downto 0);
 
       -- K325T a1200-ide: Gayle IDE (menu bit: userio 0xF8 = Gayle + master, Gayle path also for the
       -- 68020); ide.v's host (mgmt) port, served by hdd_spi in mega65.vhd
@@ -420,6 +426,9 @@ architecture synthesis of main is
    -- fc8: fc_cpu's speed options (b0 next I line, b1 three more I line buffers, b2 next D line, b3 three more D line
    -- buffers, b4 long fast-RAM stores in one access; x"00" = fc7's behaviour clock for clock)
    constant C_FC_OPT       : std_logic_vector(7 downto 0) := x"1F";
+   signal fc_opt           : std_logic_vector(7 downto 0);     -- fc8: C_FC_OPT, or fc_cen's preset (G_FCCEN)
+   signal fc_cen_pr        : std_logic_vector(127 downto 0);
+   signal fc_guard         : std_logic;
    signal fc_ext_addr      : std_logic_vector(31 downto 0);
    signal fc_ext_state     : std_logic_vector(1 downto 0);
    signal fc_ext_dout, fc_ext_din : std_logic_vector(15 downto 0);
@@ -740,6 +749,7 @@ begin
    fc_flush_o <= fc_flush;
 
    i_fc_cpu : entity work.fc_cpu
+      generic map (G_CENSUS => G_FCCEN)
       port map (
          clk            => cpu_clk_i,
          rst_n_i        => fc_rst_n,
@@ -751,7 +761,7 @@ begin
          cfg_z3b1_i     => fc_zcfg(11 downto 8),
          cfg_chipcode_i => '1',
          cfg_a24_i      => cpu_ec020,           -- fc5: the 68EC020's 24-bit address bus (AGA + 68020)
-         opt_i          => C_FC_OPT,            -- fc8: speed options (fc_cpu.vhd; constant below)
+         opt_i          => fc_opt,              -- fc8: speed options (fc_cpu.vhd; C_FC_OPT or fc_cen)
          ipl_i          => fc_ipl,
          mb_req_o       => fc_mb_req,
          mb_addr_o      => fc_mb_addr,
@@ -776,8 +786,20 @@ begin
          vbr_o          => fc_vbr,
          cacr_o         => fc_cacr,
          resetout_n_o   => fc_rso,
-         qempty_o       => open
+         qempty_o       => open,
+         cen_o          => fc_cen_pr
       ); -- i_fc_cpu
+
+   -- fc8: the census counters (debug builds) and the options they select at run time
+   g_fccen : if G_FCCEN generate
+      i_fc_cen : entity work.fc_cen
+         port map (clk => cpu_clk_i, pr_i => fc_cen_pr, guard_i => fc_guard, cfg_i => fccen_cfg_i,
+                   word_o => fccen_word_o, opt_o => fc_opt);
+   end generate;
+   g_nofccen : if not G_FCCEN generate
+      fc_opt <= C_FC_OPT;
+      fccen_word_o <= (others => '0');
+   end generate;
 
    -- the fast RAM windows as DDR3 word addresses (as fast_addr_o -> mega65.vhd's main_fast_ddr):
    -- Zorro II ($200000-$9FFFFF) at word $800000 + addr[23:1], Zorro III 128 MB at word $4000000
@@ -805,7 +827,8 @@ begin
          ext_lds_n_o => fc_ext_lds_n,
          ext_long_o  => fc_ext_long,
          ext_ack_i   => fc_ext_ack,
-         ext_din_i   => fc_ext_din
+         ext_din_i   => fc_ext_din,
+         guard_o     => fc_guard
       ); -- i_fc_mbox
 
    -- the fast CPU's VBR (NMI vector), CACR and RESET instruction into the machine clock (quasi-static

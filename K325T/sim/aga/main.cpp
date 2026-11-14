@@ -332,6 +332,7 @@ int main(int argc, char** argv) {
   const char* hreq_fn = nullptr; const char* hrsp_fn = nullptr;
   const char* preload_fn = nullptr; uint32_t preload_addr = 0;
   const char* dump_fn = nullptr; uint32_t dump_addr = 0, dump_len = 0;
+  const char* cen_fn = nullptr;     // fc8: --cen-dump FILE: fc_cen's 32 counters at the end (read as the board tool does)
   const char* dumpf_fn = nullptr;   // fc8: --dump-fast FILE: the 8 MB fast-RAM model (big-endian words) at the end
   int64_t stop_addr = -1; uint32_t stop_val = 0;
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
@@ -385,6 +386,7 @@ int main(int argc, char** argv) {
     else if (a == "--lat") { lat_min = atoi(nx()); lat_span = atoi(nx()); }
     else if (a == "--preload") { preload_fn = nx(); preload_addr = strtoul(nx(), 0, 0); }
     else if (a == "--dump-fast") dumpf_fn = nx();
+    else if (a == "--cen-dump") cen_fn = nx();
     else if (a == "--dump") { dump_addr = strtoul(nx(), 0, 0); dump_len = strtoul(nx(), 0, 0); dump_fn = nx(); }
     else if (a == "--stop") { stop_addr = strtoll(nx(), 0, 0); stop_val = strtoul(nx(), 0, 0); }
     else if (a == "--cputrace") { cput_fn = nx(); cput_from = atoi(nx()); cput_to = atoi(nx()); }
@@ -832,6 +834,29 @@ int main(int argc, char** argv) {
       uint16_t w = cm[((dump_addr + i) >> 1) & 0xfffff];
       uint8_t b[2] = {(uint8_t)(w >> 8), (uint8_t)w}; fwrite(b, 1, 2, f);
     }
+    fclose(f);
+  }
+  if (cen_fn) {
+    // fc8: the board tool's sequence on the bridge byte (1rrrvvvv; 16 stable clocks per byte), cpu_clk only: page 7,
+    // index $08 -> $D8 (latches the snapshot), then $D8..$DF and $E8..$EF, each word after it settled
+    auto byte = [&](uint8_t b) {
+      top->fccen_cfg = b;
+      for (int k = 0; k < 64; k++) { top->cpu_clk = 1; top->eval(); top->cpu_clk = 0; top->eval(); }
+    };
+    std::vector<uint64_t> sl(32, 0);
+    byte(0xE7); byte(0xB0 | (fc_opt == 0x03 ? 1 : fc_opt == 0x0F ? 2 : fc_opt == 0x1F ? 3 : fc_opt == 0x10 ? 4 : 0));
+    byte(0xC0); byte(0xD8); byte(0xCD);
+    for (int hi = 0; hi < 2; hi++) {
+      byte(hi ? 0xCE : 0xCD);
+      for (int i = 0; i < 8; i++) {
+        byte(0xD8 + i);
+        const uint32_t* w = (const uint32_t*)&top->o_fccen_word;   // Verilator: word 0 = bits 31..0
+        uint64_t a = ((uint64_t)w[2] << 16) | (w[1] >> 16), b = ((uint64_t)(w[1] & 0xFFFF) << 32) | w[0];
+        sl[16 * hi + 2 * i] = a; sl[16 * hi + 2 * i + 1] = b;
+      }
+    }
+    FILE* f = fopen(cen_fn, "w");
+    for (int k = 0; k < 32; k++) fprintf(f, "%d %llu\n", k, (unsigned long long)sl[k]);
     fclose(f);
   }
   if (dumpf_fn) {

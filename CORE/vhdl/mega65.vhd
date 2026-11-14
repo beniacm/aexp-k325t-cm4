@@ -43,7 +43,9 @@ entity MEGA65_Core is
 generic (
    G_BOARD : string;                                        -- Which platform are we running on.
    -- K325T: the cache's prefetchers built in (see C_CACHE_PREFETCH); the top's G_PREFETCH
-   G_CACHE_PREFETCH : boolean := true
+   G_CACHE_PREFETCH : boolean := true;
+   -- K325T a1200-fc8: the fast CPU's census counters (main.vhd G_FCCEN; debug builds FCCEN=1); the top's G_FCCEN
+   G_FCCEN          : boolean := false
 );
 port (
    --------------------------------------------------------------------------------------------------------
@@ -271,6 +273,8 @@ port (
    k325t_pf_stats_o        : out std_logic_vector(671 downto 0);
    -- K325T stage 3 experiment: fast RAM path debug (amiga_fastram + the hr_core select), any clock
    k325t_fast_dbg_o        : out std_logic_vector(287 downto 0);
+   -- K325T a1200-fc8: the fast CPU's census word (G_FCCEN; lat_meter $D8-$DF / $E8-$EF), quasi-static
+   k325t_fccen_o           : out std_logic_vector(95 downto 0);
    -- K325T stage 2b: the clock of main_audio_left_o / _right_o (the ungated source clock)
    k325t_audio_clk_o       : out std_logic;
    -- K325T a1200-ide: the hard disk's own SPI to the Linux module (K325T/hdd_spi.vhd)
@@ -857,7 +861,8 @@ begin
    i_main : entity work.main
       generic map (
          G_VDNUM              => C_VDNUM,
-         G_ADF_BASE_ADDRESS   => C_HMAP_ADF_DF0(9 downto 0) & x"000"
+         G_ADF_BASE_ADDRESS   => C_HMAP_ADF_DF0(9 downto 0) & x"000",
+         G_FCCEN              => G_FCCEN
       )
       port map (
          clk_main_i           => main_clk,
@@ -973,6 +978,8 @@ begin
          fcr_lds_n_o          => fc_fr_lds_n,
          fcr_wdata_o          => fc_fr_wdata,
          fcr_long_o           => fc_fr_long,
+         fccen_cfg_i          => k325t_stall_cfg_i,
+         fccen_word_o         => k325t_fccen_o,
          fcr_wdata2_o         => fc_fr_wdata2,
          fcr_rdata_i          => fc_fr_rdata,
          fcr_ready_i          => fc_fr_ready,

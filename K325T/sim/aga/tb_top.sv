@@ -18,6 +18,8 @@ module tb_top (
   input  wire        fastclk,          // a1200-fastclk: the fast 68020 is fc_cpu on cpu_clk (main.vhd: cpu_fast)
   input  wire        cpu_clk,          // a1200-fastclk: its clock (51.59 MHz, not gated)
   input  wire [7:0]  fc_opt,           // fc8: fc_cpu's speed options (opt_i; main.cpp --fc-opt)
+  input  wire [7:0]  fccen_cfg,        // fc8: the bridge's VIDEO byte for fc_cen's page-7 decode (main.cpp --cen-dump)
+  output wire [95:0] o_fccen_word,     // fc8: fc_cen's selected snapshot word
   // a1200-fastclk fc6: the setting change (main.cpp --switch).  fastclk / fastcpu are the menu bits; main.vhd
   // latches them while the CPU is in reset (cpu_fast).  m2m_rst = the M2M reset (machine clock): the stock
   // fast-RAM instance's rst_i and, synchronised into ui_clk, the framework's hr_rst (both fast-RAM masters,
@@ -222,6 +224,8 @@ module tb_top (
   wire [31:0] fc_ext_addr, fc_mb_addr, fc_mb_wdata, fc_mb_rdata, fc_fr_a, fc_vbr;
   wire [1:0]  fc_ext_state;
   wire [15:0] fc_ext_dout, fc_ext_din, fc_fr_wd, fc_fr_rd;
+  wire [127:0] fc_cen_pr;           // fc8: census probe / guard flag
+  wire         fc_guard;
   wire        fc_fr_long;           // fc8 b4: a long fast-RAM write in one access
   wire [15:0] fc_fr_wd2;
   wire        fc_ext_uds_n, fc_ext_lds_n, fc_ext_long, fc_ext_ack, fc_rso;
@@ -298,13 +302,15 @@ module tb_top (
     .mb_ack_i(fc_mb_ack), .mb_rdata_i(fc_mb_rdata),
     .fr_sel_o(fc_fr_sel), .fr_addr_o(fc_fr_a), .fr_we_o(fc_fr_we), .fr_uds_n_o(fc_fr_u), .fr_lds_n_o(fc_fr_l),
     .fr_wdata_o(fc_fr_wd), .fr_rdata_i(fc_fr_rd), .fr_ready_i(fc_fr_ready), .fr_long_o(fc_fr_long), .fr_wdata2_o(fc_fr_wd2),
-    .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o(fc_qempty));
+    .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o(fc_qempty), .cen_o(fc_cen_pr));
+  // fc8: the board's census counters (fc_cen.vhd), probe from fc_cpu (0 unless the bench is built with CEN=1)
+  fc_cen i_fc_cen (.clk(cpu_clk), .pr_i(fc_cen_pr), .guard_i(fc_guard), .cfg_i(fccen_cfg), .word_o(o_fccen_word), .opt_o());
   fc_mbox i_fc_mbox (
     .clk_i(clk), .flush_i(fc_flush), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long), .mb_sync_i(fc_mb_sync),
     .mb_uds_n_i(fc_mb_uds_n), .mb_lds_n_i(fc_mb_lds_n), .mb_wdata_i(fc_mb_wdata), .mb_ack_o(fc_mb_ack),
     .mb_rdata_o(fc_mb_rdata), .ext_addr_o(fc_ext_addr), .ext_state_o(fc_ext_state), .ext_dout_o(fc_ext_dout),
     .ext_uds_n_o(fc_ext_uds_n), .ext_lds_n_o(fc_ext_lds_n), .ext_long_o(fc_ext_long), .ext_ack_i(fc_ext_ack),
-    .ext_din_i(fc_ext_din));
+    .ext_din_i(fc_ext_din), .guard_o(fc_guard));
   wire [26:0] fc_fr_ddr = fc_fr_a[31:24] == 8'h00 ? {4'b0001, fc_fr_a[23:1]} : {1'b1, fc_fr_a[26:1]};
 
   // ---------------- a1200-fastcpu: fast RAM (amiga_fastram RTL, as mega65.vhd) ----------------

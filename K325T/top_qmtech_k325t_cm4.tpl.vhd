@@ -44,7 +44,9 @@ generic (
    -- C_CACHE_PREFETCH in CORE/vhdl/mega65.vhd; true = the research build) and the full latency meter
    -- (development; SLIM=1 builds the lean one)
    G_PREFETCH   : boolean := false;
-   G_LATMETER   : boolean := true
+   G_LATMETER   : boolean := true;
+   -- a1200-fc8: the fast CPU's census counters (debug builds, FCCEN=1: K325T/fc_cen.vhd, lat_meter $D8-$DF / $E8-$EF)
+   G_FCCEN      : boolean := false
 );
 port (
    clk_in       : in    std_logic;                     -- 50 MHz, F22
@@ -222,6 +224,7 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal amiga_mbox         : std_logic_vector(511 downto 0);   -- the core's result mailbox
    signal amiga_pf_stats     : std_logic_vector(671 downto 0);   -- the cache's prefetch counters
    signal amiga_fast_dbg     : std_logic_vector(287 downto 0);   -- fast RAM path debug + memory mode (stage 3)
+   signal amiga_fccen        : std_logic_vector(95 downto 0);    -- a1200-fc8: the census word (G_FCCEN)
    signal amiga_audio_clk    : std_logic;   -- the core's audio clock (its ungated source clock)
    signal hd_sck_c, hd_mosi_c, hd_cs_n_c : std_logic;
    signal hd_miso_s, hd_miso_oe, hd_att_s, hd_en : std_logic;
@@ -378,11 +381,11 @@ begin
 
    -- line latency meter on the line port (stall monitor page 7, lat_meter.vhd)
    i_lat_meter : entity work.lat_meter
-      generic map (G_FULL => G_LATMETER)
+      generic map (G_FULL => G_LATMETER, G_CEN => G_FCCEN)
       port map (
          clk => mig_ui_clk, rst => mem_not_ready, cfg_i => rk_vid_sel,
          page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats,
-         dbg2_i => amiga_fast_dbg,
+         dbg2_i => amiga_fast_dbg, cen_i => amiga_fccen,
          lp_req => lm_req, lp_we => lm_we, lp_addr => lm_addr, lp_wdata => lm_wdata,
          lp_busy => lm_busy, lp_done => lm_done
       );
