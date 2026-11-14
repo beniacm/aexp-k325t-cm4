@@ -267,6 +267,9 @@ port (
    -- (68000 vectors 48-63, unused): test programs leave their result block there, so that a board
    -- without a picture can read it (stall controller page 7, lat_meter.vhd); word i = bits 16i+15..16i
    k325t_mbox_o            : out std_logic_vector(511 downto 0);
+   -- K325T a1200-audrec: the audio flight recorder's readout word (main clock, quasi-static; lat_meter rec_i,
+   -- addressed with the stall configuration byte k325t_stall_cfg_i, see K325T/aud_rec.v)
+   k325t_rec_o             : out std_logic_vector(95 downto 0);
    -- K325T stage 2b: prefetch counters of the cache (7 classes x issued, useful, wasted)
    k325t_pf_stats_o        : out std_logic_vector(671 downto 0);
    -- K325T stage 3 experiment: fast RAM path debug (amiga_fastram + the hr_core select), any clock
@@ -980,6 +983,8 @@ begin
          ide_read_i           => main_ide_read,
          ide_readdata_o       => main_ide_readdata,
          ide_reset_o          => main_ide_reset,
+         rec_cfg_i            => k325t_stall_cfg_i,
+         rec_out_o            => k325t_rec_o,
 
          -- MEGA65 joysticks and paddles/mouse/potentiometers
          joy_1_up_n_i         => main_joy_1_up_n_i ,

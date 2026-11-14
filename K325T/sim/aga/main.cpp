@@ -330,6 +330,10 @@ int main(int argc, char** argv) {
   const char* hreq_fn = nullptr; const char* hrsp_fn = nullptr;
   const char* preload_fn = nullptr; uint32_t preload_addr = 0;
   const char* dump_fn = nullptr; uint32_t dump_addr = 0, dump_len = 0;
+  // a1200-audrec: --recdump FILE (the flight recorder read out through its configuration byte at the end, as
+  // the board tool does), --recforce FRAME (force a trigger), --recarm FRAME (re-arm), --recmode FRAME:M,
+  // --recstop (end the run at the first frame end where the recorder has frozen)
+  const char* rec_fn = nullptr; int rec_force = -1, rec_arm = -1, rec_mframe = -1, rec_mode = 3; bool rec_stop = false;
   int64_t stop_addr = -1; uint32_t stop_val = 0;
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
   const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
@@ -378,6 +382,11 @@ int main(int argc, char** argv) {
     else if (a == "--lat") { lat_min = atoi(nx()); lat_span = atoi(nx()); }
     else if (a == "--preload") { preload_fn = nx(); preload_addr = strtoul(nx(), 0, 0); }
     else if (a == "--dump") { dump_addr = strtoul(nx(), 0, 0); dump_len = strtoul(nx(), 0, 0); dump_fn = nx(); }
+    else if (a == "--recdump") rec_fn = nx();
+    else if (a == "--recforce") rec_force = atoi(nx());
+    else if (a == "--recarm") rec_arm = atoi(nx());
+    else if (a == "--recmode") { const char* m = nx(); rec_mframe = atoi(m); rec_mode = strchr(m, ':') ? strtol(strchr(m, ':') + 1, 0, 0) : 3; }
+    else if (a == "--recstop") rec_stop = true;
     else if (a == "--stop") { stop_addr = strtoll(nx(), 0, 0); stop_val = strtoul(nx(), 0, 0); }
     else if (a == "--cputrace") { cput_fn = nx(); cput_from = atoi(nx()); cput_to = atoi(nx()); }
     else if (a == "--adf") adf_fn = nx();
@@ -573,6 +582,25 @@ int main(int argc, char** argv) {
   int rst_kind = !rs ? 0 : strstr(rs, "kbd") ? 1 : strstr(rs, "cpu") ? 2 : 0;
   uint64_t kbd_until = 0;
   top->kbd_rst = 0; top->cpu_rst = 0;
+  // a1200-audrec: the recorder's configuration byte as the bridge writes it (1rrrvvvv), each value held long
+  // enough for its 16-clock stability filter; readout word = rec_out
+  top->rec_cfg = 0;
+  auto rec_reg = [&](int rg, int v) { top->rec_cfg = 0x80 | rg << 4 | (v & 15); for (int k = 0; k < 40; k++) machine_edge(); };
+  int rec_r3 = -1, rec_r4 = -1, rec_r5 = -1;
+  auto rec_word = [&](int r4, int r5, int r3, uint32_t* w) {
+    // r4 changes last when going into $Cx (r5 / r3 first, while r4 is in the entry space): no stray command
+    if (rec_r4 != 8 && (r5 != rec_r5 || r3 != rec_r3)) { rec_reg(4, 8); rec_r4 = 8; }
+    if (r5 != rec_r5) { rec_reg(5, r5); rec_r5 = r5; }
+    if (r3 != rec_r3) { rec_reg(3, r3); rec_r3 = r3; }
+    if (r4 != rec_r4) { rec_reg(4, r4); rec_r4 = r4; }
+    for (int k = 0; k < 8; k++) machine_edge();
+    w[0] = top->rec_out[2]; w[1] = top->rec_out[1]; w[2] = top->rec_out[0];   // W0 = bits 95..64
+  };
+  auto rec_cmd = [&](int r5, int r3) {           // $Cr5 with r3: arm / force / mode
+    uint32_t w[3];
+    rec_word(8, r5, r3, w); rec_word(12, r5, r3, w); rec_word(8, r5, 0, w);
+  };
+  auto rec_page7 = [&]() { rec_reg(6, 7); };
   auto hex_line = [&](const std::vector<uint8_t>& b) {
     std::string o; o.reserve(b.size() * 2 + 1);
     static const char* H = "0123456789ABCDEF";
@@ -764,6 +792,13 @@ int main(int argc, char** argv) {
           fclose(f);
           fprintf(stderr, "saved state at frame %u\n", g_frame);
         }
+        if ((int)g_frame == rec_mframe) { rec_page7(); rec_cmd(14, rec_mode); fprintf(stderr, "recorder: mode %d at frame %u\n", rec_mode, g_frame); }
+        if ((int)g_frame == rec_arm) { rec_page7(); rec_cmd(15, 10); fprintf(stderr, "recorder: armed at frame %u\n", g_frame); }
+        if ((int)g_frame == rec_force) { rec_page7(); rec_cmd(15, 12); fprintf(stderr, "recorder: forced trigger at frame %u\n", g_frame); }
+        if (rec_stop) {
+          uint32_t w[3]; rec_page7(); rec_word(12, 0, 0, w);
+          if (w[0] >> 20 == 0xA19 && (w[0] >> 14 & 1)) { fprintf(stderr, "recorder frozen at frame %u\n", g_frame); break; }
+        }
         if ((int)g_frame == inj_frame && !prog.empty()) {
           uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];
           for (size_t i = 0; i < prog.size(); i += 2)
@@ -812,6 +847,20 @@ int main(int argc, char** argv) {
     }
   }
   if (cput) fclose(cput);
+  if (rec_fn) {
+    // the whole readout: status / snapshot words $C0-$CB (r3 0 and 1), then the 1,024 ring entries
+    FILE* f = fopen(rec_fn, "w");
+    uint32_t w[3];
+    rec_page7();
+    for (int k = 0; k < 12; k++)
+      for (int j = 0; j < 2; j++) { rec_word(12, k, j, w); fprintf(f, "S %x %d %08x %08x %08x\n", k, j, w[0], w[1], w[2]); }
+    for (int a = 0; a < 1024; a++) {
+      rec_word(8 + ((a >> 4) & 3), a & 15, a >> 6, w);
+      fprintf(f, "E %d %08x %08x %08x\n", a, w[0], w[1], w[2]);
+    }
+    fclose(f);
+    fprintf(stderr, "recorder: dump written to %s\n", rec_fn);
+  }
   if (dump_fn) {
     uint16_t* cm = (uint16_t*)&r->tb_top->chipmem[0];
     FILE* f = fopen(dump_fn, "wb");

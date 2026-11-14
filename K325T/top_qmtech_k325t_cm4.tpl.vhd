@@ -220,6 +220,7 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal ad_rbc             : std_logic_vector(7 downto 0) := (others => '0');
    signal ad_dbg             : std_logic_vector(191 downto 0);
    signal amiga_mbox         : std_logic_vector(511 downto 0);   -- the core's result mailbox
+   signal amiga_rec          : std_logic_vector(95 downto 0);    -- a1200-audrec: the audio flight recorder's word
    signal amiga_pf_stats     : std_logic_vector(671 downto 0);   -- the cache's prefetch counters
    signal amiga_fast_dbg     : std_logic_vector(287 downto 0);   -- fast RAM path debug + memory mode (stage 3)
    signal amiga_audio_clk    : std_logic;   -- the core's audio clock (its ungated source clock)
@@ -378,10 +379,10 @@ begin
 
    -- line latency meter on the line port (stall monitor page 7, lat_meter.vhd)
    i_lat_meter : entity work.lat_meter
-      generic map (G_FULL => G_LATMETER)
+      generic map (G_FULL => G_LATMETER, G_REC => true)
       port map (
          clk => mig_ui_clk, rst => mem_not_ready, cfg_i => rk_vid_sel,
-         page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats,
+         page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats, rec_i => amiga_rec,
          dbg2_i => amiga_fast_dbg,
          lp_req => lm_req, lp_we => lm_we, lp_addr => lm_addr, lp_wdata => lm_wdata,
          lp_busy => lm_busy, lp_done => lm_done

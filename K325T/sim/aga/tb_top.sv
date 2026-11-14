@@ -54,6 +54,8 @@ module tb_top (
   input  wire        ide_on,
   input  wire        kbd_rst,          // a1200-ide tests: with rst_ext, a reset hdd_spi does not see (the board's
                                         // keyboard reset: amiga_rst only, not main_reset_core/m2m)
+  input  wire [7:0]  rec_cfg,          // a1200-audrec: the bridge configuration byte (aud_rec.v readout)
+  output wire [95:0] rec_out,          // ... and the readout word
   input  wire        cpu_rst,          // a1200-ide tests: the 68k RESET instruction line (minimig _cpu_reset_in)
   input  wire        hd_sck, hd_mosi, hd_cs_n,
   output wire        hd_miso, hd_miso_oe, hd_att,
@@ -623,7 +625,8 @@ module tb_top (
     .toccata_ena(1'b0), .toccata_base(8'h00), .toccata_aud_left(), .toccata_aud_right(),
     .cpucfg(mm_cpucfg), .cachecfg(), .memcfg(), .bootrom(), .ide_ena(),
     .ide_fast(), .ide_ext_irq(1'b0), .ide_req(ide_req6), .ide_address({1'b0, ide_address}),
-    .ide_write(ide_write), .ide_writedata(ide_writedata), .ide_read(ide_read), .ide_readdata(ide_readdata)
+    .ide_write(ide_write), .ide_writedata(ide_writedata), .ide_read(ide_read), .ide_readdata(ide_readdata),
+    .rec_cfg(rec_cfg), .rec_out(rec_out)
   );
 
   // a1200-ide: the hard disk link (fclk = ui_clk with --cache, else the machine clock)

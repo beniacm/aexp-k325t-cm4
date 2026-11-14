@@ -1,0 +1,193 @@
+K325T a1200-audrec: the audio flight recorder (K325T/aud_rec.v), debug
+paula_audio_channel.v exports the channel's state (state, output byte, DMA enable, interrupt pending, the AMR
+silence flags, DMA request, period / length counters, AUDxPER/LEN/VOL, data buffer, AUDxDAT) as dbg; paula_audio.v
+and paula.v pass the four channels out as aud_dbg; minimig.v instantiates aud_rec on the register bus, the CPU's
+custom / CIA-B strobes, IPL, the mix and aud_dbg, with the bridge configuration byte in (rec_cfg) and the readout
+word out (rec_out); minimig_m65.v passes both.  Nothing drives back into the machine.
+--- a/rtl/paula_audio_channel.v
++++ b/rtl/paula_audio_channel.v
+@@ -18,7 +18,8 @@
+   input  intpen,          //interrupt pending input
+   output  reg dmareq,        //dma request
+   output  reg dmas,        //dma special (restart)
+-  input  strhor          //horizontal strobe
++  input  strhor,          //horizontal strobe
++  output [127:0] dbg       // K325T a1200-audrec: state for the audio flight recorder (aud_rec.v)
+ );
+ 
+ //register names and addresses
+@@ -471,5 +472,9 @@
+ end
+ 
+ 
++// K325T a1200-audrec (2026-11-14): the channel's state for the audio flight recorder (K325T/aud_rec.v)
++assign dbg = {5'd0, penhi, auddat, datbuf, audvol, audlen, audper, lencnt, percnt, intreq2, dmas, dmareq,
++              AUDxDAT, silence_d, silence, intpen, dmaena, sample, audio_state};
++
+ endmodule
+ 
+--- a/rtl/paula_audio.v
++++ b/rtl/paula_audio.v
+@@ -123,7 +123,8 @@
+   output wire [ 15-1:0] ldata,          // left DAC data
+   output wire [ 15-1:0] rdata,          // right DAC data
+   output wire [  9-1:0] ldata_okk,      // left DAC data  (PWM volume)
+-  output wire [  9-1:0] rdata_okk       // right DAC data (PWM volume)
++  output wire [  9-1:0] rdata_okk,      // right DAC data (PWM volume)
++  output wire [511:0]   aud_dbg         // K325T a1200-audrec: channels 3..0 for the flight recorder
+ );
+ 
+ 
+@@ -197,7 +198,8 @@
+   .intpen(audpen[0]),
+   .dmareq(dmareq[0]),
+   .dmas(dmaspc[0]),
+-  .strhor(strhor)
++  .strhor(strhor),
++  .dbg(aud_dbg[128*0+127:128*0])
+ );
+ 
+ //instantiate audio channel 1
+@@ -218,7 +220,8 @@
+   .intpen(audpen[1]),
+   .dmareq(dmareq[1]),
+   .dmas(dmaspc[1]),
+-  .strhor(strhor)
++  .strhor(strhor),
++  .dbg(aud_dbg[128*1+127:128*1])
+ );
+ 
+ //instantiate audio channel 2
+@@ -239,7 +242,8 @@
+   .intpen(audpen[2]),
+   .dmareq(dmareq[2]),
+   .dmas(dmaspc[2]),
+-  .strhor(strhor)
++  .strhor(strhor),
++  .dbg(aud_dbg[128*2+127:128*2])
+ );
+ 
+ //instantiate audio channel 3
+@@ -260,7 +264,8 @@
+   .intpen(audpen[3]),
+   .dmareq(dmareq[3]),
+   .dmas(dmaspc[3]),
+-  .strhor(strhor)
++  .strhor(strhor),
++  .dbg(aud_dbg[128*3+127:128*3])
+ );
+ 
+ // okk mixer
+--- a/rtl/paula.v
++++ b/rtl/paula.v
+@@ -112,7 +112,9 @@
+ 	output  [7:0] trackdisp,
+ 	output [13:0] secdisp,
+ 	output        floppy_fwr,
+-	output        floppy_frd
++	output        floppy_frd,
++	// K325T a1200-audrec: the audio channels' state for the flight recorder (aud_rec.v)
++	output [511:0] aud_dbg
+ );
+ //--------------------------------------------------------------------------------------
+ 
+@@ -295,7 +297,8 @@
+ 	.ldata(ldata),
+ 	.rdata(rdata),	
+ 	.ldata_okk(ldata_okk),
+-	.rdata_okk(rdata_okk)	
++	.rdata_okk(rdata_okk),
++	.aud_dbg(aud_dbg)
+ );
+ 
+ 
+--- a/rtl/minimig.v
++++ b/rtl/minimig.v
+@@ -272,7 +272,12 @@
+ 	input         ide_write,
+ 	input  [15:0] ide_writedata,
+ 	input         ide_read,
+-	output [15:0] ide_readdata
++	output [15:0] ide_readdata,
++
++	// K325T a1200-audrec: the audio flight recorder (K325T/aud_rec.v): bridge configuration byte in,
++	// readout word out (observes only, drives nothing in the machine)
++	input   [7:0] rec_cfg,
++	output [95:0] rec_out
+ );
+ 
+ 
+@@ -282,6 +287,7 @@
+ wire [15:0] ram_data_in;		//ram data bus in
+ wire [15:0] ram_data_out;	   //ram data bus out
+ wire [15:0] custom_data_in;	//custom chips data bus in
++wire [511:0] aud_dbg;		// K325T a1200-audrec: Paula's audio channel state (flight recorder)
+ wire [15:0] custom_data_out;	//custom chips data bus out
+ wire [15:0] agnus_data_out;	//agnus data out
+ wire [15:0] paula_data_out;	//paula data bus out
+@@ -528,10 +534,38 @@
+ 	.rdata(rdata),
+ 	.ldata_okk(ldata_okk),
+ 	.rdata_okk(rdata_okk),
++	.aud_dbg(aud_dbg),
+ 
+ 	.floppy_drives(floppy_config[3:2])
+ );
+ 
++// K325T a1200-audrec (2026-11-14): the audio flight recorder -- watches the register bus, the CPU's
++// custom / CIA-B accesses, IPL, the mix and Paula's channel state; drives nothing back
++aud_rec i_aud_rec
++(
++	.clk(clk),
++	.clk7_en(clk7_en),
++	.cck(cck),
++	.reset(reset),
++	.reg_address(reg_address),
++	.data(custom_data_in),
++	.cpu_custom(cpu_custom),
++	.dbr(dbr),
++	.cpu_rd(cpu_rd),
++	.cpu_wr(cpu_hwr | cpu_lwr),
++	.dma_address(dma_address_out),
++	.sel_cia_b(sel_cia_b),
++	.cia_rs(cpu_address_out[11:8]),
++	.cia_wdata(cpu_data_out[15:8]),
++	.cia_rdata(cia_data_out[15:8]),
++	.ipl_n(_cpu_ipl),
++	.ldata(ldata),
++	.rdata(rdata),
++	.aud_dbg(aud_dbg),
++	.cfg(rec_cfg),
++	.rec_out(rec_out)
++);
++
+ wire [2:0] cachecfg_pre;
+ //instantiate user IO
+ userio USERIO1 
+--- a/rtl/minimig_m65.v
++++ b/rtl/minimig_m65.v
+@@ -121,7 +121,11 @@
+ 
+ 	// audio (Paula, 15-bit signed)
+ 	output [14:0] ldata,
+-	output [14:0] rdata
++	output [14:0] rdata,
++
++	// K325T a1200-audrec: the audio flight recorder (configuration byte in, readout word out)
++	input   [7:0] rec_cfg,
++	output [95:0] rec_out
+ );
+ 
+ // minimig's ram_address[23] is driven constant 0 (AExp sweep change); consume it here
+@@ -260,7 +264,10 @@
+ 	.ide_write     (ide_write    ),
+ 	.ide_writedata (ide_writedata),
+ 	.ide_read      (ide_read     ),
+-	.ide_readdata  (ide_readdata )
++	.ide_readdata  (ide_readdata ),
++
++	.rec_cfg       (rec_cfg      ),
++	.rec_out       (rec_out      )
+ );
+ 
+ wire [5:0] ide_req_w;

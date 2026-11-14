@@ -182,6 +182,10 @@ entity main is
       -- with a one-clock strobe at its start, so hdd_spi must see the whole reset to keep the host from
       -- clearing the reset request (mgmt status write) before it has read it
       ide_reset_o             : out std_logic;
+      -- K325T a1200-audrec: the audio flight recorder in minimig (K325T/aud_rec.v): the bridge configuration
+      -- byte (asynchronous) and the readout word (main clock, quasi-static; lat_meter rec_i)
+      rec_cfg_i               : in  std_logic_vector(7 downto 0) := x"00";
+      rec_out_o               : out std_logic_vector(95 downto 0);
 
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
@@ -309,7 +313,10 @@ architecture synthesis of main is
          field1         : out std_logic;
 
          ldata          : out std_logic_vector(14 downto 0);
-         rdata          : out std_logic_vector(14 downto 0)
+         rdata          : out std_logic_vector(14 downto 0);
+
+         rec_cfg        : in  std_logic_vector(7 downto 0);
+         rec_out        : out std_logic_vector(95 downto 0)
       );
    end component minimig_m65;
 
@@ -1139,7 +1146,10 @@ begin
                                                  -- (as MiSTer: assign VGA_F1 = field1)
 
          ldata          => aud_ldata,
-         rdata          => aud_rdata
+         rdata          => aud_rdata,
+
+         rec_cfg        => rec_cfg_i,
+         rec_out        => rec_out_o
       ); -- i_minimig
 
    ---------------------------------------------------------------------------
