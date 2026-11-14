@@ -83,7 +83,8 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # BRAMSIM=1: the stock instance's data array as the block RAM of G_DRAM_STYLE "block" (read-during-write -> wrong data)
 [ -n "${BRAMSIM:-}" ] && /usr/bin/python3 "$here/bramsim.py" "$OUT/amiga_fastram.v"
 # a1200-fastclk: the fast 68020's amiga_fastram with a 256-byte cache (G_IDX_BITS = 7) as module amiga_fastram_small
-(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -gg_idx_bits=7 --out=verilog "$root/K325T/amiga_fastram.vhd" \
+# (fc8: G_LONGW = true, as mega65.vhd's i_fc_fastram)
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -gg_idx_bits=7 -gg_longw=true --out=verilog "$root/K325T/amiga_fastram.vhd" \
     -e amiga_fastram 2> ghdl_fastram_s.log | sed 's/\bamiga_fastram\b/amiga_fastram_small/' > amiga_fastram_small.v) \
     || { cat "$OUT/ghdl_fastram_s.log" >&2; exit 1; }
 # a1200-ide: the hard disk SPI slave + engine -> Verilog
@@ -107,7 +108,7 @@ SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/u
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
  $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/amiga_fastram_small.v $OUT/fc_cpu.v $OUT/fc_mbox.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v ${EXTRA:-}"
 cd "$OUT"
-nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
+nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 ${VFLAGS:-} --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \
   -Wno-TIMESCALEMOD -Wno-PINMISSING -Wno-IMPLICIT -Wno-SELRANGE -Wno-LATCH -Wno-BLKANDNBLK \
   --no-timing --no-assert-case --x-assign 0 --x-initial 0 -I$R -I$R/fx68k \

@@ -422,6 +422,8 @@ signal hr_fc_q                : unsigned(4 downto 0) := (others => '0');
 signal fc_fr_sel, fc_fr_we, fc_fr_uds_n, fc_fr_lds_n, fc_fr_ready : std_logic;
 signal fc_fr_addr             : std_logic_vector(26 downto 0);
 signal fc_fr_wdata, fc_fr_rdata : std_logic_vector(15 downto 0);
+signal fc_fr_long             : std_logic;                       -- fc8 b4
+signal fc_fr_wdata2           : std_logic_vector(15 downto 0);
 signal hr_fs_write, hr_fs_read, hr_ff_write, hr_ff_read : std_logic;
 signal hr_fs_address, hr_ff_address : std_logic_vector(31 downto 0);
 signal hr_fs_writedata, hr_ff_writedata : std_logic_vector(15 downto 0);
@@ -970,6 +972,8 @@ begin
          fcr_uds_n_o          => fc_fr_uds_n,
          fcr_lds_n_o          => fc_fr_lds_n,
          fcr_wdata_o          => fc_fr_wdata,
+         fcr_long_o           => fc_fr_long,
+         fcr_wdata2_o         => fc_fr_wdata2,
          fcr_rdata_i          => fc_fr_rdata,
          fcr_ready_i          => fc_fr_ready,
          ide_i                => main_ide,
@@ -1576,7 +1580,8 @@ begin
    -- K325T a1200-fastclk: the fast 68020's own amiga_fastram (core side in its clock; read hits in 2
    -- clocks, the 8-entry write queue of a1200-fastcpu F2), the same DDR3 windows as the stock one
    i_fc_fastram : entity work.amiga_fastram
-      generic map (G_IDX_BITS => 7)   -- 256 bytes: fc_cpu has its own I/D caches
+      generic map (G_IDX_BITS => 7,   -- 256 bytes: fc_cpu has its own I/D caches
+                   G_LONGW    => true) -- fc8 b4: fc_cpu's long stores as one access, a 2-beat burst
       port map (
          clk_i               => main_cpu_clk,
          sel_i               => fc_fr_sel,
@@ -1588,6 +1593,8 @@ begin
          uds_n_i             => fc_fr_uds_n,
          lds_n_i             => fc_fr_lds_n,
          wdata_i             => fc_fr_wdata,
+         long_i              => fc_fr_long,
+         wdata2_i            => fc_fr_wdata2,
          rdata_o             => fc_fr_rdata,
          ready_o             => fc_fr_ready,
          rst_i               => '0',               -- accepted accesses always complete (fc_cpu)

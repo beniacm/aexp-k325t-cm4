@@ -48,6 +48,11 @@ entity fc_cpu is
       cfg_z3b1_i     : in  std_logic_vector(3 downto 0);
       cfg_chipcode_i : in  std_logic;                       -- 1 = cache instructions from chip RAM
       cfg_a24_i      : in  std_logic := '0';                -- 1 = 24-bit address bus (68EC020: cpu_wrapper's ec020)
+      -- fc8: speed options (quasi-static, synchronised here; all '0' = fc7 clock for clock): b0 the next I line read
+      -- ahead on the I array's second port, b1 three more I line buffers (the lines used before the current one),
+      -- b2 the next D line read ahead (the D array's write port reads while it does not write), b3 three more D line buffers,
+      -- b4 a queued long fast-RAM store as one access of the fast RAM port (fr_long_o; amiga_fastram G_LONGW)
+      opt_i          : in  std_logic_vector(7 downto 0) := (others => '0');
       ipl_i          : in  std_logic_vector(2 downto 0);    -- machine clock, active low as TG68K's IPL
       -- mailbox to the machine clock
       mb_req_o       : out std_logic;                       -- toggles once per request
@@ -67,6 +72,8 @@ entity fc_cpu is
       fr_uds_n_o     : out std_logic;
       fr_lds_n_o     : out std_logic;
       fr_wdata_o     : out std_logic_vector(15 downto 0);
+      fr_long_o      : out std_logic;                       -- fc8 b4: an aligned long write in one access (fr_wdata_o
+      fr_wdata2_o    : out std_logic_vector(15 downto 0);   -- = the high word at the address, this = the low word)
       fr_rdata_i     : in  std_logic_vector(15 downto 0);
       fr_ready_i     : in  std_logic;
       -- status
@@ -114,6 +121,8 @@ architecture rtl of fc_cpu is
    signal nmi_a      : std_logic_vector(31 downto 2) := (others => '1');
    signal nmi_m      : std_logic_vector(31 downto 2);
    signal cacr_e     : std_logic := '0';
+   signal opt_s1, opt_s2 : std_logic_vector(7 downto 0) := (others => '0');
+   signal o_inext, o_ilb2, o_dnext, o_dlb2, o_flong : std_logic;
 
    -- request decode
    signal req, rd, wr, fe : std_logic;
@@ -141,6 +150,40 @@ architecture rtl of fc_cpu is
    signal i_dq   : std_logic_vector(127 downto 0);
    signal i_tq   : std_logic_vector(17 downto 0);
    signal i_vq   : std_logic;
+   -- fc8 b0: the I array's second port reads the line after the line buffer's (nb_t) every clock
+   signal i_aidx, i_nidx : unsigned(9 downto 0);
+   signal i_dq2  : std_logic_vector(127 downto 0);
+   signal i_tq2  : std_logic_vector(17 downto 0);
+   signal i_vq2  : std_logic := '0';
+   signal nb_t   : std_logic_vector(31 downto 4) := (others => '0');
+   signal nb_ok  : std_logic := '0';                          -- no array change at the edge it was read
+   signal nb_good, nb_hit : std_logic;
+   -- fc8 b1: three more I line buffers, most recently used first (1 = the line used before the current one)
+   constant XN   : integer := 3;
+   type xt_t is array (1 to XN) of std_logic_vector(31 downto 4);
+   type xd_t is array (1 to XN) of std_logic_vector(127 downto 0);
+   signal ilbx_v : std_logic_vector(1 to XN) := (others => '0');
+   signal ilbx_t : xt_t := (others => (others => '0'));
+   signal ilbx_d : xd_t := (others => (others => '0'));
+   signal ilbx_m : std_logic_vector(1 to XN);              -- the bus address is in that buffer's line
+   signal ilb2_hit : std_logic;                              -- any of them (b1 on)
+   signal ilb2_d : std_logic_vector(127 downto 0);           -- the line of the one that hits
+   -- fc8 b2: the D array's port B (fills, store updates) reads the line after the D line buffer's while it does not write
+   signal d_baddr, d_nidx : unsigned(8 downto 0);
+   signal d_bw    : std_logic;                                -- port B writes at this edge
+   signal d_dq2   : std_logic_vector(127 downto 0);
+   signal d_tq2   : std_logic_vector(18 downto 0);
+   signal d_vq2   : std_logic := '0';
+   signal nbd_t   : std_logic_vector(31 downto 4) := (others => '0');
+   signal nbd_ok  : std_logic := '0';
+   signal nbd_good, nbd_hit : std_logic;
+   -- fc8 b3: three more D line buffers (most recently used first); a store into one of them invalidates it
+   signal dlbx_v  : std_logic_vector(1 to XN) := (others => '0');
+   signal dlbx_t  : xt_t := (others => (others => '0'));
+   signal dlbx_d  : xd_t := (others => (others => '0'));
+   signal dlbx_m  : std_logic_vector(1 to XN);
+   signal dlb2_hit : std_logic;
+   signal dlb2_d  : std_logic_vector(127 downto 0);
    signal d_dq   : std_logic_vector(127 downto 0);
    signal d_tq   : std_logic_vector(18 downto 0);
    signal d_vq   : std_logic;
@@ -202,6 +245,9 @@ architecture rtl of fc_cpu is
    signal fr_sel, fr_we, fr_uds_n, fr_lds_n : std_logic := '0';
    signal fr_addr : std_logic_vector(31 downto 0);
    signal fr_wd  : std_logic_vector(15 downto 0);
+   signal fr_long : std_logic := '0';                         -- fc8 b4
+   signal fr_wd2 : std_logic_vector(15 downto 0) := (others => '0');
+   signal dr_long : std_logic := '0';                         -- the entry being drained goes as one long access
    signal mb_t   : std_logic := '0';
    signal mb_open: std_logic := '0';
    signal mb_a   : std_logic_vector(31 downto 0);
@@ -246,6 +292,7 @@ begin
          if ipl_s2 = ipl_s3 then ipl_k <= ipl_s3; end if;      -- the 3 bits may change one by one
          cfg_s1 <= cfg_a24_i & cfg_chipcode_i & cfg_z3b1_i & cfg_z3b0_i & cfg_z3e1_i & cfg_z3e0_i & cfg_z2_i;
          cfg_s2 <= cfg_s1;
+         opt_s1 <= opt_i; opt_s2 <= opt_s1;
          nmi_a  <= std_logic_vector(unsigned(k_vbr(31 downto 2)) + 31);   -- vbr + $7C
          if rst = '1' then
             cacr_e <= '0';
@@ -255,6 +302,7 @@ begin
       end if;
    end process;
    z2 <= cfg_s2(0); z3e0 <= cfg_s2(1); z3e1 <= cfg_s2(2);
+   o_inext <= opt_s2(0); o_ilb2 <= opt_s2(1); o_dnext <= opt_s2(2); o_dlb2 <= opt_s2(3); o_flong <= opt_s2(4);
    z3b0 <= cfg_s2(7 downto 3); z3b1 <= cfg_s2(11 downto 8); chipcode <= cfg_s2(12); a24 <= cfg_s2(13);
 
    ---------------------------------------------------------------------------------------------------
@@ -306,6 +354,39 @@ begin
    dlb_hit <= '1' when dlb_v = '1' and dlb_t = k_addr(31 downto 4) else '0';
    i_hit   <= '1' when pend_q = '1' and coll_i = '0' and i_vq = '1' and i_tq = k_addr(31 downto 14) else '0';
    d_hit   <= '1' when pend_q = '1' and coll_d = '0' and d_vq = '1' and d_tq = k_addr(31 downto 13) else '0';
+   -- fc8 b0: the line after the line buffer's, read ahead (not right after a store: its after-check may clear it)
+   nb_good <= '1' when o_inext = '1' and nb_ok = '1' and st_v = '0' and i_vq2 = '1' and i_tq2 = nb_t(31 downto 14) else '0';
+   nb_hit  <= '1' when nb_good = '1' and nb_t = k_addr(31 downto 4) else '0';
+   -- fc8 b1: the line buffers of the lines used before
+   g_x : for k in 1 to XN generate
+      ilbx_m(k) <= '1' when ilbx_v(k) = '1' and ilbx_t(k) = k_addr(31 downto 4) else '0';
+   end generate;
+   ilb2_hit <= o_ilb2 when ilbx_m /= (1 to XN => '0') else '0';
+   -- fc8 b2 / b3: the same for the D side
+   nbd_good <= '1' when o_dnext = '1' and nbd_ok = '1' and st_v = '0' and d_vq2 = '1' and d_tq2 = nbd_t(31 downto 13) else '0';
+   nbd_hit  <= '1' when nbd_good = '1' and nbd_t = k_addr(31 downto 4) else '0';
+   g_dx : for k in 1 to XN generate
+      dlbx_m(k) <= '1' when dlbx_v(k) = '1' and dlbx_t(k) = k_addr(31 downto 4) else '0';
+   end generate;
+   dlb2_hit <= o_dlb2 when dlbx_m /= (1 to XN => '0') else '0';
+   process (dlbx_m, dlbx_d)
+      variable v : std_logic_vector(127 downto 0);
+   begin
+      v := (others => '0');
+      for k in 1 to XN loop
+         if dlbx_m(k) = '1' then v := v or dlbx_d(k); end if;
+      end loop;
+      dlb2_d <= v;
+   end process;
+   process (ilbx_m, ilbx_d)
+      variable v : std_logic_vector(127 downto 0);
+   begin
+      v := (others => '0');
+      for k in 1 to XN loop
+         if ilbx_m(k) = '1' then v := v or ilbx_d(k); end if;   -- at most one: a line is in one buffer only
+      end loop;
+      ilb2_d <= v;
+   end process;
 
    q_full  <= '1' when q_n >= 7 else '0';
    q_empty <= '1' when q_n = 0 and dr = D_IDLE else '0';
@@ -313,7 +394,8 @@ begin
 
    -- acknowledge and data (combinational: the clock enable of the whole kernel)
    process (st, req, use_i, use_d, rd, wr, fe, k_skip, ilb_hit, dlb_hit, i_hit, d_hit, q_full, k_lcand,
-            is_fast, is_chip, is_rom, ilb_d, dlb_d, i_dq, d_dq, k_addr, fill_b, mb_q, mb_long_r, hold_din, hold_dinhi, orph)
+            is_fast, is_chip, is_rom, ilb_d, dlb_d, i_dq, d_dq, k_addr, fill_b, mb_q, mb_long_r, hold_din, hold_dinhi, orph,
+            nb_hit, ilb2_hit, ilb2_d, i_dq2, nbd_hit, dlb2_hit, dlb2_d, d_dq2)
       variable line : std_logic_vector(127 downto 0);
       variable a3   : std_logic_vector(3 downto 1);
    begin
@@ -322,9 +404,13 @@ begin
       line    := dlb_d;
       if use_i = '1' then
          line := i_dq;
-         if ilb_hit = '1' then line := ilb_d; end if;
+         if ilb_hit = '1' then line := ilb_d;
+         elsif ilb2_hit = '1' then line := ilb2_d;
+         elsif nb_hit = '1' then line := i_dq2; end if;
       elsif dlb_hit = '0' then
          line := d_dq;
+         if dlb2_hit = '1' then line := dlb2_d;
+         elsif nbd_hit = '1' then line := d_dq2; end if;
       end if;
       if st = S_FILLD then line := fill_b; end if;
       a3 := k_addr(3 downto 1);
@@ -341,9 +427,9 @@ begin
          when S_RUN =>
             if req = '1' then
                if use_i = '1' then
-                  ack <= ilb_hit or i_hit;
+                  ack <= ilb_hit or i_hit or nb_hit or ilb2_hit;
                elsif use_d = '1' then
-                  ack <= dlb_hit or d_hit;
+                  ack <= dlb_hit or d_hit or nbd_hit or dlb2_hit;
                   k_lack <= k_lcand;
                elsif rd = '1' and k_skip = '1' then
                   ack <= '1';                                -- a discarded read: no bus cycle (as MiSTer)
@@ -386,29 +472,49 @@ begin
    ---------------------------------------------------------------------------------------------------
    -- arrays (read every clock with the current bus address)
    ---------------------------------------------------------------------------------------------------
+   -- fc8: port A reads at the bus address and writes the fills (at a fill's edge it reads the line being written:
+   -- that output is never used, coll_i is set); port B reads the line after the line buffer's (b0)
+   i_aidx <= i_widx when i_we = '1' else unsigned(k_addr(13 downto 4));
+   i_nidx <= unsigned(ilb_t(13 downto 4)) + 1;
    process (clk) begin
       if rising_edge(clk) then
-         i_dq <= i_data(to_integer(unsigned(k_addr(13 downto 4))));
-         i_tq <= i_tag(to_integer(unsigned(k_addr(13 downto 4))));
-         if i_we = '1' then
-            i_data(to_integer(i_widx)) <= fill_b;
-            i_tag(to_integer(i_widx))  <= i_wtag;
+         i_dq <= i_data(to_integer(i_aidx));
+         i_tq <= i_tag(to_integer(i_aidx));
+         if i_we = '1' then                                    -- (i_aidx = i_widx then: one address per port)
+            i_data(to_integer(i_aidx)) <= fill_b;
+            i_tag(to_integer(i_aidx))  <= i_wtag;
          end if;
       end if;
    end process;
+   process (clk) begin
+      if rising_edge(clk) then
+         i_dq2 <= i_data(to_integer(i_nidx));
+         i_tq2 <= i_tag(to_integer(i_nidx));
+      end if;
+   end process;
 
+   -- fc8: port A reads at the bus address; port B writes (fills, store updates) and reads the next line (b2) otherwise
+   d_bw    <= '1' when d_bwe /= x"0000" or d_tagwe = '1' else '0';
+   d_nidx  <= unsigned(dlb_t(12 downto 4)) + 1;
+   d_baddr <= d_widx when d_bw = '1' else d_nidx;
    process (clk) begin
       if rising_edge(clk) then
          d_dq <= d_data(to_integer(unsigned(k_addr(12 downto 4))));
          d_tq <= d_tag(to_integer(unsigned(k_addr(12 downto 4))));
+      end if;
+   end process;
+   process (clk) begin
+      if rising_edge(clk) then
          for b in 0 to 15 loop
             if d_bwe(b) = '1' then
-               d_data(to_integer(d_widx))(127 - 8 * b downto 120 - 8 * b) <= d_wd(127 - 8 * b downto 120 - 8 * b);
+               d_data(to_integer(d_baddr))(127 - 8 * b downto 120 - 8 * b) <= d_wd(127 - 8 * b downto 120 - 8 * b);
             end if;
          end loop;
          if d_tagwe = '1' then
-            d_tag(to_integer(d_widx)) <= d_wtag;
+            d_tag(to_integer(d_baddr)) <= d_wtag;
          end if;
+         d_dq2 <= d_data(to_integer(d_baddr));
+         d_tq2 <= d_tag(to_integer(d_baddr));
       end if;
    end process;
 
@@ -420,13 +526,25 @@ begin
       variable wd  : std_logic_vector(127 downto 0);
       variable i_clr_idx, d_clr_idx : integer;
       variable i_clr, d_clr : std_logic;
+      variable x_push, x_clr : std_logic;                    -- fc8 b1
+      variable xd_push, xd_clr : std_logic;                  -- fc8 b3
+      variable hk : integer range 0 to XN;
    begin
       if rising_edge(clk) then
          q_push  <= '0';
          i_clr := '0'; d_clr := '0';
+         x_push := '0'; x_clr := '0'; xd_push := '0'; xd_clr := '0';
          i_clr_idx := to_integer(unsigned(st_a(13 downto 4)));
          d_clr_idx := to_integer(unsigned(st_a(12 downto 4)));
          i_vq <= i_val(to_integer(unsigned(k_addr(13 downto 4))));
+         i_vq2 <= i_val(to_integer(i_nidx));                   -- fc8 b0
+         nb_t  <= std_logic_vector(unsigned(ilb_t) + 1);
+         nb_ok <= not i_we;                                    -- (cleared below with every valid-bit change)
+         if o_ilb2 = '0' then ilbx_v <= (others => '0'); end if;
+         d_vq2  <= d_val(to_integer(d_nidx));                 -- fc8 b2
+         nbd_t  <= std_logic_vector(unsigned(dlb_t) + 1);
+         nbd_ok <= not d_bw;                                   -- (cleared below with every D valid-bit change)
+         if o_dlb2 = '0' then dlbx_v <= (others => '0'); end if;
          d_vq <= d_val(to_integer(unsigned(k_addr(12 downto 4))));
          pend_q <= '0';
          coll_i <= '0';
@@ -466,9 +584,15 @@ begin
                if req = '1' and ack = '1' then
                   if use_i = '1' and ilb_hit = '0' then
                      ilb_v <= '1'; ilb_t <= k_addr(31 downto 4); ilb_d <= i_dq;
+                     if ilb2_hit = '1' then ilb_d <= ilb2_d;
+                     elsif nb_hit = '1' then ilb_d <= i_dq2; end if;
+                     if o_ilb2 = '1' then x_push := '1'; end if;   -- b1: the current line to the front
                   end if;
                   if use_d = '1' and dlb_hit = '0' then
                      dlb_v <= '1'; dlb_t <= k_addr(31 downto 4); dlb_d <= d_dq;
+                     if dlb2_hit = '1' then dlb_d <= dlb2_d;
+                     elsif nbd_hit = '1' then dlb_d <= d_dq2; end if;
+                     if o_dlb2 = '1' then xd_push := '1'; end if;
                   end if;
                end if;
                -- a store: queue it, update the D line buffer, check the arrays in the next clock
@@ -504,6 +628,10 @@ begin
                      end if;
                   end if;
                   if ilb_hit = '1' then ilb_v <= '0'; end if;
+                  for k in 1 to XN loop
+                     if ilbx_m(k) = '1' then ilbx_v(k) <= '0'; end if;
+                     if dlbx_m(k) = '1' then dlbx_v(k) <= '0'; end if;     -- b3: invalidated, not updated
+                  end loop;
                end if;
 
             when S_FILLQ =>
@@ -542,9 +670,11 @@ begin
                elsif fill_i = '1' then
                   i_val(to_integer(unsigned(fill_a(13 downto 4)))) <= '1';
                   ilb_v <= '1'; ilb_t <= fill_a; ilb_d <= fill_b;
+                  if o_ilb2 = '1' then x_push := '1'; end if;
                else
                   d_val(to_integer(unsigned(fill_a(12 downto 4)))) <= '1';
                   dlb_v <= '1'; dlb_t <= fill_a; dlb_d <= fill_b;
+                  if o_dlb2 = '1' then xd_push := '1'; end if;
                end if;
 
             when S_MBQ =>
@@ -574,16 +704,18 @@ begin
                orph <= '0';
          end case;
 
-         if i_clr = '1' then i_val(i_clr_idx) <= '0'; coll_i <= '1'; end if;
-         if d_clr = '1' then d_val(d_clr_idx) <= '0'; coll_d <= '1'; end if;
+         if i_clr = '1' then i_val(i_clr_idx) <= '0'; coll_i <= '1'; nb_ok <= '0'; end if;
+         if d_clr = '1' then d_val(d_clr_idx) <= '0'; coll_d <= '1'; nbd_ok <= '0'; end if;
          if rst = '1' or (k_cacrwr = '1' and (k_cacrx(3) = '1' or k_cacrx(2) = '1')) then
             i_val <= (others => '0');
-            ilb_v <= '0';
+            ilb_v <= '0'; nb_ok <= '0';
+            x_clr := '1';
             coll_i <= '1';                                   -- i_vq of the next clock was read before the clear
          end if;
          if rst = '1' then
             d_val <= (others => '0');
-            dlb_v <= '0';
+            dlb_v <= '0'; nbd_ok <= '0';
+            xd_clr := '1';
             pend_q <= '0';
             coll_d <= '1';
             -- an open fill or mailbox read completes (its port answers later, the mailbox possibly only after
@@ -598,6 +730,35 @@ begin
                st <= S_RUN;
             end if;
          end if;
+         -- fc8 b1: the line buffer's line goes to the front of the others (move to front: a buffer that hit gives its
+         -- line to the line buffer and is taken out; else the oldest is dropped)
+         if x_push = '1' and x_clr = '0' then
+            hk := 0;
+            for k in 1 to XN loop
+               if ilbx_m(k) = '1' and ilb2_hit = '1' and st = S_RUN then hk := k; end if;
+            end loop;
+            for k in XN downto 2 loop
+               if hk = 0 or k <= hk then
+                  ilbx_v(k) <= ilbx_v(k - 1); ilbx_t(k) <= ilbx_t(k - 1); ilbx_d(k) <= ilbx_d(k - 1);
+               end if;
+            end loop;
+            ilbx_v(1) <= ilb_v; ilbx_t(1) <= ilb_t; ilbx_d(1) <= ilb_d;
+         end if;
+         if x_clr = '1' then ilbx_v <= (others => '0'); end if;
+         -- fc8 b3: the same for the D line buffers
+         if xd_push = '1' and xd_clr = '0' then
+            hk := 0;
+            for k in 1 to XN loop
+               if dlbx_m(k) = '1' and dlb2_hit = '1' and st = S_RUN then hk := k; end if;
+            end loop;
+            for k in XN downto 2 loop
+               if hk = 0 or k <= hk then
+                  dlbx_v(k) <= dlbx_v(k - 1); dlbx_t(k) <= dlbx_t(k - 1); dlbx_d(k) <= dlbx_d(k - 1);
+               end if;
+            end loop;
+            dlbx_v(1) <= dlb_v; dlbx_t(1) <= dlb_t; dlbx_d(1) <= dlb_d;
+         end if;
+         if xd_clr = '1' then dlbx_v <= (others => '0'); end if;
       end if;
    end process;
 
@@ -640,6 +801,7 @@ begin
                elsif q_n /= 0 and q_pop = '0' and st /= S_FILL and st /= S_MB and mb_open = '0' then
                   if h_c(3) = '1' then
                      dr <= D_FR1;
+                     dr_long <= h_c(2) and o_flong;          -- b4 (latched with the access)
                      dr_fr_go <= '1';
                   else
                      dr <= D_MB;
@@ -649,7 +811,7 @@ begin
             when D_FR1 =>
                dr_fr_go <= '0';
                if fr_ready_i = '1' then
-                  if h_c(2) = '1' then dr <= D_FR2; dr_fr_go <= '1';
+                  if h_c(2) = '1' and dr_long = '0' then dr <= D_FR2; dr_fr_go <= '1';
                   else dr <= D_IDLE; q_pop <= '1'; end if;
                end if;
             when D_FR2 =>
@@ -678,11 +840,13 @@ begin
             fr_sel <= '1'; fr_we <= '1'; fr_addr <= h_a;
             fr_uds_n <= h_c(1) and not h_c(2); fr_lds_n <= h_c(0) and not h_c(2);
             if h_c(2) = '1' then fr_wd <= h_d(31 downto 16); else fr_wd <= h_d(15 downto 0); end if;
-         elsif dr = D_FR1 and fr_ready_i = '1' and h_c(2) = '1' then
+            fr_long <= h_c(2) and o_flong; fr_wd2 <= h_d(15 downto 0);   -- b4 (the same o_flong as dr_long)
+         elsif dr = D_FR1 and fr_ready_i = '1' and h_c(2) = '1' and dr_long = '0' then
+            fr_long <= '0';
             fr_sel <= '1'; fr_we <= '1'; fr_addr <= std_logic_vector(unsigned(h_a) + 2);
             fr_uds_n <= '0'; fr_lds_n <= '0'; fr_wd <= h_d(15 downto 0);
          elsif st = S_FILLQ and q_empty = '1' and mb_open = '0' and fill_mb = '0' then
-            fr_sel <= '1'; fr_we <= '0'; fr_addr <= fill_a & "0000"; fr_uds_n <= '0'; fr_lds_n <= '0';
+            fr_sel <= '1'; fr_we <= '0'; fr_addr <= fill_a & "0000"; fr_uds_n <= '0'; fr_lds_n <= '0'; fr_long <= '0';
          elsif st = S_FILL and fill_mb = '0' and fr_ready_i = '1' and fill_n /= 7 then
             fr_sel <= '1'; fr_we <= '0'; fr_addr <= fill_a & std_logic_vector(fill_n + 1) & '0';
          end if;
@@ -690,6 +854,7 @@ begin
    end process;
    fr_sel_o <= fr_sel; fr_we_o <= fr_we; fr_addr_o <= fr_addr;
    fr_uds_n_o <= fr_uds_n; fr_lds_n_o <= fr_lds_n; fr_wdata_o <= fr_wd;
+   fr_long_o <= fr_long; fr_wdata2_o <= fr_wd2;
 
    ---------------------------------------------------------------------------------------------------
    -- the mailbox (registered request fields, toggle handshake both ways)

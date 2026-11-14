@@ -30,6 +30,7 @@
 #include "Vtb_top_tb_top.h"
 #include "verilated.h"
 #include "verilated_save.h"
+#include "fc_census.h"   // a1200-fc8: --fcc FILE, --fcc-pc FILE
 #include "svdpi.h"
 #include <cstdio>
 #include <cstdlib>
@@ -197,6 +198,7 @@ static int b_wr(void*, uint64_t lba, unsigned n, const uint8_t* b) {
 }
 static uint8_t g_state[64]; static int g_state_len = 0;     // the server's in-flight record (survives restarts)
 static void b_persist(void*, const void* rec, int len) { memcpy(g_state, rec, len); g_state_len = len; }
+static FcCensus g_fcc;
 static int b_restore(void*, void* rec, int len) { if (g_state_len != len) return -1; memcpy(rec, g_state, len); return 0; }
 static void b_log(void*, const char* m) { fprintf(stderr, "hddsrv: %s (tick %llu)\n", m, (unsigned long long)g_tick); }
 static std::atomic<unsigned> g_frame_a{0};
@@ -330,6 +332,7 @@ int main(int argc, char** argv) {
   const char* hreq_fn = nullptr; const char* hrsp_fn = nullptr;
   const char* preload_fn = nullptr; uint32_t preload_addr = 0;
   const char* dump_fn = nullptr; uint32_t dump_addr = 0, dump_len = 0;
+  const char* dumpf_fn = nullptr;   // fc8: --dump-fast FILE: the 8 MB fast-RAM model (big-endian words) at the end
   int64_t stop_addr = -1; uint32_t stop_val = 0;
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
   const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
@@ -340,6 +343,7 @@ int main(int argc, char** argv) {
   unsigned pf_mask = 0;          // --pf MASK: the cache's prefetch enables (b0 bpl .. b6 cpu)
   unsigned cfg_fast = 0; int flat_min = 26, flat_span = 10, flat_wr = 2;   // a1200-fastcpu
   bool fastcpu = false, fr_quick = false, fastclk = false;
+  unsigned fc_opt = 0;   // fc8: fc_cpu opt_i
   FILE* fhash = nullptr; int save_every = 0;
   // a1200-fastclk fc6: --switch F:M[:C],... = at frame F (once condition C holds) the setting becomes M (s = stock,
   // f = fast 68020) and an M2M reset follows (rst_ext + m2m_rst, i.e. hr_rst too) for --switch-len ticks, as the
@@ -365,6 +369,9 @@ int main(int argc, char** argv) {
     else if (a == "--save") save_fn = nx();
     else if (a == "--save-frame") save_frame = atoi(nx());
     else if (a == "--restore") restore_fn = nx();
+    else if (a == "--fc-opt") fc_opt = strtoul(nx(), 0, 0);
+    else if (a == "--fcc") g_fcc.open(nx());
+    else if (a == "--fcc-pc") g_fcc.open_pc(nx());
     else if (a == "--cpu") cpu = strtoul(nx(), 0, 0);
     else if (a == "--shot-frames") { std::string l = nx(); size_t p = 0;
       while (p < l.size()) { size_t q = l.find(',', p); if (q == std::string::npos) q = l.size();
@@ -377,6 +384,7 @@ int main(int argc, char** argv) {
     else if (a == "--shrink") shrink = atoi(nx());
     else if (a == "--lat") { lat_min = atoi(nx()); lat_span = atoi(nx()); }
     else if (a == "--preload") { preload_fn = nx(); preload_addr = strtoul(nx(), 0, 0); }
+    else if (a == "--dump-fast") dumpf_fn = nx();
     else if (a == "--dump") { dump_addr = strtoul(nx(), 0, 0); dump_len = strtoul(nx(), 0, 0); dump_fn = nx(); }
     else if (a == "--stop") { stop_addr = strtoll(nx(), 0, 0); stop_val = strtoul(nx(), 0, 0); }
     else if (a == "--cputrace") { cput_fn = nx(); cput_from = atoi(nx()); cput_to = atoi(nx()); }
@@ -489,10 +497,11 @@ int main(int argc, char** argv) {
     fclose(f);
     top->rst_ext = 0; cyc0 = 1000;
     fprintf(stderr, "restored %s at frame %u tick %llu\n", restore_fn, g_frame, (unsigned long long)g_tick);
+    g_fcc.pc_from = g_frame;
   }
   top->pf_en = pf_mask;
   if (cfg_fast && !use_cache) { fprintf(stderr, "--fast needs --cache (amiga_fastram's memory side runs in ui_clk)\n"); return 1; }
-  top->fastcpu = fastcpu; top->fr_quick = fr_quick; top->fastclk = fastclk;
+  top->fastcpu = fastcpu; top->fr_quick = fr_quick; top->fastclk = fastclk; top->fc_opt = fc_opt;
   if (fastclk && !use_cache) { fprintf(stderr, "--fastclk needs --cache\n"); return 1; }
   top->cfg_fast = cfg_fast; top->flat_min = flat_min; top->flat_span = flat_span; top->flat_wr = flat_wr;
   top->stock020 = stock020; top->use_cache = use_cache; top->cache_on = use_cache; top->shrink = shrink;
@@ -542,7 +551,9 @@ int main(int argc, char** argv) {
     for (;;) {
       if (host && t_q <= t_ui && t_q <= t_src && t_q <= t_cpu) { q_edge(); continue; }
       if (t_cpu <= t_ui && t_cpu <= t_src) {
-        cpu_lvl = !cpu_lvl; top->cpu_clk = cpu_lvl; top->eval(); t_cpu += CPU_H;
+        cpu_lvl = !cpu_lvl;
+        if (cpu_lvl && g_fcc.f) g_fcc.step(g_frame, top->o_fcc_b, top->o_fcc_c, top->o_fcc_a, top->o_fcc_pc, top->o_fcc_fa, top->o_fcc_mba, top->o_fcc_op);
+        top->cpu_clk = cpu_lvl; top->eval(); t_cpu += CPU_H;
         continue;
       }
       if (t_ui <= t_src) {
@@ -623,6 +634,7 @@ int main(int argc, char** argv) {
       g_hbudget--;
     }
     machine_edge();
+    if (g_fcc.f) g_fcc.mstep(top->o_fcm_st);
     if (rst_cmd > 0 && rst_base < 0 && (long)g_hdd.cmds >= rst_cmd) rst_base = (long)(g_hdd.rd_sect + g_hdd.wr_sect);
     if (rst_cmd > 0 && rst_base >= 0 && (long)(g_hdd.rd_sect + g_hdd.wr_sect) >= rst_base + rst_sect) {
       rst_cmd = -1;
@@ -721,6 +733,7 @@ int main(int argc, char** argv) {
     if (vpos != g_last_vpos) {
       col = 0;
       if (vpos == 0 && g_last_vpos > 0) {
+        g_fcc.frame_end(g_frame);
         g_frame++;
         g_frame_a = g_frame;
         if (g_frame % 10 == 0) fprintf(stderr, "frame %u tick %llu recs %llu pc %06x\n", g_frame,
@@ -819,6 +832,12 @@ int main(int argc, char** argv) {
       uint16_t w = cm[((dump_addr + i) >> 1) & 0xfffff];
       uint8_t b[2] = {(uint8_t)(w >> 8), (uint8_t)w}; fwrite(b, 1, 2, f);
     }
+    fclose(f);
+  }
+  if (dumpf_fn) {
+    uint16_t* fm = (uint16_t*)&r->tb_top->fmem[0];
+    FILE* f = fopen(dumpf_fn, "wb");
+    for (uint32_t i = 0; i < 4194304; i++) { uint8_t b[2] = {(uint8_t)(fm[i] >> 8), (uint8_t)fm[i]}; fwrite(b, 1, 2, f); }
     fclose(f);
   }
   if (g_out) fclose(g_out);

@@ -17,6 +17,7 @@ module tb_top (
   input  wire        fastcpu,          // cpucfg b3: the stock-speed throttle off (main.vhd: menu line "Fast 68020")
   input  wire        fastclk,          // a1200-fastclk: the fast 68020 is fc_cpu on cpu_clk (main.vhd: cpu_fast)
   input  wire        cpu_clk,          // a1200-fastclk: its clock (51.59 MHz, not gated)
+  input  wire [7:0]  fc_opt,           // fc8: fc_cpu's speed options (opt_i; main.cpp --fc-opt)
   // a1200-fastclk fc6: the setting change (main.cpp --switch).  fastclk / fastcpu are the menu bits; main.vhd
   // latches them while the CPU is in reset (cpu_fast).  m2m_rst = the M2M reset (machine clock): the stock
   // fast-RAM instance's rst_i and, synchronised into ui_clk, the framework's hr_rst (both fast-RAM masters,
@@ -27,6 +28,15 @@ module tb_top (
   output wire        o_fc_qbusy,       // fc_cpu: stores queued or a mailbox access open (not qempty_o)
   output wire        o_fc_mbopen,      // fc_cpu: a mailbox request not yet answered
   output wire        o_cpu_fast,       // main.vhd cpu_fast (the latched setting)
+  // fc8 census (main.cpp --fcc): fc_cpu's kernel boundary and controller state, sampled before each cpu_clk edge
+  output wire [31:0] o_fcc_b,          // packed state bits (fc_census.h)
+  output wire [15:0] o_fcc_c,
+  output wire [31:0] o_fcc_a,          // kernel bus address (24-bit masked as on the bus)
+  output wire [31:0] o_fcc_pc,         // kernel exe_pc
+  output wire [31:0] o_fcc_fa,         // fill line address
+  output wire [31:0] o_fcc_mba,        // mailbox request address
+  output wire [2:0]  o_fcm_st,         // fc_mbox state (machine clock)
+  output wire [15:0] o_fcc_op,         // kernel exe_opcode
   input  wire        fr_quick,         // amiga_fastram quick_i: read hits in 2 clocks (main.vhd: with fastcpu)
   input  wire [7:0]  flat_min, flat_span, flat_wr,   // fast RAM Avalon model: read latency min + random(span), write accept
   input  wire        kick512,         // 512 KB Kickstart (the cache's kick512_i)
@@ -212,6 +222,8 @@ module tb_top (
   wire [31:0] fc_ext_addr, fc_mb_addr, fc_mb_wdata, fc_mb_rdata, fc_fr_a, fc_vbr;
   wire [1:0]  fc_ext_state;
   wire [15:0] fc_ext_dout, fc_ext_din, fc_fr_wd, fc_fr_rd;
+  wire        fc_fr_long;           // fc8 b4: a long fast-RAM write in one access
+  wire [15:0] fc_fr_wd2;
   wire        fc_ext_uds_n, fc_ext_lds_n, fc_ext_long, fc_ext_ack, fc_rso;
   wire [2:0]  fc_ipl;
   wire [11:0] fc_zcfg;
@@ -280,12 +292,12 @@ module tb_top (
   fc_cpu i_fc_cpu (
     .clk(cpu_clk), .rst_n_i(cpu_reset_n & cpu_fast), .flush_i(fc_flush),
     .cfg_z2_i(fc_zcfg[0]), .cfg_z3e0_i(fc_zcfg[1]), .cfg_z3e1_i(fc_zcfg[2]), .cfg_z3b0_i(fc_zcfg[7:3]),
-    .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .cfg_a24_i(stock020 & (mm_cpucfg == 2'b11)), .ipl_i(fc_ipl),
+    .cfg_z3b1_i(fc_zcfg[11:8]), .cfg_chipcode_i(1'b1), .cfg_a24_i(stock020 & (mm_cpucfg == 2'b11)), .ipl_i(fc_ipl), .opt_i(fc_opt),
     .mb_req_o(fc_mb_req), .mb_addr_o(fc_mb_addr), .mb_wr_o(fc_mb_wr), .mb_long_o(fc_mb_long), .mb_sync_o(fc_mb_sync),
     .mb_uds_n_o(fc_mb_uds_n), .mb_lds_n_o(fc_mb_lds_n), .mb_wdata_o(fc_mb_wdata),
     .mb_ack_i(fc_mb_ack), .mb_rdata_i(fc_mb_rdata),
     .fr_sel_o(fc_fr_sel), .fr_addr_o(fc_fr_a), .fr_we_o(fc_fr_we), .fr_uds_n_o(fc_fr_u), .fr_lds_n_o(fc_fr_l),
-    .fr_wdata_o(fc_fr_wd), .fr_rdata_i(fc_fr_rd), .fr_ready_i(fc_fr_ready),
+    .fr_wdata_o(fc_fr_wd), .fr_rdata_i(fc_fr_rd), .fr_ready_i(fc_fr_ready), .fr_long_o(fc_fr_long), .fr_wdata2_o(fc_fr_wd2),
     .vbr_o(fc_vbr), .cacr_o(fc_cacr), .resetout_n_o(fc_rso), .qempty_o(fc_qempty));
   fc_mbox i_fc_mbox (
     .clk_i(clk), .flush_i(fc_flush), .mb_req_i(fc_mb_req), .mb_addr_i(fc_mb_addr), .mb_wr_i(fc_mb_wr), .mb_long_i(fc_mb_long), .mb_sync_i(fc_mb_sync),
@@ -337,6 +349,19 @@ module tb_top (
   assign o_hr_fcsel = hr_fcsel;
   assign o_fc_qbusy = ~fc_qempty;
   assign o_fc_mbopen = fc_mb_req ^ fc_mb_ack;
+  // fc8 census probes (hierarchical references into the GHDL-converted fc_cpu / fc_mbox; enum codes in declaration order)
+  assign o_fcc_b = {fc_mb_req ^ fc_mb_ack, i_fc_mbox.st, i_fc_cpu.kernel.flagssr[5], i_fc_cpu.kernel.stop,
+                    i_fc_cpu.kernel.clkena_lw, i_fc_cpu.kernel.decodeopc, i_fc_cpu.k_lack, i_fc_cpu.is_rom,
+                    i_fc_cpu.is_chip, i_fc_cpu.is_fast, i_fc_cpu.rst, i_fc_cpu.sync_r, i_fc_cpu.dr, i_fc_cpu.q_full,
+                    i_fc_cpu.fill_mb, i_fc_cpu.fill_i, i_fc_cpu.pend_q, i_fc_cpu.dlb_hit, i_fc_cpu.ilb_hit,
+                    i_fc_cpu.use_d, i_fc_cpu.use_i, i_fc_cpu.st, i_fc_cpu.k_bs, i_fc_cpu.ack, i_fc_cpu.req, i_fc_cpu.k_ena};
+  assign o_fcc_c = {4'b0, i_fc_cpu.ilb2_hit, i_fc_cpu.nb_hit, i_fc_cpu.is_sync, i_fc_cpu.k_skip, i_fc_cpu.q_n, 1'b0, i_fc_cpu.kernel.flagssr[2:0]};
+  assign o_fcc_a = i_fc_cpu.k_addr;
+  assign o_fcc_pc = i_fc_cpu.kernel.exe_pc;
+  assign o_fcc_fa = {i_fc_cpu.fill_a, 4'b0};
+  assign o_fcc_mba = i_fc_cpu.mb_a;
+  assign o_fcm_st = i_fc_mbox.st;
+  assign o_fcc_op = i_fc_cpu.kernel.exe_opcode;
   amiga_fastram i_fastram (
     .clk_i(clk), .sel_i(fr_sel), .pulse_i(mm_cpucfg != 2'b00), .quick_i(fr_quick), .addr_i(fr_ddr), .we_i(cpustate == 2'b11),
     .uds_n_i(fr_uds_n), .lds_n_i(fr_lds_n), .wdata_i(fr_wdata), .rdata_o(fr_rdata), .ready_o(fr_ready),
@@ -349,7 +374,7 @@ module tb_top (
   // mega65.vhd's select says (static settings: the fast one from the start, the stock one never)
   amiga_fastram_small i_fc_fastram (   // a1200-fastclk: G_IDX_BITS = 7 (256-byte cache)
     .clk_i(cpu_clk), .sel_i(fc_fr_sel), .pulse_i(1'b1), .quick_i(1'b1), .wq_i(1'b1), .addr_i(fc_fr_ddr),
-    .we_i(fc_fr_we), .uds_n_i(fc_fr_u), .lds_n_i(fc_fr_l), .wdata_i(fc_fr_wd), .rdata_o(fc_fr_rd),
+    .we_i(fc_fr_we), .uds_n_i(fc_fr_u), .lds_n_i(fc_fr_l), .wdata_i(fc_fr_wd), .long_i(fc_fr_long), .wdata2_i(fc_fr_wd2), .rdata_o(fc_fr_rd),
     .ready_o(fc_fr_ready), .rst_i(1'b0), .flush_i(fc_flush), .flush_busy_o(ff_flbusy), .dbg_o(),
     .hr_clk_i(ui_clk), .hr_rst_i(hr_rst), .avm_write_o(ff_write), .avm_read_o(ff_read),
     .avm_address_o(ff_address), .avm_writedata_o(ff_writedata), .avm_byteenable_o(ff_be),
@@ -383,6 +408,8 @@ module tb_top (
   reg [21:0] faddr = 0;
   reg [31:0] frnd = 32'h9e3779b9;
   reg        fdrop = 0;
+  reg [21:0] fwaddr = 0;   // fc8: write bursts
+  reg [7:0]  fwleft = 0;
   always @(posedge ui_clk) begin
     fa_acc <= 0; fa_rvalid <= 0;
     frnd <= {frnd[30:0], frnd[31] ^ frnd[21] ^ frnd[1] ^ frnd[0]};
@@ -398,7 +425,9 @@ module tb_top (
            end else begin
              if (fa_be[1]) fmem[fa_address[21:0]][15:8] <= fa_writedata[15:8];
              if (fa_be[0]) fmem[fa_address[21:0]][7:0]  <= fa_writedata[7:0];
-             fs <= 0;
+             // fc8: a write burst (amiga_fastram G_LONGW: 2 beats): the next beats one per clock, as avm_mig gathers them
+             if (fa_burst > 1) begin fwaddr <= fa_address[21:0] + 1; fwleft <= fa_burst - 1; fa_acc <= 1; fs <= 5; end
+             else fs <= 0;
            end
          end
       3: begin if (hr_rst) fdrop <= 1; if (fcnt != 0) fcnt <= fcnt - 1; else fs <= 4; end
@@ -406,6 +435,15 @@ module tb_top (
            fa_rdata <= fmem[{faddr[21:3], fbeat}]; fa_rvalid <= !(fdrop || hr_rst); fbeat <= fbeat + 1;
            if (hr_rst) fdrop <= 1;
            if (fbeat == 7) fs <= 0;
+         end
+      5: begin   // fc8: a further write beat (seen accepted at this edge)
+           if (hr_rst) fs <= 0;
+           else begin
+             if (fa_be[1]) fmem[fwaddr][15:8] <= fa_writedata[15:8];
+             if (fa_be[0]) fmem[fwaddr][7:0]  <= fa_writedata[7:0];
+             fwaddr <= fwaddr + 1; fwleft <= fwleft - 1;
+             if (fwleft > 1) fa_acc <= 1; else fs <= 0;
+           end
          end
       default: fs <= 0;
     endcase

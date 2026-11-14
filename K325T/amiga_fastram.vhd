@@ -72,7 +72,11 @@ entity amiga_fastram is
       -- register takes its place clock for clock.  A same-address read and write never meet (a read hit
       -- waits for a posted write to its word, fills are read only after their acknowledge), so the
       -- block RAM's collision rules do not apply.  Saves ~4.1k LUTs for 4 RAMB36 at G_IDX_BITS = 13.
-      G_DRAM_STYLE       : string  := "distributed"
+      G_DRAM_STYLE       : string  := "distributed";
+      -- a1200-fc8: long writes (the fast CPU's instance only).  true: with long_i a queued write carries two words (wdata_i
+      -- at the address, wdata2_i at the next word: an aligned long, one 16-byte line) and goes to DDR3 as one 2-beat
+      -- burst; false (the stock instance): long_i is ignored, the design is the one before.
+      G_LONGW            : boolean := false
    );
    port (
       -- core clock domain (28 MHz, cpu_wrapper)
@@ -86,6 +90,8 @@ entity amiga_fastram is
       uds_n_i            : in  std_logic;                      -- upper byte (15:8), active low
       lds_n_i            : in  std_logic;                      -- lower byte (7:0), active low
       wdata_i            : in  std_logic_vector(15 downto 0);
+      long_i             : in  std_logic := '0';               -- fc8 (G_LONGW): the write is an aligned long
+      wdata2_i           : in  std_logic_vector(15 downto 0) := (others => '0');   -- its low word (address + 1)
       rdata_o            : out std_logic_vector(15 downto 0);
       ready_o            : out std_logic;                      -- /DTACK (inverted), held until sel_i drops
       rst_i              : in  std_logic := '0';               -- M2M resets (clk_i): orphan the access
@@ -156,6 +162,9 @@ architecture synthesis of amiga_fastram is
    signal m_req_qd     : t_qd := (others => (others => '0'));
    signal m_req_qb     : t_qb := (others => "00");
    signal m_req_qh     : std_logic_vector(7 downto 0) := (others => '0');  -- the write hit the cache
+   signal m_req_ql     : std_logic_vector(7 downto 0) := (others => '0');  -- fc8: a long (two words)
+   signal m_req_qd2    : t_qd := (others => (others => '0'));              -- fc8: its second word
+   signal hr_qbeat     : std_logic := '0';                                 -- fc8: the second beat of a long
    signal m_req_wpg    : std_logic_vector(3 downto 0) := (others => '0');  -- write pointer, Gray
    signal m_wp         : unsigned(3 downto 0) := (others => '0');
    signal m_rpc        : unsigned(3 downto 0) := (others => '0');          -- entries known as written
@@ -263,6 +272,10 @@ begin
          if m_qv(i) = '1' and m_req_qa(i)(G_IDX_BITS - 1 downto 0) = addr_i(G_IDX_BITS - 1 downto 0) then
             v := '1';
          end if;
+         if G_LONGW and m_qv(i) = '1' and m_req_ql(i) = '1' and                        -- fc8: either word of a long
+            m_req_qa(i)(G_IDX_BITS - 1 downto 1) = addr_i(G_IDX_BITS - 1 downto 1) then
+            v := '1';
+         end if;
       end loop;
       q_match <= v;
    end process q_match_proc;
@@ -320,6 +333,10 @@ begin
                      m_req_qd(to_integer(m_wp(2 downto 0))) <= wdata_i;
                      m_req_qb(to_integer(m_wp(2 downto 0))) <= (not uds_n_i) & (not lds_n_i);
                      m_req_qh(to_integer(m_wp(2 downto 0))) <= hit;
+                     if G_LONGW then
+                        m_req_ql(to_integer(m_wp(2 downto 0)))  <= long_i;
+                        m_req_qd2(to_integer(m_wp(2 downto 0))) <= wdata2_i;
+                     end if;
                      m_qv(to_integer(m_wp(2 downto 0)))     <= '1';
                      m_wp       <= m_wp + 1;
                      m_req_wpg  <= b2g(m_wp + 1);
@@ -426,17 +443,21 @@ begin
    ---------------------------------------------------------------------------
    hr_qi    <= to_integer(hr_rp(2 downto 0));
    hr_wps   <= g2b(hr_wpg_dd);
-   hr_we_u  <= '1' when (hr_state = H_QWRITE and avm_waitrequest_i = '0' and m_req_qh(hr_qi) = '1' and m_req_qb(hr_qi)(1) = '1') or
+   hr_we_u  <= '1' when (hr_state = H_QWRITE and avm_waitrequest_i = '0' and m_req_qh(hr_qi) = '1' and
+                         (m_req_qb(hr_qi)(1) = '1' or hr_qbeat = '1')) or
                         (hr_state = H_FILL_DATA and avm_readdatavalid_i = '1') or
                         (hr_state = H_WRITE_CMD and avm_waitrequest_i = '0' and m_req_hit = '1' and m_req_be(1) = '1')
                else '0';
-   hr_we_l  <= '1' when (hr_state = H_QWRITE and avm_waitrequest_i = '0' and m_req_qh(hr_qi) = '1' and m_req_qb(hr_qi)(0) = '1') or
+   hr_we_l  <= '1' when (hr_state = H_QWRITE and avm_waitrequest_i = '0' and m_req_qh(hr_qi) = '1' and
+                         (m_req_qb(hr_qi)(0) = '1' or hr_qbeat = '1')) or
                         (hr_state = H_FILL_DATA and avm_readdatavalid_i = '1') or
                         (hr_state = H_WRITE_CMD and avm_waitrequest_i = '0' and m_req_hit = '1' and m_req_be(0) = '1')
                else '0';
    hr_waddr <= hr_line & std_logic_vector(hr_beat) when hr_state = H_FILL_DATA else
-               m_req_qa(hr_qi)(G_IDX_BITS - 1 downto 0) when hr_state = H_QWRITE else m_req_addr(G_IDX_BITS - 1 downto 0);
+               m_req_qa(hr_qi)(G_IDX_BITS - 1 downto 1) & (m_req_qa(hr_qi)(0) or hr_qbeat) when hr_state = H_QWRITE else
+               m_req_addr(G_IDX_BITS - 1 downto 0);
    hr_wdata <= avm_readdata_i when hr_state = H_FILL_DATA else
+               m_req_qd2(hr_qi) when hr_state = H_QWRITE and hr_qbeat = '1' else
                m_req_qd(hr_qi) when hr_state = H_QWRITE else m_req_data;
 
    dram_proc : process (hr_clk_i)
@@ -485,6 +506,11 @@ begin
                   avm_writedata_o  <= m_req_qd(hr_qi);
                   avm_byteenable_o <= m_req_qb(hr_qi);
                   avm_burstcount_o <= x"01";
+                  hr_qbeat         <= '0';
+                  if G_LONGW and m_req_ql(hr_qi) = '1' then
+                     avm_byteenable_o <= "11";
+                     avm_burstcount_o <= x"02";         -- fc8: a long = a 2-beat burst
+                  end if;
                   hr_state         <= H_QWRITE;
                elsif hr_req_dd /= hr_ack_tgl then   -- a request; m_req_* are stable now
                   hr_line <= m_req_addr(G_IDX_BITS - 1 downto 3);
@@ -523,10 +549,15 @@ begin
 
             when H_QWRITE =>
                if avm_waitrequest_i = '0' then     -- accepted (and the cache word written)
-                  avm_wr     <= '0';
-                  hr_rp      <= hr_rp + 1;
-                  hr_ack_rpg <= b2g(hr_rp + 1);
-                  hr_state   <= H_IDLE;
+                  if G_LONGW and m_req_ql(hr_qi) = '1' and hr_qbeat = '0' then
+                     hr_qbeat        <= '1';      -- fc8: the long's second beat
+                     avm_writedata_o <= m_req_qd2(hr_qi);
+                  else
+                     avm_wr     <= '0';
+                     hr_rp      <= hr_rp + 1;
+                     hr_ack_rpg <= b2g(hr_rp + 1);
+                     hr_state   <= H_IDLE;
+                  end if;
                end if;
 
             when H_WRITE_CMD =>

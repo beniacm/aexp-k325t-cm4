@@ -166,6 +166,8 @@ entity main is
       fcr_uds_n_o             : out std_logic;
       fcr_lds_n_o             : out std_logic;
       fcr_wdata_o             : out std_logic_vector(15 downto 0);
+      fcr_long_o              : out std_logic;                       -- fc8 b4: an aligned long write (fcr_wdata_o
+      fcr_wdata2_o            : out std_logic_vector(15 downto 0);   -- = the high word, this = the low word)
       fcr_rdata_i             : in  std_logic_vector(15 downto 0) := x"0000";
       fcr_ready_i             : in  std_logic := '0';
 
@@ -415,6 +417,9 @@ architecture synthesis of main is
    signal fc_mb_req, fc_mb_wr, fc_mb_long, fc_mb_uds_n, fc_mb_lds_n, fc_mb_ack, fc_mb_sync : std_logic;
    signal fc_mb_addr, fc_mb_wdata, fc_mb_rdata : std_logic_vector(31 downto 0);
    signal fc_fr_addr       : std_logic_vector(31 downto 0);
+   -- fc8: fc_cpu's speed options (b0 next I line, b1 three more I line buffers, b2 next D line, b3 three more D line
+   -- buffers, b4 long fast-RAM stores in one access; x"00" = fc7's behaviour clock for clock)
+   constant C_FC_OPT       : std_logic_vector(7 downto 0) := x"00";
    signal fc_ext_addr      : std_logic_vector(31 downto 0);
    signal fc_ext_state     : std_logic_vector(1 downto 0);
    signal fc_ext_dout, fc_ext_din : std_logic_vector(15 downto 0);
@@ -746,6 +751,7 @@ begin
          cfg_z3b1_i     => fc_zcfg(11 downto 8),
          cfg_chipcode_i => '1',
          cfg_a24_i      => cpu_ec020,           -- fc5: the 68EC020's 24-bit address bus (AGA + 68020)
+         opt_i          => C_FC_OPT,            -- fc8: speed options (fc_cpu.vhd; constant below)
          ipl_i          => fc_ipl,
          mb_req_o       => fc_mb_req,
          mb_addr_o      => fc_mb_addr,
@@ -763,6 +769,8 @@ begin
          fr_uds_n_o     => fcr_uds_n_o,
          fr_lds_n_o     => fcr_lds_n_o,
          fr_wdata_o     => fcr_wdata_o,
+         fr_long_o      => fcr_long_o,
+         fr_wdata2_o    => fcr_wdata2_o,
          fr_rdata_i     => fcr_rdata_i,
          fr_ready_i     => fcr_ready_i,
          vbr_o          => fc_vbr,
