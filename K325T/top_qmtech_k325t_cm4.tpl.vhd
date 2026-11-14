@@ -221,6 +221,12 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal ad_dbg             : std_logic_vector(191 downto 0);
    signal amiga_mbox         : std_logic_vector(511 downto 0);   -- the core's result mailbox
    signal amiga_rec          : std_logic_vector(95 downto 0);    -- a1200-audrec: the audio flight recorder's word
+   -- a1200-audrec 2: the HDMI-input hold detector (aud_hold.vhd): the recorder's mix heartbeat (main clock),
+   -- the encoder's 48-kHz enable (audio clock) and per-sample toggle (pixel clock), the readout ($CC/$CD)
+   signal amiga_rec_live     : std_logic;
+   signal aud_pcm_clken      : std_logic;
+   signal aud_hs_tog         : std_logic;
+   signal aud_hold_word      : std_logic_vector(191 downto 0);
    signal amiga_pf_stats     : std_logic_vector(671 downto 0);   -- the cache's prefetch counters
    signal amiga_fast_dbg     : std_logic_vector(287 downto 0);   -- fast RAM path debug + memory mode (stage 3)
    signal amiga_audio_clk    : std_logic;   -- the core's audio clock (its ungated source clock)
@@ -383,6 +389,7 @@ begin
       port map (
          clk => mig_ui_clk, rst => mem_not_ready, cfg_i => rk_vid_sel,
          page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats, rec_i => amiga_rec,
+         rec2_i => aud_hold_word,
          dbg2_i => amiga_fast_dbg,
          lp_req => lm_req, lp_we => lm_we, lp_addr => lm_addr, lp_wdata => lm_wdata,
          lp_busy => lm_busy, lp_done => lm_done
@@ -580,6 +587,21 @@ begin
 --@FRAMEWORK@
 
 --@CORE@
+
+   -- a1200-audrec 2: the HDMI encoder's audio input (audio_left / audio_right = av_pipeline audio_left_o /
+   -- _right_o, the very pair vga_to_hdmi takes as pcm_l / pcm_r) watched in the audio clock; observes only
+   i_aud_hold : entity work.aud_hold
+      port map (
+         clk_i      => audio_clk,
+         rst_i      => audio_reset,
+         clken_i    => aud_pcm_clken,
+         pcm_l_i    => std_logic_vector(audio_left),
+         pcm_r_i    => std_logic_vector(audio_right),
+         hs_tog_i   => aud_hs_tog,
+         live_tog_i => amiga_rec_live,
+         cfg_i      => rk_vid_sel,
+         word_o     => aud_hold_word
+      ); -- i_aud_hold
 
    -- a1200-ide: the hard disk pins (outputs only with G_HDD, the menu's IDE bit and, for MISO, CS)
    hd_sck_c  <= hd_sck  when G_HDD else '0';

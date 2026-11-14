@@ -2,8 +2,11 @@
 """audrec.py -- the audio flight recorder (K325T/aud_rec.v, branch a1200-audrec): control, dump, decode.
 
 On the module (next to m65d and stallmon.py; python3-spidev; writes nothing to the module's flash):
-    audrec.py status               trigger / freeze state, write pointer, time, lost events, mode
-    audrec.py arm                  clear the ring and the snapshot, record again (the trigger re-armed)
+    audrec.py status               trigger / freeze state, write pointer, time, lost events, mode; and the HDMI-input
+                                   hold detector (aud_hold.vhd, $CC/$CD): hold flag, episodes, longest episode, the
+                                   encoder's samples per second (48000), swallowed / repeated handshakes
+    audrec.py arm                  clear the ring and the snapshot, record again (the trigger re-armed); also clears
+                                   the HDMI-input hold detector
     audrec.py force                force a trigger now (tests the read path; the ring freezes after 384 more events)
     audrec.py mode M               trigger mode bits: b0 mix (default on), b1 channel stuck (on), b2 channel
                                    constant (off: fires in every rest), b3 record IPL changes of every level
@@ -16,7 +19,8 @@ Anywhere:
                                    without --all only the last 600 ms before the trigger and everything after
 
 Protocol (stall controller page 7, aud_rec.v header): r6 = 7 selects page 7; the recorder index is r4 & r5
-(entries $80-$BF with r3 = address bits 9..6, snapshot words $C0-$CB with r3 = sub-word, commands $CE / $CF).
+(entries $80-$BF with r3 = address bits 9..6, snapshot words $C0-$CB with r3 = sub-word, commands $CE / $CF;
+$CC / $CD = the HDMI-input hold detector K325T/aud_hold.vhd, a1200-audrec 2 bitstreams).
 Keep the stall injector off (r0 b0 = 0) while using it: registers 3-5 are also the injector's.
 """
 import sys
@@ -82,6 +86,9 @@ class Rec:
         self.forget()
         return self.word(12, 0, 0)
 
+    def hold(self):
+        return self.word(12, 12, 0), self.word(12, 13, 0)
+
 
 def status_text(w0, w1, w2):
     if w0 >> 20 != 0xA19:
@@ -91,14 +98,28 @@ def status_text(w0, w1, w2):
              w2 >> 16, w2 >> 12 & 15, w2 >> 8 & 15))
 
 
+def hold_text(c, d):
+    """$CC / $CD of aud_hold.vhd (the audio entering the HDMI encoder, audio clock)"""
+    if c[0] >> 20 != 0xA0D:
+        return "hdmi input: no hold detector ($CC W0 %08x: not an a1200-audrec 2 bitstream?)" % c[0]
+    return ("hdmi input: HOLD FLAG %s, episodes %d, longest episode %d ms, longest constant run (any kind) %d ms, "
+            "current run %d ms, mix live %d, in an episode now %d\n"
+            "hdmi handshakes: samples taken in the last second %d (must be 48000), encoder enables %d, swallowed %d, "
+            "repeated %d, check active %d, seconds since arm %d" %
+            ("SET" if c[0] >> 19 & 1 else "clear", c[0] & 0xFFFF, c[1] >> 16, c[1] & 0xFFFF, d[2] & 0xFFFF,
+             c[0] >> 18 & 1, c[0] >> 17 & 1, c[2], d[1], d[0] >> 16, d[0] & 0xFFFF, c[0] >> 16 & 1, d[2] >> 16))
+
+
 def module_main(argv):
     rec = Rec()
     cmd = argv[0]
     if cmd == "status":
         print(status_text(*rec.status()))
+        print(hold_text(*rec.hold()))
     elif cmd == "arm":
         rec.cmd(15, 0xA)
         print(status_text(*rec.status()))
+        print(hold_text(*rec.hold()))
     elif cmd == "force":
         rec.cmd(15, 0xC)
         print(status_text(*rec.status()))
@@ -123,6 +144,9 @@ def module_main(argv):
             for j in range(2):
                 w = rec.word(12, k, j)
                 out.append("S %x %d %08x %08x %08x" % (k, j, w[0], w[1], w[2]))
+        for k in (12, 13):
+            w = rec.word(12, k, 0)
+            out.append("S %x 0 %08x %08x %08x" % (k, w[0], w[1], w[2]))
         for a in range(1024):
             w = rec.word(8 + ((a >> 4) & 3), a & 15, a >> 6)
             if (w[2] >> 2) & 1023 != a:
@@ -163,6 +187,8 @@ def decode(fn, show_all):
             E[int(p[1])] = [int(x, 16) for x in p[2:5]]
     w0, w1, w2 = S[(0, 0)]
     print("status: " + status_text(w0, w1, w2))
+    if (12, 0) in S and (13, 0) in S:
+        print(hold_text(S[(12, 0)], S[(13, 0)]))
     if w0 >> 20 != 0xA19:
         return 1
     fired, wrapped, wp = w0 >> 15 & 1, w0 >> 13 & 1, w0 & 1023

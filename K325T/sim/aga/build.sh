@@ -80,6 +80,15 @@ sed -i -E 's/\btagged\b/tagged_v/g' "$OUT/chip_cache.v"
 # a1200-fastcpu: the fast RAM port (amiga_fastram, 16 KB cache, Avalon master) -> Verilog
 (cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 --out=verilog "$root/K325T/amiga_fastram.vhd" \
     -e amiga_fastram > amiga_fastram.v 2> ghdl_fastram.log) || { cat "$OUT/ghdl_fastram.log" >&2; exit 1; }
+# a1200-audrec 2: the framework's audio path to the HDMI encoder (cdc_stable, the 48-kHz enable, vga_to_hdmi)
+# with the hold detector aud_hold.vhd -> Verilog (hdmi_audio_bench.vhd)
+H="$root/M2M/vhdl/controllers/HDMI"
+(cd "$OUT" && nice -n 19 ghdl --synth --latches --std=08 -fsynopsys -frelaxed --out=verilog "$H/types_pkg.vhd" \
+    "$H/sync_reg.vhd" "$H/hdmi_tx_encoder.vhd" "$H/vga_to_hdmi.vhd" "$root/M2M/vhdl/cdc_stable.vhd" \
+    "$root/M2M/vhdl/av_pipeline/clk_synthetic_enable.vhd" "$root/K325T/aud_hold.vhd" "$here/hdmi_audio_bench.vhd" \
+    -e hdmi_audio_bench > hdmi_audio.v 2> ghdl_haud.log) || { cat "$OUT/ghdl_haud.log" >&2; exit 1; }
+# (vga_to_hdmi's signal "buf" is a Verilog gate keyword)
+sed -i -E 's/\bbuf\b/buf_v/g' "$OUT/hdmi_audio.v"
 # BRAMSIM=1: the stock instance's data array as the block RAM of G_DRAM_STYLE "block" (read-during-write -> wrong data)
 [ -n "${BRAMSIM:-}" ] && /usr/bin/python3 "$here/bramsim.py" "$OUT/amiga_fastram.v"
 # a1200-fastclk: the fast 68020's amiga_fastram with a 256-byte cache (G_IDX_BITS = 7) as module amiga_fastram_small
@@ -105,7 +114,7 @@ fi
 SRCS="$R/minimig.v $R/agnus*.v $R/denise*.v $R/paula*.v $R/cia*.v $R/gary.v $R/userio.v \
  $R/minimig_bankmapper.v $R/minimig_sram_bridge.v $R/minimig_m68k_bridge.v $R/minimig_syscontrol.v \
  $R/cart.v $R/gayle.v $R/ide.v $R/amiga_clk.v $R/cpu_wrapper.v $R/fx68k/fx68k.sv $R/fx68k/fx68kAlu.sv \
- $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/amiga_fastram_small.v $OUT/fc_cpu.v $OUT/fc_mbox.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $root/K325T/cpu020/cpu_cycles.v $root/K325T/aud_rec.v ${EXTRA:-}"
+ $R/fx68k/uaddrPla.sv $OUT/tg68k.v $OUT/chip_cache.v $OUT/amiga_fastram.v $OUT/amiga_fastram_small.v $OUT/fc_cpu.v $OUT/fc_mbox.v $OUT/adf_engine.v $OUT/hdd_spi.v $OUT/host_bench.v $OUT/hdmi_audio.v $root/K325T/cpu020/cpu_cycles.v $root/K325T/aud_rec.v ${EXTRA:-}"
 cd "$OUT"
 nice -n 19 $V --savable --cc --exe --build -j ${JOBS:-4} -O3 --top-module tb_top -Wno-fatal -Wno-lint -Wno-style \
   -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-UNOPTFLAT -Wno-COMBDLY -Wno-INITIALDLY \

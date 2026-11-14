@@ -55,7 +55,11 @@ entity vga_to_hdmi is
     pcm_n     : in    std_logic_vector(19 downto 0); -- HDMI ACR N value
     pcm_cts   : in    std_logic_vector(19 downto 0); -- HDMI ACR CTS value
 
-    tmds      : out   slv_9_0_t(0 to 2)              -- parallel TMDS symbol stream x 3 channels
+    tmds      : out   slv_9_0_t(0 to 2);             -- parallel TMDS symbol stream x 3 channels
+
+    -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug): toggles (vga_clk) at every PCM sample the packetiser
+    -- takes (vga_iec_en = the request/acknowledge handshake completing); observation only, may stay open
+    pcm_hs_tog : out  std_logic
 
   );
 end entity vga_to_hdmi;
@@ -94,6 +98,7 @@ architecture synth of vga_to_hdmi is
 
   signal   iec_req_s     : std_logic_vector(0 to 4);               -- } clock domain crossing logic
   signal   pcm_acr_s     : std_logic_vector(0 to 2);               -- }
+  signal   hs_tog        : std_logic := '0';                       -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug)
 
   signal   vga_iec_en    : std_logic;                              -- enable for the following...
   signal   vga_iec_sync  : std_logic;                              -- iec_sync } synchronised to vga_clk
@@ -404,6 +409,17 @@ begin
   vga_acr    <= pcm_acr_s(1) and not pcm_acr_s(2);
   vga_iec_en <= iec_req_s(3) and not iec_req_s(4);
   iec_ack    <= iec_req_s(4);
+
+  -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug): one toggle per sample taken (nothing reads it here)
+  P_HS_TOG: process (vga_clk) is
+  begin
+    if rising_edge(vga_clk) then
+      if vga_iec_en = '1' then
+        hs_tog <= not hs_tog;
+      end if;
+    end if;
+  end process P_HS_TOG;
+  pcm_hs_tog <= hs_tog;
 
   -- SYNC2: component sync_reg
   --   generic map (

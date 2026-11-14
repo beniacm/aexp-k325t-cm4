@@ -155,6 +155,10 @@ entity av_pipeline is
       audio_reset_o           : out std_logic;
       audio_left_o            : out signed(15 downto 0);
       audio_right_o           : out signed(15 downto 0);
+      -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug): digital_pipeline's 48 kHz sample enable
+      -- (audio_clk_i) and vga_to_hdmi's per-sample toggle (hdmi_clk_i); observation only, may stay open
+      audio_pcm_clken_o       : out std_logic;
+      audio_hs_tog_o          : out std_logic;
 
       -- I/O to Digital output (HDMI)
       hdmi_clk_i              : in  std_logic;
@@ -828,6 +832,8 @@ begin
          audio_rst_i              => audio_rst_i,
          audio_left_i             => signed(audio_left),
          audio_right_i            => signed(audio_right),
+         audio_pcm_clken_o        => audio_pcm_clken_o,     -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug)
+         audio_hs_tog_o           => audio_hs_tog_o,
 
          -- Digital output (HDMI)
          hdmi_clk_i               => hdmi_clk_i,

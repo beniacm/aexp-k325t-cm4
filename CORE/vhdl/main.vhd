@@ -186,6 +186,9 @@ entity main is
       -- byte (asynchronous) and the readout word (main clock, quasi-static; lat_meter rec_i)
       rec_cfg_i               : in  std_logic_vector(7 downto 0) := x"00";
       rec_out_o               : out std_logic_vector(95 downto 0);
+      -- a1200-audrec 2: the recorder's mix heartbeat (toggles at a mix change, at most once per ms; main clock)
+      -- for the HDMI-input hold detector K325T/aud_hold.vhd
+      rec_live_o              : out std_logic;
 
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
@@ -316,7 +319,8 @@ architecture synthesis of main is
          rdata          : out std_logic_vector(14 downto 0);
 
          rec_cfg        : in  std_logic_vector(7 downto 0);
-         rec_out        : out std_logic_vector(95 downto 0)
+         rec_out        : out std_logic_vector(95 downto 0);
+         rec_live       : out std_logic
       );
    end component minimig_m65;
 
@@ -1149,7 +1153,8 @@ begin
          rdata          => aud_rdata,
 
          rec_cfg        => rec_cfg_i,
-         rec_out        => rec_out_o
+         rec_out        => rec_out_o,
+         rec_live       => rec_live_o
       ); -- i_minimig
 
    ---------------------------------------------------------------------------

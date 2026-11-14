@@ -100,6 +100,15 @@ set_false_path -to [get_cells mig_legacy_s_reg[0]]
 set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/cfg_s1_reg*}]
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg* || NAME =~ i_lat_meter/r6_reg*}] \
                -to   [get_clocks clk162]
+## a1200-audrec 2: the HDMI-input hold detector (aud_hold.vhd, audio_clk) -- the recorder's mix heartbeat
+## (main_clk, a toggle at most once per ms) and the encoder's per-sample toggle (hdmi_clk, one per 20.8 us)
+## into 2-flop synchronisers, the bridge byte (clk162) into its stability filter, and its quasi-static
+## readout word into the meter's readout register (ui_clk; the tools read it twice)
+set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_aud_hold/lv_s1_reg}]
+set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_aud_hold/hs_s1_reg}]
+set_false_path -to   [get_cells -hierarchical -filter {NAME =~ i_aud_hold/cfg_s1_reg*}]
+set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_aud_hold/word_o_reg*}] \
+               -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_avm_mig/*}] -to [get_cells -hierarchical -filter {NAME =~ CORE/clk_gen/i_stall_ctrl/pr_d_reg*}]
 ## joysticks: quasi-static levels into M2M's debouncers
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ i_rk_bridge/joy*_reg*}]

@@ -22,6 +22,7 @@
 --          i = $FB: the core's memory mode and stall register read-back dbg2_i(287..192) (stage 3);
 --          i = $E0-$E5: the core's result mailbox (Amiga $C0-$FF), longwords 3(i-$E0) .. +2;
 --          i = $D0-$D6: the cache's prefetch counters of class i-$D0 (issued, useful, wasted)
+--          i = $CC/$CD with G_REC (a1200-audrec 2): the HDMI-input hold detector (aud_hold.vhd, rec2_i)
 --          i = $80-$CF with G_REC (a1200-audrec): the core's audio flight recorder (aud_rec.v readout; it
 --          shadows the read sums / write sums of those indices in a G_FULL build)
 -- (the stall injector's registers 3..5 are reused: keep the injector off while measuring)
@@ -50,6 +51,8 @@ entity lat_meter is
       mbox_i     : in  std_logic_vector(511 downto 0) := (others => '0');   -- index $E0-$E5 (async)
       pf_i       : in  std_logic_vector(671 downto 0) := (others => '0');   -- index $D0-$D6 (async)
       rec_i      : in  std_logic_vector(95 downto 0) := (others => '0');    -- index $80-$CF with G_REC (async)
+      -- a1200-audrec 2: the HDMI-input hold detector (aud_hold.vhd, audio clock): $CC = 95..0, $CD = 191..96
+      rec2_i     : in  std_logic_vector(191 downto 0) := (others => '0');   -- index $CC / $CD with G_REC (async)
       lp_req     : out std_logic;
       lp_we      : out std_logic;
       lp_addr    : out std_logic_vector(27 downto 0);
@@ -152,7 +155,11 @@ begin
          end if;
 
          d := 0; if hidx(6) = '1' then d := 1; end if;
-         if G_REC and (hidx(7 downto 6) = "10" or hidx(7 downto 4) = "1100") then
+         if G_REC and hidx = x"CC" then
+            aux <= rec2_i(95 downto 0);       -- a1200-audrec 2: the HDMI-input hold detector (aud_hold.vhd)
+         elsif G_REC and hidx = x"CD" then
+            aux <= rec2_i(191 downto 96);
+         elsif G_REC and (hidx(7 downto 6) = "10" or hidx(7 downto 4) = "1100") then
             -- the audio flight recorder's word for this index (its address also uses r3; aud_rec.v)
             aux <= rec_i;
          elsif not G_FULL and hidx /= x"FB" and hidx(7 downto 3) /= "11100" then

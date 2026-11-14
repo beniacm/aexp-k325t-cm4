@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <algorithm>
 #include <string>
 #include <vector>
 #include <thread>
@@ -334,6 +335,9 @@ int main(int argc, char** argv) {
   // the board tool does), --recforce FRAME (force a trigger), --recarm FRAME (re-arm), --recmode FRAME:M,
   // --recstop (end the run at the first frame end where the recorder has frozen)
   const char* rec_fn = nullptr; int rec_force = -1, rec_arm = -1, rec_mframe = -1, rec_mode = 3; bool rec_stop = false;
+  // a1200-audrec 2: --audhold FRAME[:MS] (bench only: the audio crossing's output held for MS ms, default 300, from
+  // that frame on: the hold the HDMI-input detector aud_hold.vhd must report), --audlog (its readout every 5 frames)
+  int aud_hframe = -1, aud_hms = 300; bool aud_log = false;
   int64_t stop_addr = -1; uint32_t stop_val = 0;
   const char* cput_fn = nullptr; int cput_from = 0, cput_to = 0;
   const char* adf_fn = nullptr; const char* adf2_fn = nullptr; int adf2_frame = -1; bool fturbo = false;
@@ -387,6 +391,8 @@ int main(int argc, char** argv) {
     else if (a == "--recarm") rec_arm = atoi(nx());
     else if (a == "--recmode") { const char* m = nx(); rec_mframe = atoi(m); rec_mode = strchr(m, ':') ? strtol(strchr(m, ':') + 1, 0, 0) : 3; }
     else if (a == "--recstop") rec_stop = true;
+    else if (a == "--audhold") { const char* m = nx(); aud_hframe = atoi(m); if (strchr(m, ':')) aud_hms = atoi(strchr(m, ':') + 1); }
+    else if (a == "--audlog") aud_log = true;
     else if (a == "--stop") { stop_addr = strtoll(nx(), 0, 0); stop_val = strtoul(nx(), 0, 0); }
     else if (a == "--cputrace") { cput_fn = nx(); cput_from = atoi(nx()); cput_to = atoi(nx()); }
     else if (a == "--adf") adf_fn = nx();
@@ -517,6 +523,24 @@ int main(int argc, char** argv) {
   uint64_t t_src = SRC_H, t_ui = UI_H, t_q = Q_H, t_cpu = CPU_H, src_edges = 0, stalled = 0, q_edges = 0;
   bool src_lvl = false, ui_lvl = false, q_lvl = false, cpu_lvl = false;
   if (!fastclk && sws.empty()) t_cpu = UINT64_MAX;   // the stock setting: fc_cpu is in reset, its clock is not simulated
+  // a1200-audrec 2: the framework's audio clock (12.288 MHz) and the HDMI pixel clock (27 MHz) of the audio path to the
+  // encoder (hdmi_audio_bench.vhd), free running in both memory modes (without --cache the machine clock, 28.375 MHz,
+  // is their time base); they clock observers only
+  const uint64_t A_H = 40690, HD_H = 18519, M_H = 17621;
+  uint64_t t_a = A_H, t_h = HD_H, t_m = 0;
+  bool a_lvl = false, h_lvl = false;
+  int64_t aud_inj_left = 0;
+  top->aud_inj = 0;
+  auto ah_edges = [&](uint64_t until) {        // the audio / pixel clock edges due up to 'until'
+    while (t_a <= until || t_h <= until) {
+      if (t_a <= t_h) {
+        a_lvl = !a_lvl; top->a_clk = a_lvl; top->eval(); t_a += A_H;
+        if (a_lvl && aud_inj_left > 0 && --aud_inj_left == 0) top->aud_inj = 0;
+      } else {
+        h_lvl = !h_lvl; top->h_clk = h_lvl; top->eval(); t_h += HD_H;
+      }
+    }
+  };
   top->m2m_rst = 0;
   if (!sws.empty() && !use_cache) { fprintf(stderr, "--switch needs --cache\n"); return 1; }
   const bool host = hreq_fn != nullptr;
@@ -547,8 +571,12 @@ int main(int argc, char** argv) {
   };
   int inj_left = 0; uint64_t inj_n = 0;
   auto machine_edge = [&]() {
-    if (!use_cache) { top->clk = 0; top->eval(); top->clk = 1; top->eval(); if (hdf_fn) spi_step(top); return; }
+    if (!use_cache) { t_m += 2 * M_H; ah_edges(t_m); top->clk = 0; top->eval(); top->clk = 1; top->eval(); if (hdf_fn) spi_step(top); return; }
     for (;;) {
+      {
+        uint64_t tmin = std::min(std::min(t_ui, t_src), std::min(t_cpu, host ? t_q : UINT64_MAX));
+        if (t_a <= tmin || t_h <= tmin) { ah_edges(tmin); continue; }
+      }
       if (host && t_q <= t_ui && t_q <= t_src && t_q <= t_cpu) { q_edge(); continue; }
       if (t_cpu <= t_ui && t_cpu <= t_src) {
         cpu_lvl = !cpu_lvl; top->cpu_clk = cpu_lvl; top->eval(); t_cpu += CPU_H;
@@ -585,7 +613,8 @@ int main(int argc, char** argv) {
   // a1200-audrec: the recorder's configuration byte as the bridge writes it (1rrrvvvv), each value held long
   // enough for its 16-clock stability filter; readout word = rec_out
   top->rec_cfg = 0;
-  auto rec_reg = [&](int rg, int v) { top->rec_cfg = 0x80 | rg << 4 | (v & 15); for (int k = 0; k < 40; k++) machine_edge(); };
+  // (80 machine clocks: aud_hold.vhd's filter in the 12.288-MHz audio clock needs ~1.6 us)
+  auto rec_reg = [&](int rg, int v) { top->rec_cfg = 0x80 | rg << 4 | (v & 15); for (int k = 0; k < 80; k++) machine_edge(); };
   int rec_r3 = -1, rec_r4 = -1, rec_r5 = -1;
   auto rec_word = [&](int r4, int r5, int r3, uint32_t* w) {
     // r4 changes last when going into $Cx (r5 / r3 first, while r4 is in the entry space): no stray command
@@ -794,6 +823,18 @@ int main(int argc, char** argv) {
         }
         if ((int)g_frame == rec_mframe) { rec_page7(); rec_cmd(14, rec_mode); fprintf(stderr, "recorder: mode %d at frame %u\n", rec_mode, g_frame); }
         if ((int)g_frame == rec_arm) { rec_page7(); rec_cmd(15, 10); fprintf(stderr, "recorder: armed at frame %u\n", g_frame); }
+        if ((int)g_frame == aud_hframe) {
+          top->aud_inj = 1; aud_inj_left = (int64_t)aud_hms * 12288;
+          fprintf(stderr, "audio: the crossing's output held for %d ms from frame %u\n", aud_hms, g_frame);
+        }
+        if (aud_log && g_frame % 5 == 0) {
+          const uint32_t c0 = top->aud_word[2], c1 = top->aud_word[1], c2 = top->aud_word[0];
+          const uint32_t d0 = top->aud_word[5], d1 = top->aud_word[4], d2 = top->aud_word[3];
+          fprintf(stderr, "audio frame %u: hold flag %u, mix live %u, in an episode %u, episodes %u, longest episode %u ms, "
+                  "longest constant run %u ms, current run %u ms | samples taken last second %u, enables %u, swallowed %u, "
+                  "repeated %u, seconds %u\n", g_frame, c0 >> 19 & 1, c0 >> 18 & 1, c0 >> 17 & 1, c0 & 0xFFFF, c1 >> 16,
+                  c1 & 0xFFFF, d2 & 0xFFFF, c2, d1, d0 >> 16, d0 & 0xFFFF, d2 >> 16);
+        }
         if ((int)g_frame == rec_force) { rec_page7(); rec_cmd(15, 12); fprintf(stderr, "recorder: forced trigger at frame %u\n", g_frame); }
         if (rec_stop) {
           uint32_t w[3]; rec_page7(); rec_word(12, 0, 0, w);
@@ -854,6 +895,9 @@ int main(int argc, char** argv) {
     rec_page7();
     for (int k = 0; k < 12; k++)
       for (int j = 0; j < 2; j++) { rec_word(12, k, j, w); fprintf(f, "S %x %d %08x %08x %08x\n", k, j, w[0], w[1], w[2]); }
+    // a1200-audrec 2: the HDMI-input hold detector's words $CC / $CD (on the board through lat_meter rec2_i)
+    fprintf(f, "S c 0 %08x %08x %08x\n", top->aud_word[2], top->aud_word[1], top->aud_word[0]);
+    fprintf(f, "S d 0 %08x %08x %08x\n", top->aud_word[5], top->aud_word[4], top->aud_word[3]);
     for (int a = 0; a < 1024; a++) {
       rec_word(8 + ((a >> 4) & 3), a & 15, a >> 6, w);
       fprintf(f, "E %d %08x %08x %08x\n", a, w[0], w[1], w[2]);

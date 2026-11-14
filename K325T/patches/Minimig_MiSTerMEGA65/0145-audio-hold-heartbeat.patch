@@ -1,0 +1,47 @@
+K325T a1200-audrec 2: the mix heartbeat of the audio flight recorder out to the core top (debug)
+aud_rec.v live_tog (toggles at a mix change, at most once per ms) through minimig.v and minimig_m65.v as
+rec_live, for the HDMI-input hold detector K325T/aud_hold.vhd.  Nothing drives back into the machine.
+--- a/rtl/minimig.v
++++ b/rtl/minimig.v
+@@ -277,7 +277,8 @@
+ 	// K325T a1200-audrec: the audio flight recorder (K325T/aud_rec.v): bridge configuration byte in,
+ 	// readout word out (observes only, drives nothing in the machine)
+ 	input   [7:0] rec_cfg,
+-	output [95:0] rec_out
++	output [95:0] rec_out,
++	output        rec_live		// K325T a1200-audrec 2: the mix heartbeat (aud_rec.v live_tog)
+ );
+ 
+ 
+@@ -563,7 +564,8 @@
+ 	.rdata(rdata),
+ 	.aud_dbg(aud_dbg),
+ 	.cfg(rec_cfg),
+-	.rec_out(rec_out)
++	.rec_out(rec_out),
++	.live_tog(rec_live)
+ );
+ 
+ wire [2:0] cachecfg_pre;
+--- a/rtl/minimig_m65.v
++++ b/rtl/minimig_m65.v
+@@ -125,7 +125,8 @@
+ 
+ 	// K325T a1200-audrec: the audio flight recorder (configuration byte in, readout word out)
+ 	input   [7:0] rec_cfg,
+-	output [95:0] rec_out
++	output [95:0] rec_out,
++	output        rec_live		// K325T a1200-audrec 2: the mix heartbeat for the HDMI-input hold detector
+ );
+ 
+ // minimig's ram_address[23] is driven constant 0 (AExp sweep change); consume it here
+@@ -267,7 +268,8 @@
+ 	.ide_readdata  (ide_readdata ),
+ 
+ 	.rec_cfg       (rec_cfg      ),
+-	.rec_out       (rec_out      )
++	.rec_out       (rec_out      ),
++	.rec_live      (rec_live     )
+ );
+ 
+ wire [5:0] ide_req_w;

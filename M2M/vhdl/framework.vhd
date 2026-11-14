@@ -215,6 +215,10 @@ port (
    audio_reset_o           : out   std_logic;
    audio_left_o            : out   signed(15 downto 0);
    audio_right_o           : out   signed(15 downto 0);
+   -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug): the HDMI encoder's 48 kHz sample enable
+   -- (audio_clk_o) and its per-sample toggle (HDMI pixel clock); observation only, may stay open
+   audio_pcm_clken_o       : out   std_logic;
+   audio_hs_tog_o          : out   std_logic;
 
    -- Provide HyperRAM to core (in HyperRAM clock domain)
    hr_clk_o                : out   std_logic;
@@ -1066,6 +1070,8 @@ begin
          audio_reset_o           => audio_reset_o,
          audio_left_o            => audio_left_o,
          audio_right_o           => audio_right_o,
+         audio_pcm_clken_o       => audio_pcm_clken_o,    -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug)
+         audio_hs_tog_o          => audio_hs_tog_o,
          hdmi_clk_i              => hdmi_clk,
          hdmi_rst_i              => hdmi_rst,
          tmds_clk_i              => tmds_clk,

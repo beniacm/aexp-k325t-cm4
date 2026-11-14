@@ -52,6 +52,7 @@
 //     $C4/$C6/$C8/$CA (channel 0..3), r3 = 0: the channel's dbg[95:0] at the trigger; r3 = 1: last DMA address
 //         (word address, 20 bits) | words fetched / zero words since the cut (16 + 16) | its byte's last change (CCK)
 //     $C5/$C7/$C9/$CB: dbg[127:96] at the trigger
+//   $CC/$CD: not here -- K325T/aud_hold.vhd (the HDMI encoder's audio input, audio clock; lat_meter rec2_i)
 //   commands (executed once when the combination appears): idx $CF with r3 = $A: arm (clear the ring and
 //   the snapshot, start recording); idx $CF with r3 = $C: force a trigger; idx $CE with r3 = m: mode = m.
 // Nothing here is reset by the machine: a frozen ring survives Amiga resets until re-armed.
@@ -79,7 +80,11 @@ module aud_rec #(
   input  wire [14:0]  rdata,
   input  wire [511:0] aud_dbg,        // 4 x 128: paula_audio_channel dbg (channel 0 in [127:0])
   input  wire [7:0]   cfg,            // bridge VIDEO byte (asynchronous)
-  output reg  [95:0]  rec_out
+  output reg  [95:0]  rec_out,
+  // a1200-audrec 2: "the mix is changing" for the HDMI-input hold detector (K325T/aud_hold.vhd, audio clock):
+  // toggles at a change of L or R, at most once per 1 ms (7,094 clk7_en periods), so that a 2-flop synchroniser
+  // in any clock sees every toggle; it stops when the mix holds (or when the machine clock stops)
+  output reg          live_tog = 1'b0
 );
 
 // ---------------------------------------------------------------- channel debug fields
@@ -361,6 +366,17 @@ always @(posedge clk) begin
     pv <= {1'b1, {(NS-1){1'b0}}}; pts[8] <= ts[29:0]; pk[8] <= {4'd11, mode, 22'd0};
   end
 end
+
+// ---------------------------------------------------------------- mix heartbeat (aud_hold.vhd)
+reg  [12:0] lt_cnt = 13'd0;
+always @(posedge clk)
+  if (clk7_en) begin
+    if (lt_cnt != 13'd0) lt_cnt <= lt_cnt - 13'd1;
+    if ((ldata != l_d || rdata != r_d) && lt_cnt == 13'd0) begin
+      live_tog <= ~live_tog;
+      lt_cnt <= 13'd7093;
+    end
+  end
 
 // ---------------------------------------------------------------- readout
 wire [3:0] k = idx[3:0];

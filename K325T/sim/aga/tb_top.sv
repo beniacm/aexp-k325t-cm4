@@ -56,6 +56,13 @@ module tb_top (
                                         // keyboard reset: amiga_rst only, not main_reset_core/m2m)
   input  wire [7:0]  rec_cfg,          // a1200-audrec: the bridge configuration byte (aud_rec.v readout)
   output wire [95:0] rec_out,          // ... and the readout word
+  // a1200-audrec 2: the framework's audio path to the HDMI encoder with the hold detector (hdmi_audio_bench.vhd):
+  // its audio clock (12.288 MHz) and pixel clock (27 MHz), the bench-only hold of the crossing's output, the
+  // detector's readout ($CC = 95..0, $CD = 191..96)
+  input  wire        a_clk,
+  input  wire        h_clk,
+  input  wire        aud_inj,
+  output wire [191:0] aud_word,
   input  wire        cpu_rst,          // a1200-ide tests: the 68k RESET instruction line (minimig _cpu_reset_in)
   input  wire        hd_sck, hd_mosi, hd_cs_n,
   output wire        hd_miso, hd_miso_oe, hd_att,
@@ -600,6 +607,12 @@ module tb_top (
   wire [7:0] red, green, blue;
   wire [14:0] ldata, rdata;
 
+  wire rec_live;                      // a1200-audrec 2: aud_rec.v's mix heartbeat
+  // the audio source clock: the ungated source clock with the cache (stall_clk.vhd), else the machine clock
+  hdmi_audio_bench i_hdmi_audio (
+    .src_clk_i(use_cache ? src_clk : clk), .a_clk_i(a_clk), .h_clk_i(h_clk), .l_i(ldata), .r_i(rdata),
+    .inj_i(aud_inj), .live_tog_i(rec_live), .cfg_i(rec_cfg), .word_o(aud_word));
+
   minimig minimig_inst (
     .cpu_address(cpu_addr), .cpu_data(cpu_dout), .cpudata_in(cpu_din), ._cpu_ipl(cpu_ipl_n),
     ._cpu_as(cpu_as_n), ._cpu_uds(cpu_uds_n), ._cpu_lds(cpu_lds_n), .cpu_r_w(cpu_rw),
@@ -626,7 +639,7 @@ module tb_top (
     .cpucfg(mm_cpucfg), .cachecfg(), .memcfg(), .bootrom(), .ide_ena(),
     .ide_fast(), .ide_ext_irq(1'b0), .ide_req(ide_req6), .ide_address({1'b0, ide_address}),
     .ide_write(ide_write), .ide_writedata(ide_writedata), .ide_read(ide_read), .ide_readdata(ide_readdata),
-    .rec_cfg(rec_cfg), .rec_out(rec_out)
+    .rec_cfg(rec_cfg), .rec_out(rec_out), .rec_live(rec_live)
   );
 
   // a1200-ide: the hard disk link (fclk = ui_clk with --cache, else the machine clock)

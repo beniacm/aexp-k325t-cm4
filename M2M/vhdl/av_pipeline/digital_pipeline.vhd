@@ -49,6 +49,10 @@ entity digital_pipeline is
       audio_rst_i              : in  std_logic;
       audio_left_i             : in  signed(15 downto 0); -- Signed PCM format
       audio_right_i            : in  signed(15 downto 0); -- Signed PCM format
+      -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug): the 48 kHz sample enable (audio_clk_i) and
+      -- vga_to_hdmi's per-sample toggle (hdmi_clk_i); observation only, may stay open
+      audio_pcm_clken_o        : out std_logic;
+      audio_hs_tog_o           : out std_logic;
 
       -- Digital output (HDMI)
       hdmi_clk_i               : in  std_logic;
@@ -609,8 +613,10 @@ begin
          pcm_cts      => audio_pcm_cts,
 
          -- TMDS output (parallel)
-         tmds         => hdmi_tmds
+         tmds         => hdmi_tmds,
+         pcm_hs_tog   => audio_hs_tog_o                             -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug)
       ); -- i_vga_to_hdmi
+   audio_pcm_clken_o <= audio_pcm_clken;                            -- M2M-UPSTREAM audio-probe (K325T a1200-audrec, debug)
 
 
    ---------------------------------------------------------------------------------------------
