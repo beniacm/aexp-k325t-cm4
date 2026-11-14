@@ -43,7 +43,11 @@ if {[info exists env(PREFETCH)] && $env(PREFETCH) eq "1"} { lappend gens G_PREFE
 if {[llength $gens]} { set_property generic $gens [current_fileset] }
 # run settings as in CORE-R6.xpr
 set_property STEPS.SYNTH_DESIGN.ARGS.FLATTEN_HIERARCHY none [get_runs synth_1]
-set_property strategy Performance_ExtraTimingOpt [get_runs impl_1]
+# IMPL_STRATEGY: another implementation strategy (default Performance_ExtraTimingOpt).  The compressed bitstream's
+# size moves by tens of KB with the placement; a build that misses the Radxa flash slot by a little can be redone
+# with another strategy (the gate checks timing as always).
+set strat [expr {[info exists env(IMPL_STRATEGY)] ? $env(IMPL_STRATEGY) : "Performance_ExtraTimingOpt"}]
+set_property strategy $strat [get_runs impl_1]
 # at most $VIVADO_JOBS (default 4) jobs/threads per build: two builds may share this PC
 set jobs [expr {[info exists env(VIVADO_JOBS)] ? $env(VIVADO_JOBS) : 4}]
 set_param general.maxThreads $jobs
