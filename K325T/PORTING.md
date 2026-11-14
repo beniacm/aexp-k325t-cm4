@@ -2332,3 +2332,147 @@ dea77080760aebdb501c95c9fc6101c1), both 9060b41, stay the board-verified bitstre
 before the constraint files and the gate, but their routed netlists contain none of the cells the
 constraints they did not match name (QNICE_SOC, EAE, sd_card, sd_emu, the prefetch counters; hdd_spi on
 the Luckfox), so they lost no constraint, and they are not rebuilt just for the gate.
+
+
+# The fast 68020 on its own clock (branch a1200-fastclk, 2026-11-13/14)
+
+The menu's "Fast 68020" line (F1's line 88, Amiga Hardware submenu; only with the 68020 and AGA) selects
+a second TG68K on its own 51.59 MHz clock with caches, instead of the stock 68EC020 model.  Off = the
+stock A1200, clock for clock (gates unchanged, below).  Study and measurements: ext/aexp14_cpuspeed
+(REPORT.md, FINDINGS.txt).
+
+## Design
+
+- Clock: CLKOUT1 of the machine-clock MMCM (stall_clk.vhd, VCO 1135 MHz / G_CPU_DIV = 22 -> 51.59 MHz,
+  one BUFG), asynchronous to the gated machine clock; it never stops (the CPU runs from its caches while
+  the stall controller holds the machine).
+- K325T/fc_cpu.vhd (cpu_clk): TG68KdotC_Kernel (68020, its 32-bit data path s21_en, no MMU030: patch
+  0140 generic MMU030_Present; generics G_CPU030 / G_MMU030 for a later 68EC030 variant), 16 KB
+  I-cache and 8 KB D-cache (direct mapped, 16-byte lines, block RAM) with a line buffer each (a hit
+  answers in the clock of the request, an array hit one clock later), stores update the D line and
+  invalidate a hit I line, 8-entry posted store queue (fast-RAM stores to amiga_fastram, the others to
+  the mailbox, in order; reads that leave the caches wait for it; never cleared by a CPU reset).
+  Cached: fast RAM and Kickstart (I and D), chip RAM code (I, CACR.E); chip data, custom chips, CIAs,
+  Gayle uncached.
+- The address bus has 24 lines as on the 68EC020 (fc5; input cfg_a24_i = cpu_wrapper's ec020, i.e. AGA +
+  68020): the kernel's address is masked to 24 bits before decode, caches, store queue and both ports, so an
+  address with a non-zero high byte is the 24-bit address (fast RAM, ROM, chip RAM...), as on the real chip.
+  Without it (fc4) such an access went past the D-cache to the mailbox and cpu_wrapper's 24-bit mask handed
+  it to the stock fast-RAM instance, which is off the DDR3 port in the fast setting: the machine hung (the
+  CPU instruction test on the board, ADDQ.B to $0141FFBA; also "24-bit dirty" software).
+- CPU reset (fc5): a fill or mailbox read still open at the reset completes later (the mailbox only after
+  the machine reset) and is an orphan: it answers no request and a filled line is not installed.  (fc4
+  acknowledged it to the kernel's first read after the reset, the reset SSP: the CPU could start with a
+  wrong stack pointer and not come back from a reset during store traffic.)  The caches are cleared by the
+  reset; the store queue drains (accepted stores always reach memory).
+- Kernel patches in both CPU instances (from the CPU instruction test, WinUAE cputester, stock 68EC020 on
+  the board): 0142 -- an exception raised at decode right after a non-trapping CHK/CHK2/CMP2 (ILLEGAL, line
+  A/F, privilege violation) was taken as a CHK trap (format-$2 frame, vector offset $18); new chk_own =
+  exec(trap_chk) AND set(trap_chk) at the five places that read the flag; a real CHK/CHK2 trap keeps its
+  format-$2 frame.  0143 -- DIVU.W overflow on the 68020 kept C and Z and set N = old N OR dividend bit 31;
+  now C = 0 (Motorola: always cleared), Z = 0 and N = dividend bit 31 (undefined flags as WinUAE's
+  hardware-matched 68020 model); V, X and the other divides unchanged.  Proof: ext/aexp15_cpu030/
+  FINDINGS2.txt (CASCHK 22,682 and MULDIV 44,898 tests pass; the stock gates unchanged).
+- K325T/fc_mbox.vhd (main_clk): replays each mailbox request on cpu_wrapper's CPU boundary as a TG68K
+  would (a longword as two words with `longword`: 32-bit AGA chip cycles as for the stock CPU).  Writes
+  are posted (acknowledged when captured), reads answered with their data.
+- Audio silences in Domination (fast setting, ~1 in 3 runs, one ~230 ms cut of all channels with the music in
+  time): open.  Not a CPU-timed replay wait: the replay (The Player 6.1, CIA mode) times DMA on and the repeat
+  pointers with CIA-B timer B (~11 lines each); see FINDINGS.txt "FINDING 2".
+- Interrupt-register accesses are synchronous: writes to $DFF090-$DFF09F (INTENA, INTREQ, DMACON,
+  ADKCON...) and any CIA ICR access bypass the store queue, are answered G_SYNC = 8 machine clocks
+  after their bus cycle, and the kernel continues 6 CPU clocks later (IPL synchroniser).  Without this
+  a handler's acknowledge + RTE took the same interrupt again (Domination's music ran ahead on fc2).
+- Audio retrigger guard (a deliberate compatibility aid of the fast setting, fc_mbox): when a DMACON
+  write has switched an audio channel's DMA off, a later DMACON write switching the same channel on is
+  held until two raster lines (G_RETRIG = 3632 machine clocks) have passed since the off-write; per
+  channel, other bits unaffected.  Replay routines wait between off and on with fixed dbf loops that the
+  fast CPU runs ~6x too fast; Paula then keeps playing the old block and the retrigger is lost (silences
+  in Domination).  Cost: up to 128 us of CPU stall per retrigger (the DMACON write is synchronous anyway).
+  Bench (irq/retrig2.s, 64 attempts at different phases, 300-turn dbf): without the guard 51 of 64
+  retriggers lost, with it 0 of 64 (stock: 0 of 64).
+- cpu_wrapper patch 0139: an external-CPU port (ext_en = the fast setting; the TG68K instance held in
+  reset, the cycle model and the 68EC020 cache model see nothing); patch 0141: the stock TG68K without
+  MMU030 (it was never used: cpu030 is never set; 1.8k LUTs, the wrapper's longest half-period path).
+- mega65.vhd: a second amiga_fastram (i_fc_fastram, core side in cpu_clk, G_IDX_BITS = 7: 256-byte
+  cache, F2's write queue) on the fast-RAM Avalon master, selected by the fast setting while the master
+  is quiet (no request, no read beats outstanding).  Fast RAM windows as before (Zorro II 8 MB, Zorro III 128 MB).
+  fc6: hr_rst (every M2M reset) clears the count of outstanding read beats.  avm_mig aborts a burst in flight at
+  hr_rst and discards its beats; before fc6 a long press during a fast-RAM fill left the count above 0 for good,
+  the select could never change again and the next setting change left the other instance unanswered (fc5 on the
+  board: stock black after the fast setting had run, CPU stopped at $200000, until the next FPGA load).
+  fc7 (closes the former known limit, fault 10): the cold-boot window main.vhd fc_flush (from amiga_cold_reset --
+  every M2M reset and every topology change incl. the CPU line -- until the CPU leaves that reset, while it is held)
+  makes both instances clear their tags (one line per clock once nothing is outstanding) and drop their queued
+  writes (the stock path's one posted word completes), fc_cpu drop its undrained store-queue entries, fc_mbox answer
+  without executing; p_fc_sel changes only after the selected instance has been idle for 16 clocks.  No cached line
+  and no queued store of one setting survives into the other (bench/sw/coh.s: fc6 5 of 7 boots stale, fc7 0).
+  Warm resets are unchanged (stores drain).
+- Constraints: i_fc_fastram's crossings (copy of i_amiga_fastram's), the select, and
+  set_max_delay 15 -datapath_only between main_clk and the CPU clock (core_k325t.xdc).
+
+## Settings file and menu (for the Linux side)
+
+- No new menu item: the menu file is byte-identical to F1's (menu id AA719CD5).  The "Fast 68020" line
+  is F1's: OPTM_SIZE 95 (the settings file is 95 bytes; legacy profiles of 94 bytes lack the item),
+  group 17, machine topology bit 10 (main_topo / amiga_cold_boot): a change cold-boots the Amiga; the
+  line is held while the menu processor restarts.  Profile key: "CPUFAST:Fast 68020" 0/1.
+- The meaning of the line differs between bitstreams (F1/F2: the unthrottled 68EC020 model; this
+  branch: the CPU on its own clock); the menu id does not tell them apart.  A release should either
+  ship one meaning only or give this branch a new menu id (a changed item label would do it).
+- The shell keeps unknown keys and writes them back (F1 notes): a profile saved with CPUFAST = 1 turns
+  the fast CPU on again in any later bitstream that has the line.
+
+## Verification (bench, ext/aexp14_cpuspeed)
+
+- Lockstep (trace) bench of fc_cpu against the stock TG68K configuration: 58 random programs x 1000
+  instructions, 15 probe programs, the first 3700 writes of Kickstart 3.1: all match.
+- Stock gates: cputime2 44/44 (IDE off / on), A500 gate OCS / ECS (IDE off / on) = reference.
+- Fast setting: cputime_ff code + data fast x stock: L1 4.99, L0 5.82, fast loads 7.86, fast stores
+  2.92, MULU 53, DIVU 7.7; chip stores 1.06, chip reads 1.03 (0.86 under 8-plane FMODE 3 DMA).
+  Kickstart insert-disk screen at frame 150 (stock 268).  Interrupt test (irq2.s): entries = events.
+- Board (Radxa, fc4): Domination's four slow parts 9.6 / 9.3 / 4.7 / 6.5 new pictures per second (stock
+  2.3 / 4.0 / 1.6 / 2.3), music in step with stock, Workbench from the hard disk.
+
+## Builds
+
+- fc4 (c066d9c), Radxa: 8,354,880 bytes of configuration data (slot 1 limit 8,384,512), 66,307 LUTs,
+  425 BRAM, 83 DSP, 16 BUFG, WNS +0.109 (cpu_clk +0.814, main_clk +1.410), WHS +0.036.
+- fc5 (6e86aa1 RTL), Radxa, release candidate: built from c3aa88f with Performance_RefinePlacement (the
+  default since eae6ebc): 7,423,812 bytes of configuration data (960,700 under the slot), 66,059 LUTs, 425 BRAM,
+  WNS +0.067 (clk_pll_i), cpu_clk +0.744, main_clk +2.467, WHS +0.034; md5 db50c8f6.  The default-strategy build
+  of the same RTL had 8,385,124 bytes (612 over): RefinePlacement leaves two clock-region rows mostly empty
+  (17,198 logic frames instead of 19,780).
+- fc6 (b6357fe: fc5 + the select fix + the stock instance's quick_i '0'), Radxa: 7,319,540 bytes of configuration
+  data (1,064,972 under the slot), 66,169 LUTs, 425 BRAM, WNS +0.066 (clk_pll_i), cpu_clk +0.582, main_clk +2.175,
+  WHS +0.028; md5 f53d0364.  Luckfox: see bit/SESSION_NOTES_fc6.txt.
+- fc5 Luckfox (on the board): 6e86aa1, default strategy then: 65,905 LUTs, 421 BRAM, WNS +0.004 (clk_pll_i),
+  cpu_clk +0.071; md5 8a423160.
+- Slot trim kept in reserve (e1ed2ba, shelved by ebbf3ac): amiga_fastram G_DRAM_STYLE "block" for the stock
+  instance = its 16 KB cache in 4 RAMB36 instead of LUT RAM, -4.1k LUTs; needs the bench proof of
+  bench/step_fc5b.sh (fast-RAM runs on the block-RAM model) before it is taken, and the dram_* -> m_rdata_reg*
+  max-delay removed with it.
+
+## Release checklist
+
+1. Kernel patches 0142 + 0143 in both instances (fc5); lockstep and gates again (fc5: see FINDINGS.txt).
+2. The CPU instruction test (WinUAE cputester groups) in the fast setting on the board.
+3. A menu id / label decision for the fast line (above).
+4. Flash slot fit re-checked for the release build (fc4: 29.6 KB margin; placement moves tens of KB; fc5 with
+   RefinePlacement: 960 KB margin).
+5. Known limits: chip-RAM reads are latency-bound (crossing + bus); a fixed CPU delay loop runs ~5.8x
+   faster (dbf: 72 ns per iteration instead of 420 ns) -- programs that time hardware with dbf loops can
+   be too short (audio DMA restarts are covered by the guard; keyboard handshakes and other busy-waits
+   are not); the stock setting is unaffected.
+
+## 68EC030 variant (planned, not built)
+
+- TG68K: CPU030 = 1 (ec030 = 1, no MMU): make G_CPU030 a run-time input latched in reset for a third
+  menu choice; PMOVE/PTEST must trap (F-line) as on a 68EC030.
+- Addressing: in AGA main.vhd keeps the 24-bit EC020 bit in both settings, so today's fast CPU is a
+  fast 68EC020 in addressing terms (non-fast addresses >= 16 MB alias into the 24-bit map through
+  cpu_wrapper, as on a real 68EC020).  A 32-bit 030 needs: no 24-bit mask for the external CPU,
+  unmapped high addresses answered in fc_cpu (no bus cycle), Zorro III autoconfig (exists: the 128 MB
+  board; fc_cpu decodes its window already).
+- AmigaOS: AFF_68030 via the 030 CACR bits; SysInfo shows a 68EC030 when the MMU test fails; the 030
+  data-cache enable (CACR ED) is ignored by fc_cpu's D-cache (fast RAM / ROM only, always on).
