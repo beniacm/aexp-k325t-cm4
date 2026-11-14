@@ -1530,12 +1530,14 @@ begin
    main_fast_ddr <= "0001" & main_fast_addr(23 downto 1) when main_fast_addr(28) = '1' else
                     '1' & main_fast_addr(26 downto 1);
 
-   -- a1200-fastclk fc5 (slot trim): the data array in block RAM (clock for clock as the LUT RAM, see
-   -- amiga_fastram), and quick_i off: F1/F2's quick read hits served the unthrottled stock CPU; the fast
-   -- setting now runs fc_cpu with its own instance (i_fc_fastram) and this one is off the DDR3 port then,
-   -- so quick_i (= the fast setting) was 0 whenever this instance answers.  Stock setting unchanged.
+   -- a1200-fastclk fc5: the data array stays LUT RAM ("distributed", as in every build before the slot
+   -- trim; the fc5 Radxa build fits the slot with another implementation strategy, so the block-RAM form
+   -- of e1ed2ba is shelved -- "block" is the trim kept in reserve, see amiga_fastram), and quick_i off:
+   -- F1/F2's quick read hits served the unthrottled stock CPU; the fast setting now runs fc_cpu with its
+   -- own instance (i_fc_fastram) and this one is off the DDR3 port then, so quick_i (= the fast setting)
+   -- was 0 whenever this instance answers.  Stock setting unchanged.
    i_amiga_fastram : entity work.amiga_fastram
-      generic map (G_DRAM_STYLE => "block")
+      generic map (G_DRAM_STYLE => "distributed")
       port map (
          clk_i               => main_clk,
          sel_i               => main_fast_sel,
