@@ -248,3 +248,11 @@ byte-identical to the build before, the determinism test (single-valued version)
 0c253188 with 0 mismatching frames in 3 boots, the five demos.  After `m65flash.py write 1` +
 verify and a cold start (plug off / on): `core slot1`, 30 full resets without a freeze, SysInfo
 as before, the determinism test again 27dbf6f3 / 0c253188.
+
+## State of the branches (2026-11-22)
+
+See the table at the end of `K325T/README.md`.  In short: `qmtech-k325t-cm4` and `a1200-ddr3` / `a1200-aga` /
+`a1200-lxshell` are board-verified (the last is what flash slot 1 of the Radxa rig holds); `a1200-fastclk` (fast
+68020, fc7) is verified over JTAG but not in flash; `a500-bacon` adds the frame measure `fmeas.v` and runs the demo
+"Bacon of Hope" (Desire, 2026) from boot to its end part on the A500 profile; the remaining `a1200-*` branches are
+experiments or shelved steps.
