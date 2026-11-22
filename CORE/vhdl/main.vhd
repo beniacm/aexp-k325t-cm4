@@ -313,7 +313,9 @@ architecture synthesis of main is
          field1         : out std_logic;
 
          ldata          : out std_logic_vector(14 downto 0);
-         rdata          : out std_logic_vector(14 downto 0)
+         rdata          : out std_logic_vector(14 downto 0);
+
+         k325t_rbus     : out std_logic_vector(31 downto 0)
       );
    end component minimig_m65;
 
@@ -412,10 +414,12 @@ architecture synthesis of main is
          b      : in  std_logic_vector(7 downto 0);
          mreset : in  std_logic;
          cfg    : in  std_logic_vector(7 downto 0);
+         rbus   : in  std_logic_vector(31 downto 0);
          q      : out std_logic_vector(95 downto 0)
       );
    end component fmeas;
    signal meas_e14         : std_logic;
+   signal meas_rbus        : std_logic_vector(31 downto 0);
    signal meas_r, meas_g, meas_b : std_logic_vector(7 downto 0);
    signal kbd_core_reset   : std_logic;
 
@@ -1161,7 +1165,9 @@ begin
                                                  -- (as MiSTer: assign VGA_F1 = field1)
 
          ldata          => aud_ldata,
-         rdata          => aud_rdata
+         rdata          => aud_rdata,
+
+         k325t_rbus     => meas_rbus
       ); -- i_minimig
 
    ---------------------------------------------------------------------------
@@ -1238,6 +1244,7 @@ begin
          b      => meas_b,
          mreset => amiga_rst,
          cfg    => meas_cfg_i,
+         rbus   => meas_rbus,
          q      => meas_out_o
       );
 

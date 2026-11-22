@@ -19,7 +19,7 @@ for ln in open("fmeas_pix.txt"):
 q = {}
 for ln in open("fmeas_q.txt"):
     k, w = ln.split()
-    q[k] = int(w.replace("x", "0"), 16)   # never-written RAM words (beyond the last frame) read x
+    q[k] = int(w.replace("x", "0").replace("X", "0"), 16)   # never-written RAM words (beyond the last frame) read x
 
 
 def words(x):
@@ -84,5 +84,24 @@ for a in range(128):
         h = 8 * a + k
         got = (x >> (84 - 12 * k)) & 0xFFF
         check("grab %d" % h, got, gl.get(h, 0) if h < len(gl) else got)
+# register write recorder: the events logged by the bench inside the capture window (clock times)
+cw = dict(l.split() for l in open("fmeas_capwin.txt"))
+t0, t1 = int(cw["start"]), int(cw["end"])
+ev = []
+for ln in open("fmeas_rbus.txt"):
+    t, l, c, d, rg, dt = ln.split()
+    if t0 < int(t) <= t1:
+        ev.append((int(d), int(l), int(c), int(rg, 16), int(dt, 16)))
+n = (words(q["W0"])[2] >> 20) & 0xFFF
+check("rec count", n, len(ev))
+for k in range(min(len(ev), 100)):
+    w0, w1, w2 = words(q["W%d" % k])
+    got = (w0 >> 31, w0 >> 16 & 0x1FF, w0 >> 8 & 0xFF, w0 & 0xFF, w1 >> 16)
+    d, l, c, rg, dt = ev[k]
+    exp = (d, l, c, rg, dt)
+    if got != exp:
+        bad += 1
+        print("rec %d got %s exp %s MISMATCH" % (k, got, exp))
+print("register writes recorded: %d (first %s)" % (n, ev[:2]))
 print("TB_FMEAS_%s (%d mismatches)" % ("PASS" if bad == 0 else "FAIL", bad))
 sys.exit(1 if bad else 0)

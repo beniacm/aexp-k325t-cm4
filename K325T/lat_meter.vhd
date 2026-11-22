@@ -34,7 +34,7 @@ entity lat_meter is
       -- use -- $FB (memory mode / topology, stallmon cache) and $E0-$E5 (the result mailbox, stallmon
       -- mbox: gates, cputime2) -- no latency measurement, no $FF..$FC / $D0-$D6 words (they read 0)
       G_FULL : boolean := true;
-      -- a500-bacon: the core's frame measure (K325T/fmeas.v) answers indices $80-$DF
+      -- a500-bacon: the core's frame measure (K325T/fmeas.v) answers indices $00-$DF
       G_MEAS : boolean := false
    );
    port (
@@ -47,7 +47,7 @@ entity lat_meter is
       dbg2_i     : in  std_logic_vector(287 downto 0) := (others => '0');   -- index $FD..$FB (async)
       mbox_i     : in  std_logic_vector(511 downto 0) := (others => '0');   -- index $E0-$E5 (async)
       pf_i       : in  std_logic_vector(671 downto 0) := (others => '0');   -- index $D0-$D6 (async)
-      meas_i     : in  std_logic_vector(95 downto 0) := (others => '0');    -- index $80-$DF with G_MEAS (async)
+      meas_i     : in  std_logic_vector(95 downto 0) := (others => '0');    -- index $00-$DF with G_MEAS (async)
       lp_req     : out std_logic;
       lp_we      : out std_logic;
       lp_addr    : out std_logic_vector(27 downto 0);
@@ -150,7 +150,7 @@ begin
          end if;
 
          d := 0; if hidx(6) = '1' then d := 1; end if;
-         if G_MEAS and (hidx(7 downto 6) = "10" or hidx(7 downto 5) = "110") then
+         if G_MEAS and (hidx(7) = '0' or hidx(7 downto 6) = "10" or hidx(7 downto 5) = "110") then
             -- the frame measure's word for this index (its address also uses r3; fmeas.v)
             aux <= meas_i;
          elsif not G_FULL and hidx /= x"FB" and hidx(7 downto 3) /= "11100" then

@@ -9,9 +9,38 @@ module tb_fmeas;
   always #17.6 clk = ~clk;
   reg e14 = 0, hblank = 1, vblank = 1, vs = 0, mreset = 0;
   reg [7:0] r = 0, g = 0, b = 0, cfg = 8'h00;
+  reg [31:0] rbus = 32'h00FF0000;
   wire [95:0] q;
   fmeas dut (.clk(clk), .e14(e14), .hblank(hblank), .vblank(vblank), .vs(vs), .r(r), .g(g), .b(b),
-             .mreset(mreset), .cfg(cfg), .q(q));
+             .mreset(mreset), .cfg(cfg), .rbus(rbus), .q(q));
+
+  // the register bus: 313 lines x 227 colour clocks x 8 clocks; cck high for 4 clocks of 8; sol (+ sof in
+  // line 0) for the 4 clocks of colour clock 0; every 7th line a copper move to BPLCON1 at cck 40 (logged),
+  // a BPL1DAT DMA write at cck 41 (must not be recorded) and a CPU write to BPLCON0 at cck 60..61 (logged)
+  integer rl, rc, rk, fr2;
+  reg [7:0] rreg; reg [15:0] rdat; reg rcpu, rdbr;
+  initial begin
+    fr2 = $fopen("fmeas_rbus.txt", "w");
+    forever for (rl = 0; rl < 313; rl = rl + 1) for (rc = 0; rc < 227; rc = rc + 1) begin
+      rreg = 8'hFF; rdat = 16'h0000; rcpu = 0; rdbr = 0;
+      if (rl % 7 == 3 && rc == 40) begin rreg = 8'h81; rdat = {rl[7:0], 8'h40}; rdbr = 1; end
+      if (rl % 7 == 3 && rc == 41) begin rreg = 8'h88; rdat = 16'h1234; rdbr = 1; end
+      if (rl % 7 == 3 && (rc == 60 || rc == 61)) begin rreg = 8'h80; rdat = {7'd0, rl[8:0]}; rcpu = 1; end
+      if (rreg != 8'hFF && rreg != 8'h88 && !(rcpu && rc == 61))
+        $fwrite(fr2, "%0d %0d %0d %0d %02x %04x\n", $time, rl, rc, rdbr & !rcpu, rreg, rdat);
+      for (rk = 0; rk < 8; rk = rk + 1) begin
+        @(posedge clk);
+        rbus <= {1'b0, rk < 4, rc == 0 && rk < 4, rl == 0 && rc == 0 && rk < 4, rcpu, rdbr, 2'b00, rreg, rdat};
+      end
+    end
+  end
+  reg cap_d = 0; integer fc;
+  initial fc = $fopen("fmeas_capwin.txt", "w");
+  always @(posedge clk) begin
+    cap_d <= dut.capturing;
+    if (dut.capturing && !cap_d) $fwrite(fc, "start %0d\n", $time);
+    if (!dut.capturing && cap_d) $fwrite(fc, "end %0d\n", $time);
+  end
 
   integer fp, fq, line, px, frame;
   reg [31:0] lfsr = 32'h1234_5678;
@@ -74,6 +103,8 @@ module tb_fmeas;
     for (i = 0; i < 3; i = i + 1) begin setidx(8'h80, i); $fwrite(fq, "R%0d %024x\n", i, q); end
     for (i = 0; i < 144; i = i + 1) begin setidx(8'hC0 | (i >> 4), i & 15); $fwrite(fq, "L%0d %024x\n", i, q); end
     for (i = 0; i < 128; i = i + 1) begin setidx(8'hD0 | (i >> 4), i & 15); $fwrite(fq, "G%0d %024x\n", i, q); end
+    for (i = 0; i < 100; i = i + 1) begin setidx(i >> 4, i & 15); $fwrite(fq, "W%0d %024x\n", i, q); end
+    $fclose(fr2); $fclose(fc);
     $fclose(fq);
     $finish;
   end

@@ -1,0 +1,52 @@
+K325T a500-bacon: minimig exports the custom register bus (cck, sol, sof, CPU write, dbr, register, data) for the
+register write recorder in K325T/fmeas.v.  Observes only; nothing in the machine changes.
+
+--- a/rtl/minimig.v
++++ b/rtl/minimig.v
+@@ -272,7 +272,10 @@
+ 	input         ide_write,
+ 	input  [15:0] ide_writedata,
+ 	input         ide_read,
+-	output [15:0] ide_readdata
++	output [15:0] ide_readdata,
++
++	// K325T a500-bacon: the custom register bus for the register write recorder (K325T/fmeas.v; observes only)
++	output [31:0] k325t_rbus
+ );
+ 
+ 
+@@ -993,5 +996,10 @@
+ assign rst_out = reset;
+ 
+ 
++// K325T a500-bacon (2026-11-22): the register bus as the custom chips latch it, for the register write
++// recorder in K325T/fmeas.v: {0, cck, sol, sof, CPU write strobe, dbr (a DMA cycle: copper or DMA data),
++// 2'b0, reg_address[8:1], custom_data_in}
++assign k325t_rbus = {1'b0, cck, sol, sof, cpu_custom & (cpu_hwr | cpu_lwr), dbr, 2'b00, reg_address, custom_data_in};
++
+ endmodule
+ 
+--- a/rtl/minimig_m65.v
++++ b/rtl/minimig_m65.v
+@@ -121,7 +121,10 @@
+ 
+ 	// audio (Paula, 15-bit signed)
+ 	output [14:0] ldata,
+-	output [14:0] rdata
++	output [14:0] rdata,
++
++	// K325T a500-bacon: the custom register bus for the register write recorder (K325T/fmeas.v)
++	output [31:0] k325t_rbus
+ );
+ 
+ // minimig's ram_address[23] is driven constant 0 (AExp sweep change); consume it here
+@@ -260,7 +263,8 @@
+ 	.ide_write     (ide_write    ),
+ 	.ide_writedata (ide_writedata),
+ 	.ide_read      (ide_read     ),
+-	.ide_readdata  (ide_readdata )
++	.ide_readdata  (ide_readdata ),
++	.k325t_rbus    (k325t_rbus   )
+ );
+ 
+ wire [5:0] ide_req_w;

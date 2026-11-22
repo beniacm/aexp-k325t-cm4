@@ -21,9 +21,19 @@
 //   line table: the CRC of each window line v (0..511) of that frame (2 x 256 x 32 block RAM)
 //   line grab : the 12-bit pixels h = 0..1023 of line GRAB of that frame (8 x 128 x 12 LUT RAM)
 //
+// Register write recorder (same captured frame): every write on the custom register bus whose register
+// is in an enabled group (group = register address bits 8..5, i.e. $000-$01E = group 0 .. $1E0-$1FE = 15;
+// enable mask = parameter 5, default $0390 = groups 4 ($080-$09E: DIW/DDF/DMACON..), 7 ($0E0: BPLxPT),
+// 8 ($100: BPLCON/BPLxMOD), 9 ($120: SPRxPT)) by the CPU or the copper -- DMA data writes (BPLxDAT,
+// SPRxPOS..DATB, AUDxDAT, during a DMA cycle) are left out -- up to 2048 entries (block RAM):
+// {dma (1, the copper when the register is not a DMA data register), line since the frame start (9),
+// colour clock since the line start (8), register (8), data (16)}.  Lines/clocks count from Agnus' sof/sol.
+//
 // Configuration: the bridge VIDEO byte 1rrrvvvv (asynchronous), decoded as lat_meter does: registers
 // r3/r4/r5 are taken while r6 selects page 7; idx = r4 & r5.
 // Readout (q, quasi-static: changes only when the index or the measured data changes):
+//   idx $00-$7F, a = {idx[6:0], r3} (11 bits): register write a: W0 = {dma, 6'b0, line (9), cck (8),
+//                register (8)}, W1 = {data (16), a (11), 5'b0}, W2 = {count (12), overflow, 19'b0}
 //   idx $80-$BF, a = {idx[5:0], r3} (10 bits): W0 = ring[2a], W1 = ring[2a+1],
 //                W2 = {a (10), 6'b0, frame count [15:0]}
 //   idx $C0-$CF, a = {idx[3:0], r3} (8 bits): W0 = line CRC [2a], W1 = line CRC [2a+1],
@@ -36,10 +46,11 @@
 //                    W2 = window pixels of the last frame
 //            r3 = 2: W0 = {XLO, XHI}, W1 = {YLO, YHI}, W2 = {GRAB, shift register [15:0]}
 //            r3 = 3: W0 = CRC of the last finished frame, W1 = window pixels of the captured frame,
-//                    W2 = {lines of the captured frame (16), 16'b0}
+//                    W2 = {lines of the captured frame (16), register writes recorded (12), overflow, 3'b0}
 // Commands (side effects only on CHANGES of r5 while r4 = $D):
 //   r5 9 -> 8 or 8 -> 9 : shift register := shift register << 4 | r3
-//   r5 -> $A            : parameter r3 := shift register [15:0]   (0 XLO, 1 XHI, 2 YLO, 3 YHI, 4 GRAB)
+//   r5 -> $A            : parameter r3 := shift register [15:0]   (0 XLO, 1 XHI, 2 YLO, 3 YHI, 4 GRAB,
+//                                                                    5 register group mask)
 //   r5 -> $B            : action r3: 1 = arm (capture the next whole frame), 3 = clear the nib flag
 // Defaults: XLO 0, XHI 1023, YLO 0, YHI 511, GRAB 100.
 module fmeas (
@@ -53,6 +64,7 @@ module fmeas (
   input  wire [7:0]  b,
   input  wire        mreset,       // machine reset (only recorded)
   input  wire [7:0]  cfg,          // bridge VIDEO byte (asynchronous)
+  input  wire [31:0] rbus,         // minimig's register bus (patch 0146): {0, cck, sol, sof, cpuw, dbr, 00, reg, data}
   output reg  [95:0] q
 );
 
@@ -73,7 +85,7 @@ module fmeas (
   reg [3:0] stable = 4'd0;
   reg [3:0] r3 = 4'd0, r4 = 4'd0, r5 = 4'd0, r6 = 4'd0, r5_prev = 4'd0;
   reg [31:0] sr = 32'd0;
-  reg [15:0] xlo = 16'd0, xhi = 16'd1023, ylo = 16'd0, yhi = 16'd511, grab = 16'd100;
+  reg [15:0] xlo = 16'd0, xhi = 16'd1023, ylo = 16'd0, yhi = 16'd511, grab = 16'd100, gmask = 16'h0390;
   reg        arm_cmd = 1'b0, clrnib_cmd = 1'b0;
   wire [7:0] idx = {r4, r5};
 
@@ -102,6 +114,7 @@ module fmeas (
           4'd2: ylo  <= sr[15:0];
           4'd3: yhi  <= sr[15:0];
           4'd4: grab <= sr[15:0];
+          4'd5: gmask <= sr[15:0];
           default: ;
         endcase
       else if (r5 == 4'hB) begin
@@ -240,6 +253,64 @@ module fmeas (
     endcase
   end
 
+
+  // ---------------------------------------------------------------- register write recorder
+  wire        rb_cck = rbus[30], rb_sol = rbus[29], rb_sof = rbus[28], rb_cpuw = rbus[27], rb_dbr = rbus[26];
+  wire [7:0]  rb_reg = rbus[23:16];
+  wire [15:0] rb_dat = rbus[15:0];
+  // DMA data registers: BPLxDAT $110-$11E (88-8F), SPRxPOS..DATB $140-$17E (A0-BF), AUDxDAT, DSKDAT
+  wire        rb_dmadata = (rb_reg[7:3] == 5'b10001) || (rb_reg[7:5] == 3'b101) || rb_reg == 8'h55 || rb_reg == 8'h5D ||
+                           rb_reg == 8'h65 || rb_reg == 8'h6D || rb_reg == 8'h13;
+  wire        rb_idle = rb_reg == 8'hFF;
+  reg  [8:0]  rb_line = 9'd0;
+  reg  [7:0]  rb_hc = 8'd0;
+  reg         rb_cck_d = 1'b0;
+  reg  [23:0] rb_last = 24'hFFFFFF;
+  reg  [12:0] rcnt = 13'd0;
+  reg         rovf = 1'b0;
+  reg         rr_we = 1'b0;
+  reg  [10:0] rr_wa = 11'd0;
+  reg  [47:0] rr_wd = 48'd0;
+  reg  [47:0] rrec [0:2047];
+  reg         cap_d = 1'b0;
+  reg         rb_sol_d = 1'b0;
+  reg         rb_key_ok_d = 1'b0;
+  wire        rb_solr = rb_sol && !rb_sol_d;
+  wire [7:0]  rb_hc_now = rb_solr ? 8'd0 : (rb_cck && !rb_cck_d) ? rb_hc + 8'd1 : rb_hc;
+  wire [8:0]  rb_line_now = rb_solr ? (rb_sof ? 9'd0 : rb_line + 9'd1) : rb_line;
+  wire        rb_take = !rb_idle && (rb_cpuw || (rb_dbr && !rb_dmadata)) && gmask[rb_reg[7:4]];
+  always @(posedge clk) begin
+    rr_we <= 1'b0;
+    cap_d <= capturing;
+    rb_cck_d <= rb_cck;
+    rb_sol_d <= rb_sol;
+    if (capturing && !cap_d) begin rcnt <= 13'd0; rovf <= 1'b0; end
+    // cck is a level (one 7 MHz period high, one low): count its rising edges; sol / sof are one 7 MHz
+    // period long: count the rising edge of sol
+    rb_hc   <= rb_hc_now;
+    rb_line <= rb_line_now;
+    // one entry per access: the (register, data) pair changed since the previous clock, or the bus was
+    // somewhere else in between
+    rb_key_ok_d <= rb_take;
+    if (rb_take && (!rb_key_ok_d || {rb_reg, rb_dat} != rb_last)) begin
+      if (capturing) begin
+        if (rcnt == 13'd2048) rovf <= 1'b1;
+        else begin
+          rr_we <= 1'b1;
+          rr_wa <= rcnt[10:0];
+          rr_wd <= {rb_dbr & !rb_cpuw, 6'b0, rb_line_now, rb_hc_now, rb_reg, rb_dat};
+          rcnt  <= rcnt + 13'd1;
+        end
+      end
+    end
+    rb_last <= {rb_reg, rb_dat};
+  end
+  always @(posedge clk)
+    if (rr_we) rrec[rr_wa] <= rr_wd;
+  wire [10:0] rra = {idx[6:0], r3};
+  reg  [47:0] rr_q = 48'd0;
+  always @(posedge clk) rr_q <= rrec[rra];
+
   // ---------------------------------------------------------------- readout
   wire [9:0] ra = {idx[5:0], r3};
   wire [7:0] la = {idx[3:0], r3};
@@ -255,7 +326,9 @@ module fmeas (
   reg [3:0] r3_d = 4'd0;
   always @(posedge clk) begin
     idx_d <= idx; r3_d <= r3;
-    if (idx_d[7:6] == 2'b10)
+    if (idx_d[7] == 1'b0)
+      q <= {rr_q[47], 6'b0, rr_q[40:16], rr_q[15:0], {idx_d[6:0], r3_d}, 5'b0, rcnt[11:0], rovf, 19'b0};
+    else if (idx_d[7:6] == 2'b10)
       q <= {re_q, ro_q, {idx_d[5:0], r3_d}, 6'b0, frame_cnt[15:0]};
     else if (idx_d[7:4] == 4'hC)
       q <= {le_q, lo_q, {idx_d[3:0], r3_d}, 8'b0, cap_frame[15:0]};
@@ -267,7 +340,8 @@ module fmeas (
         4'd0: q <= {frame_cnt, cap_frame, captured, armed, capturing, nib, 2'b00, lines_last[9:0], hpix_last};
         4'd1: q <= {32'hFEA50001, reset_frame, wpix_last};
         4'd2: q <= {xlo, xhi, ylo, yhi, grab, sr[15:0]};
-        4'd3: q <= {last_crc, wpix_cap, lines_cap, 16'd0};
+        4'd4: q <= {gmask, 16'd0, 64'd0};
+        4'd3: q <= {last_crc, wpix_cap, lines_cap, rcnt[11:0], rovf, 3'b0};
         default: q <= 96'd0;
       endcase
     else
