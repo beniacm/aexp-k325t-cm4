@@ -176,7 +176,8 @@ static void hotkeys(void *win)
     while (*c) {
         long n = strtol(c, (char **)&c, 10);
         int d = -1, fk = 0;
-        if (*c == ':') { c++; if (*c == 'F') { c++; fk = 1; } d = (int)strtol(c, (char **)&c, 10); }
+        int sh = 0;
+        if (*c == ':') { c++; if (*c == 'S') { c++; sh = 1; } if (*c == 'F') { c++; fk = 1; } d = (int)strtol(c, (char **)&c, 10); }
         if (fk && d >= 1 && d <= 12) {               /* N:F<k>: a plain function key */
             if (frame == n) push_key3(win, 1, 57 + d, (57 + d) | (1 << 30));
             if (frame == n + 6) push_key3(win, 0, 57 + d, (57 + d) | (1 << 30));
@@ -184,11 +185,102 @@ static void hotkeys(void *win)
             int sc = d == 0 ? 39 : 29 + d;               /* SDL_SCANCODE_1 = 30 .. _9 = 38, _0 = 39 */
             int key = '0' + d;
             if (frame == n) push_key3(win, 1, END_SC, END_KEY);
+            if (sh && frame == n + 1) push_key3(win, 1, 225, 0x400000E1);   /* N:S<d>: End + Shift + digit */
             if (frame == n + 2) push_key3(win, 1, sc, key);
             if (frame == n + 6) push_key3(win, 0, sc, key);
+            if (sh && frame == n + 7) push_key3(win, 0, 225, 0x400000E1);
             if (frame == n + 8) push_key3(win, 0, END_SC, END_KEY);
         }
         if (*c == ',') c++; else break;
+    }
+}
+
+/* --- aexp21_bacon: the emulator's NATIVE picture (the texture upload before scaling) ---
+ *   CAP_NAT=PREFIX       PREFIX.log: one line per swap: frame, texture w h, crc32 of the window
+ *   CAP_NAT_WIN=x,y,w,h  window in texture pixels (default: whole texture), h = rows taken; CAP_NAT_XS=n:
+ *                        every n-th column; CAP_NAT_YS=n: every n-th row (2 = one row of a doubled line);
+ *                        the CRC is K325T/fmeas.v's (12-bit pixels, reflected CRC-32)
+ *   CAP_NAT_PPM=a,b,c..  also write PREFIX_<frame>.ppm (whole texture, RGB) for these frames
+ *   CAP_NAT_EVERY=n      ... and every n-th frame */
+typedef void (*texsub_fn)(unsigned, int, int, int, int, int, unsigned, unsigned, const void *);
+static unsigned char *nat = NULL; static int natw = 0, nath = 0; static unsigned natfmt = 0, nattype = 0;
+static long nuploads = 0;
+static texsub_fn real_texsub = NULL;     /* set by the SDL_GL_GetProcAddress hook (FS-UAE) or dlsym (WinUAE) */
+void glTexSubImage2D(unsigned target, int level, int x, int y, int w, int h, unsigned fmt, unsigned type,
+                     const void *px)
+{
+    texsub_fn real = real_texsub;
+    if (!real) real = real_texsub = (texsub_fn)dlsym(RTLD_NEXT, "glTexSubImage2D");
+    static long ncalls = 0;
+    if (getenv("CAP_NAT_DEBUG") && ncalls++ < 40) fprintf(stderr, "[nat] call x %d y %d w %d h %d fmt %#x type %#x\n", x, y, w, h, fmt, type);
+    if (getenv("CAP_NAT") && px && w >= 320 && h >= 200 && x == 0 && y == 0 && level == 0) {
+        if (w != natw || h != nath || !nat) { free(nat); nat = malloc((size_t)w * h * 4); natw = w; nath = h; }
+        if (nuploads < 3) fprintf(stderr, "[nat] upload %dx%d fmt %#x type %#x\n", w, h, fmt, type);
+        natfmt = fmt; nattype = type;
+        memcpy(nat, px, (size_t)w * h * 4);   /* assumes 4 bytes per pixel (checked in the log) */
+        nuploads++;
+    }
+    real(target, level, x, y, w, h, fmt, type, px);
+}
+/* FS-UAE resolves its GL functions through SDL: hand it the wrapper above */
+void *SDL_GL_GetProcAddress(const char *name)
+{
+    static getproc_fn real = NULL;
+    if (!real) real = (getproc_fn)dlsym(RTLD_NEXT, "SDL_GL_GetProcAddress");
+    void *p = real(name);
+    if (name && getenv("CAP_NAT") && strcmp(name, "glTexSubImage2D") == 0) {
+        real_texsub = (texsub_fn)p;
+        return (void *)glTexSubImage2D;
+    }
+    return p;
+}
+static unsigned crc_tab[256];
+static unsigned crc32b(unsigned c, unsigned char b)
+{
+    if (!crc_tab[1]) for (unsigned i = 0; i < 256; i++) { unsigned r = i; for (int k = 0; k < 8; k++) r = r & 1 ? (r >> 1) ^ 0xEDB88320u : r >> 1; crc_tab[i] = r; }
+    return crc_tab[(c ^ b) & 0xff] ^ (c >> 8);
+}
+static FILE *natlog = NULL;
+static void nat_frame(long fr)
+{
+    const char *pre = getenv("CAP_NAT");
+    if (!pre || !nat || finished) return;
+    if (!natlog) { char fn[1024]; snprintf(fn, sizeof fn, "%s.log", pre); natlog = fopen(fn, "w"); }
+    int x0 = 0, y0 = 0, ww = natw, hh = nath, xs = 1;
+    if (getenv("CAP_NAT_WIN")) sscanf(getenv("CAP_NAT_WIN"), "%d,%d,%d,%d", &x0, &y0, &ww, &hh);
+    if (getenv("CAP_NAT_XS")) xs = atoi(getenv("CAP_NAT_XS"));
+    if (xs < 1) xs = 1;
+    int ys = getenv("CAP_NAT_YS") ? atoi(getenv("CAP_NAT_YS")) : 1;
+    if (ys < 1) ys = 1;
+    unsigned c = 0xffffffffu;
+    /* pixel bytes: GL_BGRA (0x80e1) -> b g r a; GL_RGBA (0x1908) -> r g b a.  CRC exactly as K325T/fmeas.v:
+     * 12 bits {R[7:4], G[7:4], B[7:4]} fed LSB first into the reflected CRC-32 (rows y0, y0+ys, ..) */
+    int bgra = natfmt == 0x80e1;
+    for (int y = y0; y < y0 + hh * ys && y < nath; y += ys)
+        for (int x = x0; x < x0 + ww && x < natw; x += xs) {
+            unsigned char *p = nat + ((size_t)y * natw + x) * 4;
+            unsigned char r = bgra ? p[2] : p[0], g = p[1], b = bgra ? p[0] : p[2];
+            unsigned d = (unsigned)(r >> 4) << 8 | (unsigned)(g >> 4) << 4 | (unsigned)(b >> 4);
+            for (int i = 0; i < 12; i++) c = ((c ^ (d >> i)) & 1) ? (c >> 1) ^ 0xEDB88320u : c >> 1;
+        }
+    c ^= 0xffffffffu;
+    if (natlog) { fprintf(natlog, "%ld %d %d %08x\n", fr, natw, nath, c); fflush(natlog); }
+    int dump = 0;
+    long ev = getenv("CAP_NAT_EVERY") ? atol(getenv("CAP_NAT_EVERY")) : 0;
+    if (ev > 0 && fr % ev == 0) dump = 1;
+    const char *l = getenv("CAP_NAT_PPM");
+    if (l) { const char *q = l; while (*q) { if (atol(q) == fr) dump = 1; while (*q && *q != ',') q++; if (*q) q++; } }
+    if (dump) {
+        char fn[1024]; snprintf(fn, sizeof fn, "%s_%06ld.ppm", pre, fr);
+        FILE *f = fopen(fn, "wb");
+        if (f) {
+            fprintf(f, "P6 %d %d 255\n", natw, nath);
+            for (size_t i = 0; i < (size_t)natw * nath; i++) {
+                unsigned char *p = nat + i * 4; unsigned char o[3] = { bgra ? p[2] : p[0], p[1], bgra ? p[0] : p[2] };
+                fwrite(o, 1, 3, f);
+            }
+            fclose(f);
+        }
     }
 }
 
@@ -255,6 +347,22 @@ void SDL_GL_SwapWindow(void *win)
             }
         }
     }
+    if (getenv("CAP_NAT_RB") && w > 0 && h > 0) {
+        /* CAP_NAT_RB: the native picture is the window itself (FS-UAE with a 1:1 nearest-neighbour window):
+         * read the back buffer and use it as the "texture" */
+        static unsigned char *rgb = NULL; static int rw = 0, rh = 0;
+        if (w != rw || h != rh) { free(rgb); rgb = malloc((size_t)w * h * 3); rw = w; rh = h; }
+        if (w != natw || h != nath || !nat) { free(nat); nat = malloc((size_t)w * h * 4); natw = w; nath = h; }
+        rb(GL_BACK); ps(GL_PACK_ALIGNMENT, 1);
+        rp(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                unsigned char *q = rgb + ((size_t)(h - 1 - y) * w + x) * 3, *o = nat + ((size_t)y * w + x) * 4;
+                o[0] = q[2]; o[1] = q[1]; o[2] = q[0]; o[3] = 255;
+            }
+        natfmt = 0x80e1;
+    }
+    nat_frame(frame);
     real(win);
     click(win);
     keys(win);
@@ -262,6 +370,7 @@ void SDL_GL_SwapWindow(void *win)
     frame++;
     if (maxf && frame == maxf) {
         if (vid) { pclose(vid); vid = NULL; }
+        if (natlog) { fclose(natlog); natlog = NULL; }
         fprintf(stderr, "[capture] %ld swaps, %ld video frames (%dx%d), %ld frames of another size skipped\n",
                 frame, nvid, v0w, v0h, nskip);
         finished = 1;

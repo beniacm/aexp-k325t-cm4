@@ -12,6 +12,7 @@ On the module (next to m65d; python3-spidev; writes nothing to the module's flas
     fmeas.py capat PREV N [SECS]       wait (up to SECS, default 600) for the first frame f whose CRC differs
                                        from its predecessor's CRC PREV (hex), then capture frame f+N
                                        (N >= ~20) and print it as "capture" does, plus f
+    fmeas.py capon CRC N [SECS]        the same, f = the first frame whose CRC is CRC (a unique frame)
     fmeas.py log SECS                  stream "frame crc" lines of every finished frame for SECS seconds
                                        (stdout: ssh ... log 600 > pc_file; reads the 2048-frame ring
                                        about 4 times a second)
@@ -187,8 +188,9 @@ def main_module(a):
     elif a[0] == "gmask":
         m.param(5, int(a[1], 0))
         print(m.status())
-    elif a[0] == "capat":
+    elif a[0] in ("capat", "capon"):
         prev, n = int(a[1], 16), int(a[2])
+        on = a[0] == "capon"            # capon: f = the first frame whose CRC IS the given one
         secs = float(a[3]) if len(a) > 3 else 600.0
         t0 = time.time()
         nxt = m.read(0xDC, 0)[0]
@@ -204,12 +206,12 @@ def main_module(a):
                 for k in ((0, 1) if nxt & 1 == 0 else (1,)):
                     c = w[k]
                     fr = (nxt & ~1) + k
-                    if last == prev and c != prev:
+                    if (on and c == prev) or (not on and last == prev and c != prev):
                         f0 = fr
                         break
                     last = c
                 nxt = (nxt & ~1) + 2
-            time.sleep(0.05)
+            time.sleep(0.005)
         if f0 is None:
             raise SystemExit("no change after %08x within %.0f s" % (prev, secs))
         target = f0 + n
@@ -221,6 +223,33 @@ def main_module(a):
         r = m.capture()
         print("change at frame %d (from %08x); target %d" % (f0, prev, target))
         print_capture(*r)
+    elif a[0] == "regseries":
+        # regseries SECS: capture frame after frame (as fast as the readout allows) and print only the
+        # recorded register writes of each captured frame (no line table / grab)
+        secs = float(a[1]); t0 = time.time()
+        while time.time() - t0 < secs:
+            st0 = m.status()
+            m.cmd(0xB, 1)
+            for _ in range(200):
+                st = m.status()
+                if st["captured"] and st["capframe"] != st0["capframe"]:
+                    break
+                time.sleep(0.005)
+            n = min(st["rcnt"], 2048)
+            out = []
+            for k in range(n):
+                for tries in range(8):
+                    m.sel(k >> 4, k & 15, force=tries > 0)
+                    w = m.b.words()
+                    if (w[1] >> 5) & 0x7FF == k:
+                        break
+                out.append("%s %d %d %03X %04X" % ("cop" if w[0] >> 31 else "cpu", w[0] >> 16 & 0x1FF,
+                                                   w[0] >> 8 & 0xFF, (w[0] & 0xFF) << 1, w[1] >> 16))
+            cf = st["capframe"]
+            while m.read(0xDC, 0)[0] <= cf:
+                time.sleep(0.005)
+            crc = m.ring_pair((cf >> 1) & 1023)[cf & 1]
+            print("F %d crc %08x n %d%s | %s" % (cf, crc, st["rcnt"], " OVF" if st["rovf"] else "", "; ".join(out)), flush=True)
     elif a[0] == "log":
         secs = float(a[1])
         t0 = time.time()
