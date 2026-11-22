@@ -219,6 +219,7 @@ architecture synthesis of qmtech_k325t_cm4 is
    signal ad_nw, ad_nr       : unsigned(15 downto 0) := (others => '0');
    signal ad_rbc             : std_logic_vector(7 downto 0) := (others => '0');
    signal ad_dbg             : std_logic_vector(191 downto 0);
+   signal amiga_meas         : std_logic_vector(95 downto 0);    -- a500-bacon: the frame measure's word
    signal amiga_mbox         : std_logic_vector(511 downto 0);   -- the core's result mailbox
    signal amiga_pf_stats     : std_logic_vector(671 downto 0);   -- the cache's prefetch counters
    signal amiga_fast_dbg     : std_logic_vector(287 downto 0);   -- fast RAM path debug + memory mode (stage 3)
@@ -378,10 +379,10 @@ begin
 
    -- line latency meter on the line port (stall monitor page 7, lat_meter.vhd)
    i_lat_meter : entity work.lat_meter
-      generic map (G_FULL => G_LATMETER)
+      generic map (G_FULL => G_LATMETER, G_MEAS => true)
       port map (
          clk => mig_ui_clk, rst => mem_not_ready, cfg_i => rk_vid_sel,
-         page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats,
+         page7_o => lat_page7, aux_o => lat_aux, dbg_i => ad_dbg, mbox_i => amiga_mbox, pf_i => amiga_pf_stats, meas_i => amiga_meas,
          dbg2_i => amiga_fast_dbg,
          lp_req => lm_req, lp_we => lm_we, lp_addr => lm_addr, lp_wdata => lm_wdata,
          lp_busy => lm_busy, lp_done => lm_done

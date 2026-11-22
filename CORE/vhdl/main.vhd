@@ -182,6 +182,10 @@ entity main is
       -- with a one-clock strobe at its start, so hdd_spi must see the whole reset to keep the host from
       -- clearing the reset request (mgmt status write) before it has read it
       ide_reset_o             : out std_logic;
+      -- K325T a500-bacon: frame measure of the native picture (K325T/fmeas.v): the bridge configuration
+      -- byte (asynchronous) and the readout word (main clock, quasi-static; lat_meter meas_i)
+      meas_cfg_i              : in  std_logic_vector(7 downto 0) := x"00";
+      meas_out_o              : out std_logic_vector(95 downto 0);
 
       -- MEGA65 joysticks and paddles/mouse/potentiometers
       joy_1_up_n_i            : in  std_logic;
@@ -395,6 +399,24 @@ architecture synthesis of main is
    -- July 2026: the keyboard's CTRL+MEGA+RESTORE warm-boot pulse is a third
    -- reset source (the real Amiga keyboard MCU's reset line).
    signal amiga_rst        : std_logic := '1';
+
+   component fmeas is
+      port (
+         clk    : in  std_logic;
+         e14    : in  std_logic;
+         hblank : in  std_logic;
+         vblank : in  std_logic;
+         vs     : in  std_logic;
+         r      : in  std_logic_vector(7 downto 0);
+         g      : in  std_logic_vector(7 downto 0);
+         b      : in  std_logic_vector(7 downto 0);
+         mreset : in  std_logic;
+         cfg    : in  std_logic_vector(7 downto 0);
+         q      : out std_logic_vector(95 downto 0)
+      );
+   end component fmeas;
+   signal meas_e14         : std_logic;
+   signal meas_r, meas_g, meas_b : std_logic_vector(7 downto 0);
    signal kbd_core_reset   : std_logic;
 
    -- amiga_clk outputs
@@ -1128,9 +1150,9 @@ begin
          vsync_n        => vid_vsync_n,
          hblank         => vid_hblank,
          vblank         => vid_vblank,
-         red            => video_red_o,
-         green          => video_green_o,
-         blue           => video_blue_o,
+         red            => meas_r,
+         green          => meas_g,
+         blue           => meas_b,
          ce_pix         => open,                 -- we use the frame-locked CE instead
          res            => vid_res,
          lace           => open,                 -- would only gate the analog scandoubler
@@ -1194,5 +1216,29 @@ begin
 
    audio_left_o  <= signed(aud_ldata & '0');
    audio_right_o <= signed(aud_rdata & '0');
+
+   ---------------------------------------------------------------------------
+   -- K325T a500-bacon: frame measure (CRC per frame of the native picture; K325T/fmeas.v)
+   ---------------------------------------------------------------------------
+
+   video_red_o   <= meas_r;
+   video_green_o <= meas_g;
+   video_blue_o  <= meas_b;
+   meas_e14 <= clk7_en or clk7n_en;
+
+   i_fmeas : fmeas
+      port map (
+         clk    => clk_main_i,
+         e14    => meas_e14,
+         hblank => vid_hblank,
+         vblank => vid_vblank,
+         vs     => vid_vs,
+         r      => meas_r,
+         g      => meas_g,
+         b      => meas_b,
+         mreset => amiga_rst,
+         cfg    => meas_cfg_i,
+         q      => meas_out_o
+      );
 
 end architecture synthesis;

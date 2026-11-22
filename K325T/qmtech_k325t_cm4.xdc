@@ -177,4 +177,7 @@ set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/i_amiga_fast
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
 set_false_path -from [get_cells -hierarchical -filter {NAME =~ CORE/hr_blocked_reg* || NAME =~ CORE/hr_nsel_reg* || NAME =~ CORE/hr_non_fall_reg* || NAME =~ CORE/hr_quiet_cnt_reg* || NAME =~ CORE/hr_fast_sel_reg* || NAME =~ CORE/i_cdc_fast_on/*}] \
                -to   [get_cells -hierarchical -filter {NAME =~ i_lat_meter/aux_reg*}]
+## a500-bacon: the frame measure (CORE/vhdl/main.vhd i_fmeas, K325T/fmeas.v, main_clk): the bridge byte (clk162)
+## into its synchroniser + stability filter; its quasi-static readout word is covered by the CORE/* rule above
+set_false_path -to   [get_cells -hierarchical -filter {NAME =~ *i_fmeas/cfg_s1_reg*}]
 ## the cache's prefetch counters: prefetch.xdc, added by build.tcl with PREFETCH=1
