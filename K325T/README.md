@@ -166,3 +166,28 @@ DMS archives were unpacked to ADF with `xdms`.  Test disks made here: `wrtest.ad
   not accessible to the PC user).
 - Analog video / audio DAC outputs of the MEGA65 do not exist on this board.
 - The Luckfox variant is prepared (pin file section) but not built or tested.
+
+## State of the branches (2026-11-22)
+
+All branches are on `beniacm/aexp-k325t-cm4`; `master`/`develop` are upstream's and untouched.  Only
+`qmtech-k325t-cm4` carries the rule "board-verified commits only"; the others are published as they
+stand, with the status given here.  No Kickstart, disk image, bitstream or demo is in any branch.
+
+| Branch | What it is | Status |
+|---|---|---|
+| `qmtech-k325t-cm4` | The port: A500 profile, phase 2 (more RAM, 68020, HDF), the two reset fixes | Board-verified, the published main line |
+| `a1200-ddr3` | A1200 stage 1/2/2b: chip RAM in DDR3 behind a block-RAM cache with a machine-time stall | Board-verified on two rigs |
+| `a1200-aga` | Stage 3: AGA chipset and MiSTer's 68EC020, 90 MiSTer upstream patches classified | Board-verified (Domination, cputester) |
+| `a1200-lxshell` | The Linux-side menu and host protocol (`HOST_PROTOCOL.md`); this line (build "lx1") is what flash slot 1 on the Radxa rig holds | Board-verified, in flash |
+| `a1200-fastclk` | "Fast 68020": the 68EC020 on its own clock, run-time selectable (build fc7), CPU kernel fixes 0142/0143 | Stage; verified on both rigs over JTAG (stock gates, fast-RAM checks, Domination, cputester), **not in flash** |
+| `a500-bacon` | `a1200-fastclk` plus a measurement tool: `K325T/fmeas.v` (per-frame CRC of the native picture, line table, register write recorder) with `K325T/tools/fmeas.py` and a WinUAE A500 runner | Tool / experiment.  The demo "Bacon of Hope" (Desire, 2026) runs from boot to its end part on the A500 profile; frame-exact comparison with WinUAE: about 60 % of the frames are bit-exact, the differing regions coincide with background floppy loading (our floppy has no real-time rotation) |
+| `a1200-fc8` | Speed options as a run-time register (`fc_opt.vhd`), census counters | Experiment; the variant with the options fixed on shows a red screen in the fast setting, the register variant was never on the board |
+| `a1200-audrec`, `a1200-chkframe` | Audio recorder / hold detector at the HDMI encoder; the CHK/DIVU kernel patches on their own | Debug build / fixes already contained in `a1200-fastclk` |
+| `a1200-fastcpu`, `a1200-aga-start` | Earlier steps of the fast CPU; stage-3 card start fixes | Superseded by `a1200-fastclk` / `a1200-aga` where they overlap |
+| `a1200-akiko`, `a1200-ide`, `a1200-idestream`, `a1200-pistorm` | Akiko chunky-to-planar (shelved), bitstream size tooling, streaming IDE write (build not verified on the board), an emulator-route census bench | Shelved / experiment |
+
+Known open items: the short silence in captured audio in the fast setting (our audio samples are intact;
+the capture receiver conceals); after `core amiga` the bridge link is sometimes stuck at 25 MHz until the
+host daemon is restarted; the bridge's SPI pin flip-flops are not constrained to the IOBs; the fast
+setting is not in flash.  Bacon of Hope: pictures that depend on floppy load timing differ from WinUAE
+(also random on real hardware); two regions without loads remain unexplained.

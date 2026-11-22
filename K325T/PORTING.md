@@ -2476,3 +2476,11 @@ stock A1200, clock for clock (gates unchanged, below).  Study and measurements: 
   board; fc_cpu decodes its window already).
 - AmigaOS: AFF_68030 via the 030 CACR bits; SysInfo shows a 68EC030 when the MMU test fails; the 030
   data-cache enable (CACR ED) is ignored by fc_cpu's D-cache (fast RAM / ROM only, always on).
+
+## State of the branches (2026-11-22)
+
+See the table at the end of `K325T/README.md`.  In short: `qmtech-k325t-cm4` and `a1200-ddr3` / `a1200-aga` /
+`a1200-lxshell` are board-verified (the last is what flash slot 1 of the Radxa rig holds); `a1200-fastclk` (fast
+68020, fc7) is verified over JTAG but not in flash; `a500-bacon` adds the frame measure `fmeas.v` and runs the demo
+"Bacon of Hope" (Desire, 2026) from boot to its end part on the A500 profile; the remaining `a1200-*` branches are
+experiments or shelved steps.
